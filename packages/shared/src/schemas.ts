@@ -7,7 +7,7 @@ export const SearchPartsInput = z.object({
     .string()
     .min(1)
     .describe("Part number, description, or parametric search (e.g. '100uF 25V capacitor MLCC')"),
-  limit: z.number().int().min(1).max(50).default(10).describe("Max results to return"),
+  limit: z.coerce.number().int().min(1).max(50).default(10).describe("Max results to return"),
 });
 export type SearchPartsInput = z.infer<typeof SearchPartsInput>;
 

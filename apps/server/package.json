@@ -10,8 +10,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node build/index.js",
-    "start:http": "node build/index.js --transport=http",
+    "start": "node --env-file=../../.env build/index.js",
+    "start:http": "node --env-file=../../.env build/index.js --transport=http",
     "inspect": "npx @anthropic-ai/mcp-inspector build/index.js"
   },
   "dependencies": {
