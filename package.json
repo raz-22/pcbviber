@@ -1,0 +1,21 @@
+{
+  "name": "altium-mcp-monorepo",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Altium MCP server + web UI (monorepo)",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "dev:server": "pnpm -F @altium-mcp/server dev",
+    "dev:web": "pnpm -F @altium-mcp/web dev",
+    "inspect": "pnpm -F @altium-mcp/server inspect",
+    "start": "pnpm -F @altium-mcp/server start",
+    "start:http": "pnpm -F @altium-mcp/server start:http"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "license": "MIT"
+}
