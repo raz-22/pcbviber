@@ -49,6 +49,9 @@ model User {
   email           String       @unique
   emailVerifiedAt DateTime?
   workosUserId    String?      @unique
+  /// Populated only by @altium-mcp/auth's LocalAuthProvider; always null
+  /// when WorkOS owns authentication. Format: scrypt$v1$...
+  passwordHashLocal String?
   createdAt       DateTime     @default(now())
 
   memberships     Membership[]
