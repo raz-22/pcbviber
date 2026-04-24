@@ -96,10 +96,11 @@ export class AdRelay {
 
   /**
    * Called by GET /ad-relay/next. Returns a pending command immediately
-   * if one is queued; otherwise waits up to pollTimeoutMs for one to
-   * arrive, then returns null (AD re-polls).
+   * if one is queued; otherwise:
+   *   - pollTimeoutMs <= 0: resolves null right away (AD-style short poll)
+   *   - pollTimeoutMs > 0: waits up to that many ms (classic long-poll)
    */
-  async nextCommand(pollTimeoutMs = 25_000): Promise<AdCommandEnvelope | null> {
+  async nextCommand(pollTimeoutMs = 0): Promise<AdCommandEnvelope | null> {
     this.lastPollAt = Date.now();
 
     const head = this.queue.shift();
@@ -107,6 +108,8 @@ export class AdRelay {
       this.totalDispatched++;
       return head;
     }
+
+    if (pollTimeoutMs <= 0) return null;
 
     return new Promise<AdCommandEnvelope | null>((resolve) => {
       const timer = setTimeout(() => {

@@ -25,6 +25,7 @@ import * as components from "./handlers/components.js";
 import * as projects from "./handlers/projects.js";
 import type { AdRelay } from "./ad-relay/relay.js";
 import { registerAdRelayRoutes } from "./ad-relay/routes.js";
+import * as altium from "./handlers/altium.js";
 
 export async function startHttpServer(opts: {
   nexar: NexarService;
@@ -147,6 +148,55 @@ export async function startHttpServer(opts: {
   });
 
   app.get("/api/health", async () => ({ ok: true, version: "0.2.0" }));
+
+  // ── REST wrappers for AD tools (no MCP protocol required) ────────
+  // These call the same handlers the MCP tools use. Useful for curl,
+  // PowerShell, the web UI, or any plain-HTTP consumer.
+  // Bodyless AD commands use GET for curl-friendliness. They still
+  // round-trip to AD via the relay — GET here means "no parameters",
+  // not "read-only".
+  app.get("/api/ad/ping", async (_req, reply) => {
+    try {
+      return await altium.adPing(relay);
+    } catch (err) {
+      reply.code(502);
+      return { error: (err as Error).message };
+    }
+  });
+
+  app.get("/api/ad/status", async () => altium.adStatus(relay));
+
+  app.get("/api/ad/active-project", async (_req, reply) => {
+    try {
+      return await altium.adGetActiveProject(relay);
+    } catch (err) {
+      reply.code(502);
+      return { error: (err as Error).message };
+    }
+  });
+
+  app.get("/api/ad/compile", async (_req, reply) => {
+    try {
+      return await altium.adCompileProject(relay, {});
+    } catch (err) {
+      reply.code(502);
+      return { error: (err as Error).message };
+    }
+  });
+
+  app.post("/api/ad/open", async (req, reply) => {
+    const body = req.body as { path?: string };
+    if (!body?.path) {
+      reply.code(400);
+      return { error: "path required" };
+    }
+    try {
+      return await altium.adOpenProject(relay, { path: body.path });
+    } catch (err) {
+      reply.code(502);
+      return { error: (err as Error).message };
+    }
+  });
 
   await app.listen({ host, port });
   app.log.info(`Altium MCP HTTP + REST BFF listening on http://${host}:${port}`);

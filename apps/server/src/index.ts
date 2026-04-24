@@ -49,6 +49,7 @@ function loadConfig(): AltiumConfig {
     nexarClientSecret: clientSecret,
     altium365WorkspaceUrl: process.env.ALTIUM_WORKSPACE_URL,
     restApiToken: process.env.ALTIUM_REST_TOKEN,
+    nexarAccessToken: process.env.NEXAR_ACCESS_TOKEN,
   };
 }
 

@@ -8,51 +8,64 @@
 //            → the function you want to run is Main().
 //
 // To stop cleanly: set the global g_stop = true in AD's Script
-// Command Line panel, or just close the project / AD — the server
-// will detect the disconnect on the next timeout.
+// Command Line panel, or just close the project / AD.
+//
+// Logging goes to a file — modal dialogs would block the polling loop.
+//   Default log file: %TEMP%\AltiumRelay.log
+//   Tail it from PowerShell with:
+//     Get-Content $env:TEMP\AltiumRelay.log -Tail 20 -Wait
 //
 // Notes on the AD scripting environment:
 //   - This runs in AD's "DXP" ECMAScript-like engine. It's NOT modern
 //     JS. No let/const/arrow funcs — stick to var + function.
 //   - COM objects are available via "new ActiveXObject(...)".
 //   - XMLHttpRequest is NOT available; we use Msxml2.XMLHTTP.
-//   - Blocking calls are fine — AD's script runtime is single-threaded,
-//     but the server's long-poll keeps CPU idle while waiting.
+//   - Sync XHR aborts for long holds → server hold is kept to 8s.
 // ─────────────────────────────────────────────────────────────────────
 
 var RELAY_URL = "http://127.0.0.1:3000/ad-relay";
+var LOG_FILE  = null; // set lazily via %TEMP%
 var g_stop = false;
 
 function Main() {
     g_stop = false;
+    InitLog();
     Log("AltiumRelay starting. Server: " + RELAY_URL);
-    Log("To stop: set g_stop=true or close Altium Designer.");
+    Log("Log file: " + LOG_FILE);
+    Log("To stop: set g_stop=true in the Script Command Line panel, or close AD.");
 
-    var emptyPolls = 0;
+    // Short-poll loop: each request is ~50ms, we sleep POLL_INTERVAL_MS
+    // between polls so AD's UI thread stays responsive.
+    var POLL_INTERVAL_MS = 500;
+    var consecutiveErrors = 0;
+
     while (!g_stop) {
         var cmd = null;
         try {
             cmd = PollNext();
+            consecutiveErrors = 0;
         } catch (e) {
-            Log("Poll error: " + e.message + " (retrying in 2s)");
-            Sleep(2000);
+            consecutiveErrors++;
+            if (consecutiveErrors <= 3 || consecutiveErrors % 20 === 0) {
+                Log("Poll error (" + consecutiveErrors + "): " + e.message);
+            }
+            Sleep(Math.min(10000, 1000 * consecutiveErrors));
             continue;
         }
 
         if (cmd === null) {
-            // 204 — no command this cycle; re-poll.
-            emptyPolls++;
-            if (emptyPolls % 10 === 0) Log("Idle (" + emptyPolls + " empty polls)");
+            Sleep(POLL_INTERVAL_MS);
             continue;
         }
-        emptyPolls = 0;
 
+        Log("Dispatching: " + cmd.method + " (id=" + cmd.id + ")");
         var result;
         try {
             result = Dispatch(cmd);
             PostResult(cmd.id, true, result, null);
+            Log("OK: " + cmd.method);
         } catch (err) {
-            Log("Command '" + cmd.method + "' failed: " + err.message);
+            Log("FAIL " + cmd.method + ": " + err.message);
             PostResult(cmd.id, false, null, {
                 message: err.message || String(err),
                 detail: (err.detail || ""),
@@ -67,9 +80,22 @@ function Main() {
 // Transport — HTTP long-poll + result POST
 // ─────────────────────────────────────────────────────────────────────
 
+function NewXhr() {
+    // WinHttp is more tolerant of longer sync holds than Msxml2.XMLHTTP.
+    // Fall back to Msxml2 if WinHttp isn't available.
+    try {
+        return new ActiveXObject("WinHttp.WinHttpRequest.5.1");
+    } catch (_) {
+        return new ActiveXObject("Msxml2.XMLHTTP");
+    }
+}
+
 function PollNext() {
-    var xhr = new ActiveXObject("Msxml2.XMLHTTP");
+    var xhr = NewXhr();
     xhr.open("GET", RELAY_URL + "/next", false); // synchronous
+    // All four timeouts in ms: resolve, connect, send, receive.
+    // Server returns immediately (<50ms typical), so 3s is generous.
+    try { xhr.SetTimeouts(2000, 2000, 2000, 3000); } catch (_) {}
     xhr.send();
     if (xhr.status === 204) return null;
     if (xhr.status !== 200) throw MakeError("Poll failed: HTTP " + xhr.status);
@@ -83,8 +109,9 @@ function PostResult(id, ok, result, error) {
         result: (result === undefined ? null : result),
         error: error
     });
-    var xhr = new ActiveXObject("Msxml2.XMLHTTP");
+    var xhr = NewXhr();
     xhr.open("POST", RELAY_URL + "/result", false);
+    try { xhr.SetTimeouts(2000, 2000, 2000, 3000); } catch (_) {}
     xhr.setRequestHeader("Content-Type", "application/json");
     xhr.send(body);
     if (xhr.status !== 200) {
@@ -130,7 +157,7 @@ function CmdPing(_params) {
         adVersion: (typeof Client !== "undefined" && Client.ProductName)
             ? Client.ProductName
             : "Altium Designer",
-        timestamp: (new Date()).toISOString()
+        timestamp: IsoNow()
     };
 }
 
@@ -254,9 +281,37 @@ function RequireString(obj, key) {
     }
 }
 
+function InitLog() {
+    if (LOG_FILE !== null) return;
+    try {
+        var shell = new ActiveXObject("WScript.Shell");
+        var temp = shell.ExpandEnvironmentStrings("%TEMP%");
+        LOG_FILE = temp + "\\AltiumRelay.log";
+    } catch (_) {
+        LOG_FILE = "C:\\Temp\\AltiumRelay.log";
+    }
+}
+
 function Log(msg) {
-    // Shows up in the DXP Messages panel when called from a script.
-    try { ShowInfo("[AltiumRelay] " + msg); } catch (_) { /* ignore */ }
+    // NO modal dialogs — each one would block the polling loop.
+    // Append to %TEMP%\AltiumRelay.log instead.
+    try {
+        if (LOG_FILE === null) InitLog();
+        var fso = new ActiveXObject("Scripting.FileSystemObject");
+        var ts = fso.OpenTextFile(LOG_FILE, 8 /* ForAppending */, true);
+        ts.WriteLine(IsoNow() + "  " + msg);
+        ts.Close();
+    } catch (_) { /* silently ignore — logging must never throw */ }
+}
+
+function IsoNow() {
+    // AD's script engine doesn't implement Date.prototype.toISOString.
+    // Hand-roll a compatible string: 2026-04-24T00:13:37.705Z
+    var d = new Date();
+    function pad(n, w) { var s = String(n); while (s.length < w) s = "0" + s; return s; }
+    return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1, 2) + "-" + pad(d.getUTCDate(), 2)
+        + "T" + pad(d.getUTCHours(), 2) + ":" + pad(d.getUTCMinutes(), 2) + ":" + pad(d.getUTCSeconds(), 2)
+        + "." + pad(d.getUTCMilliseconds(), 3) + "Z";
 }
 
 function Sleep(ms) {

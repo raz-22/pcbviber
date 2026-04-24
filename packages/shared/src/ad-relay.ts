@@ -37,14 +37,17 @@ export type AdCommandEnvelope = z.infer<typeof AdCommandEnvelope>;
 export const AdResultEnvelope = z.object({
   id: z.string().uuid(),
   ok: z.boolean(),
-  result: z.unknown().optional(),
+  // .nullish() accepts null, undefined, or the value. The AD-side serializer
+  // emits `null` for unset fields (not `undefined`), so plain .optional()
+  // would reject well-formed success payloads.
+  result: z.unknown().nullish(),
   error: z
     .object({
       message: z.string(),
-      detail: z.string().optional(),
-      code: z.string().optional(),
+      detail: z.string().nullish(),
+      code: z.string().nullish(),
     })
-    .optional(),
+    .nullish(),
 });
 export type AdResultEnvelope = z.infer<typeof AdResultEnvelope>;
 
