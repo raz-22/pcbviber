@@ -18,11 +18,20 @@ declare global {
  * --watch, module reloads would otherwise leak connections; the global
  * cache bounds that.
  */
+function pickLogLevels(): ("query" | "info" | "warn" | "error")[] {
+  // Dev surfaces queries so slow paths are obvious; prod and test stay
+  // quiet (prod avoids PII in logs; test output stays readable).
+  switch (process.env.NODE_ENV) {
+    case "production":
+    case "test":
+      return ["warn", "error"];
+    default:
+      return ["warn", "error", "query"];
+  }
+}
+
 export const prisma: PrismaClient =
-  globalThis.__prismaClient__ ??
-  new PrismaClient({
-    log: process.env.NODE_ENV === "production" ? ["warn", "error"] : ["warn", "error"],
-  });
+  globalThis.__prismaClient__ ?? new PrismaClient({ log: pickLogLevels() });
 
 if (process.env.NODE_ENV !== "production") {
   globalThis.__prismaClient__ = prisma;

@@ -1,0 +1,235 @@
+/**
+ * Schema-level integration tests.
+ *
+ * Exercises the live Prisma client against a fresh SQLite DB to verify:
+ *   - tenant creation + membership + workspace with encrypted creds
+ *   - FK cascades (deleting an org removes its memberships/workspaces)
+ *   - unique / idempotency constraints actually fire
+ *   - audit log + usage event round-trips
+ *
+ * Requires DATABASE_URL and CREDENTIAL_ENCRYPTION_KEY in env. The test
+ * driver sets a throwaway key and points DATABASE_URL at a temp SQLite
+ * file, applies the committed migrations, and cleans up after itself.
+ */
+
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  encryptCredential,
+  decryptCredential,
+  __resetEncryptionCacheForTests,
+} from "./encryption.js";
+
+// Lazy imports so we can set env vars BEFORE @prisma/client initializes.
+let prisma: import("@prisma/client").PrismaClient;
+let workdir: string;
+
+before(async () => {
+  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-schema-test-"));
+  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
+
+  process.env.DATABASE_URL = `file:${dbPath}`;
+  process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
+  __resetEncryptionCacheForTests();
+
+  // Apply migrations to the fresh DB. Uses the committed migration history
+  // so the test verifies the schema the way prod will see it.
+  //
+  // pnpm puts the per-package `prisma` shim on PATH when it runs scripts,
+  // so we just invoke "prisma" through a shell (required for .CMD on Windows).
+  const schemaPath = join(process.cwd(), "prisma", "schema.prisma");
+  execFileSync("prisma", ["migrate", "deploy", "--schema", schemaPath], {
+    shell: true,
+    stdio: "ignore",
+    env: process.env,
+  });
+
+  // Dynamic import must happen AFTER env is set, so PrismaClient reads
+  // the right DATABASE_URL.
+  const mod = await import("./index.js");
+  prisma = mod.prisma;
+});
+
+after(async () => {
+  if (prisma) await prisma.$disconnect();
+  try {
+    rmSync(workdir, { recursive: true, force: true });
+  } catch {
+    // test teardown is best-effort
+  }
+});
+
+test("creates Organization + User + Membership", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "Acme Hardware", slug: "acme-hardware" },
+  });
+  const user = await prisma.user.create({
+    data: { email: "owner@acme.test" },
+  });
+  const membership = await prisma.membership.create({
+    data: { orgId: org.id, userId: user.id, role: "owner" },
+  });
+
+  assert.equal(membership.role, "owner");
+  assert.equal(membership.orgId, org.id);
+  assert.equal(membership.userId, user.id);
+});
+
+test("Organization.slug unique constraint fires", async () => {
+  await prisma.organization.create({
+    data: { name: "First", slug: "unique-slug-a" },
+  });
+  await assert.rejects(
+    () =>
+      prisma.organization.create({
+        data: { name: "Second", slug: "unique-slug-a" },
+      }),
+    /Unique constraint failed/i
+  );
+});
+
+test("Membership (orgId,userId) composite unique fires", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgX", slug: "orgx" },
+  });
+  const user = await prisma.user.create({ data: { email: "x@acme.test" } });
+  await prisma.membership.create({
+    data: { orgId: org.id, userId: user.id, role: "member" },
+  });
+  await assert.rejects(
+    () =>
+      prisma.membership.create({
+        data: { orgId: org.id, userId: user.id, role: "admin" },
+      }),
+    /Unique constraint failed/i
+  );
+});
+
+test("Workspace stores encrypted Nexar creds; decryption round-trips", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgWS", slug: "org-ws" },
+  });
+  const secret = "nexar-sekrit-secret-value-xyz-123";
+  const ws = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      altiumWorkspaceUrl: "https://acme.altium365.com",
+      nexarClientIdEnc: encryptCredential("client-id-abc"),
+      nexarClientSecretEnc: encryptCredential(secret),
+    },
+  });
+
+  // The ciphertext on disk is NOT the plaintext.
+  assert.notEqual(ws.nexarClientSecretEnc, secret);
+  assert.match(ws.nexarClientSecretEnc ?? "", /^v1\./);
+
+  // Re-read and decrypt.
+  const reloaded = await prisma.workspace.findUnique({ where: { id: ws.id } });
+  assert.ok(reloaded);
+  assert.equal(decryptCredential(reloaded.nexarClientSecretEnc!), secret);
+  assert.equal(decryptCredential(reloaded.nexarClientIdEnc!), "client-id-abc");
+});
+
+test("deleting an Organization cascades to Memberships + Workspaces", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "Doomed", slug: "doomed" },
+  });
+  const user = await prisma.user.create({ data: { email: "doomed@acme.test" } });
+  await prisma.membership.create({
+    data: { orgId: org.id, userId: user.id, role: "owner" },
+  });
+  await prisma.workspace.create({
+    data: { orgId: org.id, altiumWorkspaceUrl: "https://doomed.altium365.com" },
+  });
+
+  await prisma.organization.delete({ where: { id: org.id } });
+
+  const ms = await prisma.membership.findMany({ where: { orgId: org.id } });
+  const wss = await prisma.workspace.findMany({ where: { orgId: org.id } });
+  assert.equal(ms.length, 0);
+  assert.equal(wss.length, 0);
+
+  // The User survives — we only cascade from Org side.
+  const surviving = await prisma.user.findUnique({ where: { id: user.id } });
+  assert.ok(surviving);
+});
+
+test("UsageEvent.idempotencyKey unique constraint fires", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgU", slug: "org-u" },
+  });
+  const key = "idem-" + randomBytes(6).toString("hex");
+  await prisma.usageEvent.create({
+    data: {
+      orgId: org.id,
+      tool: "search_parts",
+      metric: "bom_lookup",
+      idempotencyKey: key,
+    },
+  });
+  await assert.rejects(
+    () =>
+      prisma.usageEvent.create({
+        data: {
+          orgId: org.id,
+          tool: "search_parts",
+          metric: "bom_lookup",
+          idempotencyKey: key,
+        },
+      }),
+    /Unique constraint failed/i
+  );
+});
+
+test("AuditLog writes & reads with optional actor", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgA", slug: "org-a" },
+  });
+  const user = await prisma.user.create({ data: { email: "actor@acme.test" } });
+
+  await prisma.auditLog.create({
+    data: {
+      orgId: org.id,
+      actorUserId: user.id,
+      action: "workspace.add",
+      target: "ws_abc",
+      ip: "127.0.0.1",
+      userAgent: "node-test",
+      metadata: JSON.stringify({ altiumWorkspaceUrl: "https://x.altium365.com" }),
+    },
+  });
+  // Anonymous (system) event — no actor.
+  await prisma.auditLog.create({
+    data: { orgId: org.id, action: "system.reconcile" },
+  });
+
+  const logs = await prisma.auditLog.findMany({
+    where: { orgId: org.id },
+    orderBy: { timestamp: "asc" },
+  });
+  assert.equal(logs.length, 2);
+  assert.equal(logs[0].actorUserId, user.id);
+  assert.equal(logs[1].actorUserId, null);
+});
+
+test("deleting an actor User sets AuditLog.actorUserId to null (preserve history)", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgH", slug: "org-h" },
+  });
+  const user = await prisma.user.create({ data: { email: "temp@acme.test" } });
+  await prisma.auditLog.create({
+    data: { orgId: org.id, actorUserId: user.id, action: "login" },
+  });
+
+  await prisma.user.delete({ where: { id: user.id } });
+
+  const logs = await prisma.auditLog.findMany({ where: { orgId: org.id } });
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].actorUserId, null); // SetNull kept the row
+});
