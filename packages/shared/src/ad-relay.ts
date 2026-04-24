@@ -18,6 +18,7 @@ export const AdMethod = z.enum([
   "save_project",
   "list_documents",
   "get_messages",
+  "debug_introspect_messages",
   "compile_project",
   "run_drc",
   "annotate_schematic",

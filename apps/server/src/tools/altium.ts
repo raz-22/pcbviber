@@ -102,6 +102,13 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
   );
 
   server.tool(
+    "ad_debug_introspect_messages",
+    "[DIAGNOSTIC] Probe the live DM_MessagesManager object for accessor names (count methods, iteration methods, per-message fields). Use when ad_get_messages reports that DM_MessageCount / DM_Messages are unavailable — the report shows which accessors this AD build actually exposes so EnumerateMessages can be patched to match. Read-only.",
+    {},
+    async () => toMcpResponse(() => h.adDebugIntrospectMessages(relay))
+  );
+
+  server.tool(
     "ad_screenshot",
     "Capture a PNG screenshot of Altium Designer's main window (default) or the full virtual desktop. Returns the image inline so it can be viewed. Runs locally via PowerShell; does NOT require the AD relay.",
     ScreenshotParams.shape,

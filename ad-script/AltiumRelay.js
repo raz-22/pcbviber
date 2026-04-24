@@ -132,6 +132,8 @@ function Dispatch(cmd) {
         case "save_project":       return CmdSaveProject(cmd.params);
         case "list_documents":     return CmdListDocuments(cmd.params);
         case "get_messages":       return CmdGetMessages(cmd.params);
+        case "debug_introspect_messages":
+                                   return CmdDebugIntrospectMessages(cmd.params);
         case "compile_project":    return CmdCompileProject(cmd.params);
         case "run_drc":            return CmdRunDrc(cmd.params);
         case "annotate_schematic": return CmdAnnotateSchematic(cmd.params);
@@ -377,6 +379,136 @@ function CmdGetMessages(params) {
     };
     if (enumerated.note) out.note = enumerated.note;
     return out;
+}
+
+function CmdDebugIntrospectMessages(_params) {
+    // Probe DM_MessagesManager (and the workspace itself) for accessors
+    // related to the Messages panel. The actual API shape varies across AD
+    // builds; this reports what's ACTUALLY available on the live object
+    // so EnumerateMessages can be patched with the correct names.
+
+    var report = {
+        workspace: { available: false, candidates: {} },
+        manager:   { available: false, candidates: {}, note: "" },
+        sample:    null,
+        forInKeys: []
+    };
+
+    // Workspace probes — sometimes messages live on the workspace directly.
+    var ws = null;
+    try {
+        ws = GetWorkspace();
+        report.workspace.available = !!ws;
+    } catch (e) {
+        report.workspace.note = "GetWorkspace() threw: " + (e.message || e);
+    }
+    if (ws) {
+        var wsCandidates = [
+            "DM_MessagesManager", "DM_MessageManager",
+            "DM_Messages", "DM_MessageCount",
+            "MessagesManager", "MessageManager"
+        ];
+        for (var i = 0; i < wsCandidates.length; i++) {
+            var k = wsCandidates[i];
+            report.workspace.candidates[k] = ProbeMember(ws, k);
+        }
+    }
+
+    // MessagesManager probes — the real target.
+    var mm = null;
+    try {
+        if (ws) mm = ws.DM_MessagesManager();
+        report.manager.available = !!mm;
+    } catch (e) {
+        report.manager.note = "ws.DM_MessagesManager() threw: " + (e.message || e);
+    }
+    if (mm) {
+        // Everything we might use to get a count or iterate the list.
+        var mmCandidates = [
+            "DM_MessageCount", "DM_Count", "Count", "MessageCount",
+            "DM_Messages", "DM_Message", "Messages", "Message",
+            "DM_GetMessage", "GetMessage", "Item",
+            "DM_MessageIterator", "MessageIterator",
+            "DM_Clear", "Clear"
+        ];
+        for (var j = 0; j < mmCandidates.length; j++) {
+            var key = mmCandidates[j];
+            report.manager.candidates[key] = ProbeMember(mm, key);
+        }
+
+        // Try each count-like accessor and, if it returns a number > 0,
+        // attempt to fetch the first message through each plausible list
+        // accessor so we can see the MESSAGE object's shape too.
+        var countNames = ["DM_MessageCount", "DM_Count", "Count", "MessageCount"];
+        var listNames  = ["DM_Messages", "DM_Message", "Messages", "Item", "DM_GetMessage", "GetMessage"];
+        for (var ci = 0; ci < countNames.length && report.sample === null; ci++) {
+            var cn = countNames[ci];
+            var count = null;
+            try { count = mm[cn](); } catch (_) { continue; }
+            if (typeof count !== "number" || count <= 0) continue;
+            for (var li = 0; li < listNames.length; li++) {
+                var ln = listNames[li];
+                var first = null;
+                try { first = mm[ln](0); } catch (_) { continue; }
+                if (!first) continue;
+                report.sample = {
+                    countAccessor: cn,
+                    countValue: count,
+                    listAccessor: ln,
+                    messageShape: ProbeMessageShape(first)
+                };
+                break;
+            }
+        }
+
+        // `for...in` rarely enumerates COM object methods, but it costs
+        // nothing to try; some DXP-hosted objects do surface keys.
+        try {
+            for (var k2 in mm) {
+                report.forInKeys.push(String(k2));
+                if (report.forInKeys.length > 200) break;
+            }
+        } catch (_) { /* ignore */ }
+    }
+
+    return report;
+}
+
+function ProbeMember(obj, name) {
+    var t = "missing";
+    try { t = typeof obj[name]; } catch (_) { t = "threw"; }
+    var callable = false;
+    if (t === "function") {
+        callable = true;
+    } else if (t !== "undefined" && t !== "missing" && t !== "threw") {
+        callable = false; // it's a plain property
+    }
+    var out = { type: t, callable: callable };
+    // If it looks like a zero-arg method, try calling it and note the return type.
+    if (callable) {
+        try {
+            var v = obj[name]();
+            out.returns = typeof v;
+            if (typeof v === "number") out.value = v;
+        } catch (e) {
+            out.callThrew = (e.message || String(e));
+        }
+    }
+    return out;
+}
+
+function ProbeMessageShape(msg) {
+    // Try reading the usual per-message accessors to see which exist.
+    var accessors = [
+        "DM_Class", "DM_Document", "DM_Source", "DM_Text", "DM_Time",
+        "DM_Severity", "DM_Level", "DM_Type", "DM_Kind",
+        "Class", "Document", "Source", "Text", "Time", "Severity"
+    ];
+    var shape = {};
+    for (var i = 0; i < accessors.length; i++) {
+        shape[accessors[i]] = ProbeMember(msg, accessors[i]);
+    }
+    return shape;
 }
 
 function LevelRank(level) {

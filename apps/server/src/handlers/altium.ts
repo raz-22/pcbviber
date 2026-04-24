@@ -148,6 +148,13 @@ export async function adGetMessages(
   return relay.execute("get_messages", params, 15_000);
 }
 
+export async function adDebugIntrospectMessages(
+  relay: AdRelay
+): Promise<unknown> {
+  requireConnected(relay);
+  return relay.execute("debug_introspect_messages", {}, 15_000);
+}
+
 // ─── Screenshot — server-side, no AD relay involvement ────────────────
 // Uses a PowerShell one-shot that drives System.Drawing + user32.dll to
 // capture either the Altium Designer main window or the whole virtual
