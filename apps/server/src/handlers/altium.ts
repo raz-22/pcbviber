@@ -10,9 +10,19 @@
  * that's the contract in ad-script/AltiumRelay.js.
  */
 
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdRelay } from "../ad-relay/relay.js";
 import type {
   OpenProjectParams,
+  NewProjectParams,
+  SaveProjectParams,
+  ListDocumentsParams,
+  GetMessagesParams,
+  ScreenshotParams,
   CompileProjectParams,
   RunDrcParams,
   AnnotateSchematicParams,
@@ -20,6 +30,8 @@ import type {
   AutoPlaceParams,
   AutoRouteParams,
 } from "@altium-mcp/shared";
+
+const execAsync = promisify(exec);
 
 function requireConnected(relay: AdRelay): void {
   const s = relay.status();
@@ -48,6 +60,14 @@ export async function adOpenProject(
 ): Promise<unknown> {
   requireConnected(relay);
   return relay.execute("open_project", params, 30_000);
+}
+
+export async function adNewProject(
+  relay: AdRelay,
+  params: NewProjectParams
+): Promise<unknown> {
+  requireConnected(relay);
+  return relay.execute("new_project", params, 60_000);
 }
 
 export async function adCompileProject(
@@ -100,4 +120,153 @@ export async function adAutoRoute(
 
 export function adStatus(relay: AdRelay) {
   return relay.status();
+}
+
+export async function adSaveProject(
+  relay: AdRelay,
+  params: SaveProjectParams
+): Promise<unknown> {
+  requireConnected(relay);
+  return relay.execute("save_project", params, 30_000);
+}
+
+export async function adListDocuments(
+  relay: AdRelay,
+  params: ListDocumentsParams
+): Promise<unknown> {
+  requireConnected(relay);
+  return relay.execute("list_documents", params, 15_000);
+}
+
+export async function adGetMessages(
+  relay: AdRelay,
+  params: GetMessagesParams
+): Promise<unknown> {
+  requireConnected(relay);
+  return relay.execute("get_messages", params, 15_000);
+}
+
+// ─── Screenshot — server-side, no AD relay involvement ────────────────
+// Uses a PowerShell one-shot that drives System.Drawing + user32.dll to
+// capture either the Altium Designer main window or the whole virtual
+// desktop. Returns an MCP content array containing a base64-encoded PNG
+// so Claude (or any image-capable client) can actually SEE the result.
+
+export async function adScreenshot(
+  params: ScreenshotParams
+): Promise<{
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+}> {
+  const tmp = await mkdtemp(join(tmpdir(), "pcbviber-"));
+  const pngPath = join(tmp, "ad.png");
+
+  const ps = buildScreenshotPowerShell({
+    outPath: pngPath,
+    target: params.target,
+    maxWidth: params.maxWidth,
+  });
+
+  try {
+    const { stderr } = await execAsync(
+      `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -`,
+      { input: ps, timeout: 20_000, maxBuffer: 10 * 1024 * 1024 } as never
+    );
+    const stderrStr = stderr ? String(stderr) : "";
+    if (stderrStr && stderrStr.trim()) {
+      // PowerShell wrote to stderr — usually harmless verbose output,
+      // but surface it in the response text so errors aren't silent.
+      // fall through to read the file; if it doesn't exist readFile throws.
+    }
+    const png = await readFile(pngPath);
+    const base64 = png.toString("base64");
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Captured ${params.target} screenshot (${png.byteLength} bytes PNG, base64 ${base64.length} chars). Saved to ${pngPath}.`,
+        },
+        {
+          type: "image",
+          data: base64,
+          mimeType: "image/png",
+        },
+      ],
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Screenshot failed (${params.target}): ${msg}. ` +
+        `PowerShell must be available and Altium Designer's main window detectable.`
+    );
+  } finally {
+    // Clean up the temp dir after we've loaded the file.
+    rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function buildScreenshotPowerShell(opts: {
+  outPath: string;
+  target: "window" | "fullscreen";
+  maxWidth: number;
+}): string {
+  const { outPath, target, maxWidth } = opts;
+  // Escape single quotes in outPath for safe PowerShell embedding.
+  const safeOut = outPath.replace(/'/g, "''");
+  const findAdWindow = `
+$ad = Get-Process | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle -match 'Altium Designer' } | Select-Object -First 1
+if (-not $ad) { throw 'Altium Designer main window not found.' }
+`;
+  const captureWindow = `
+${findAdWindow}
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class Win {
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+}
+'@
+[Win]::ShowWindow($ad.MainWindowHandle, 9) | Out-Null  # SW_RESTORE
+[Win]::SetForegroundWindow($ad.MainWindowHandle) | Out-Null
+Start-Sleep -Milliseconds 300
+$r = New-Object Win+RECT
+[Win]::GetWindowRect($ad.MainWindowHandle, [ref]$r) | Out-Null
+$w = $r.Right - $r.Left
+$h = $r.Bottom - $r.Top
+if ($w -le 0 -or $h -le 0) { throw 'AD window has no size (minimized?).' }
+$bmp = New-Object System.Drawing.Bitmap $w, $h
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
+`;
+  const captureFullscreen = `
+$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bmp = New-Object System.Drawing.Bitmap $vs.Width, $vs.Height
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($vs.Left, $vs.Top, 0, 0, $bmp.Size)
+`;
+  return `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+${target === "window" ? captureWindow : captureFullscreen}
+
+# Downscale to maxWidth if needed.
+$maxW = ${maxWidth}
+if ($bmp.Width -gt $maxW) {
+  $ratio = $maxW / $bmp.Width
+  $newH = [int]($bmp.Height * $ratio)
+  $scaled = New-Object System.Drawing.Bitmap $maxW, $newH
+  $sg = [System.Drawing.Graphics]::FromImage($scaled)
+  $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $sg.DrawImage($bmp, 0, 0, $maxW, $newH)
+  $bmp.Dispose()
+  $bmp = $scaled
+}
+$bmp.Save('${safeOut}', [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+`;
 }

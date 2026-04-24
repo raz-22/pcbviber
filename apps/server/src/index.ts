@@ -65,10 +65,10 @@ function parseTransport(): "stdio" | "http" {
 
 export function buildMcpServer(nexar: NexarService, relay: AdRelay): McpServer {
   const server = new McpServer({
-    name: "altium-mcp-server",
-    version: "0.2.0",
+    name: "pcbviber",
+    version: "0.3.0",
     description:
-      "MCP server for Altium 365 and Altium Designer. Tools for component search, project management, BOM analysis, manufacturing output generation, and desktop command & control of Altium Designer via a relay.",
+      "PCBviber — an MCP server for Altium Designer + Altium 365 + Octopart. Tools for component search, project management, BOM analysis, manufacturing output generation, and live command & control of Altium Designer (including visual feedback via screenshots).",
   });
   registerComponentTools(server, nexar);
   registerProjectTools(server, nexar);
@@ -88,7 +88,7 @@ async function main() {
     const stdio = new StdioServerTransport();
     await server.connect(stdio);
     console.error(
-      "Altium MCP server running on stdio. Note: ad_* tools require --transport=http " +
+      "PCBviber running on stdio. Note: ad_* tools require --transport=http " +
         "so AltiumRelay.js inside AD can poll /ad-relay/next."
     );
     return;

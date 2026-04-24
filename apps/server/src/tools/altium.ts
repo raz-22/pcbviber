@@ -12,6 +12,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   OpenProjectParams,
+  NewProjectParams,
+  SaveProjectParams,
+  ListDocumentsParams,
+  GetMessagesParams,
+  ScreenshotParams,
   CompileProjectParams,
   RunDrcParams,
   AnnotateSchematicParams,
@@ -50,6 +55,51 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
     "Open an Altium Designer project (.PrjPcb / .PrjSch) from disk. The project becomes the active one.",
     OpenProjectParams.shape,
     async (args) => toMcpResponse(() => h.adOpenProject(relay, args))
+  );
+
+  server.tool(
+    "ad_new_project",
+    "[EXPERIMENTAL] Create a new empty PCB project at the given path, optionally with a blank schematic document. Parent directories are auto-created. Useful for setting up minimal test projects.",
+    NewProjectParams.shape,
+    async (args) => toMcpResponse(() => h.adNewProject(relay, args))
+  );
+
+  server.tool(
+    "ad_save_project",
+    "Save the active (or specified) project to disk. Returns the saved path.",
+    SaveProjectParams.shape,
+    async (args) => toMcpResponse(() => h.adSaveProject(relay, args))
+  );
+
+  server.tool(
+    "ad_list_documents",
+    "List the source documents (schematics, PCB, OutJobs, scripts) of the active (or specified) project, including each document's file path and kind.",
+    ListDocumentsParams.shape,
+    async (args) => toMcpResponse(() => h.adListDocuments(relay, args))
+  );
+
+  server.tool(
+    "ad_get_messages",
+    "Return the current contents of Altium's Messages panel as structured entries (class, document, source, message, time) with severity counts. Supports filtering by min severity and source. Does NOT re-run any build.",
+    GetMessagesParams.shape,
+    async (args) => toMcpResponse(() => h.adGetMessages(relay, args))
+  );
+
+  server.tool(
+    "ad_screenshot",
+    "Capture a PNG screenshot of Altium Designer's main window (default) or the full virtual desktop. Returns the image inline so it can be viewed. Runs locally via PowerShell; does NOT require the AD relay.",
+    ScreenshotParams.shape,
+    async (args) => {
+      try {
+        return await h.adScreenshot(args);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    }
   );
 
   server.tool(

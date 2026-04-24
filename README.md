@@ -1,7 +1,12 @@
-# Altium MCP
+# PCBviber
 
-MCP (Model Context Protocol) server for Altium 365 + Octopart, plus a browser
-UI for engineers who'd rather click than prompt.
+MCP (Model Context Protocol) server for **live command & control of Altium
+Designer**, plus Altium 365 + Octopart supply data, plus a browser UI for
+engineers who'd rather click than prompt.
+
+Connect Claude (or any MCP client) and it can see your Altium window, read
+the Messages panel, open/save projects, run compile / DRC, generate
+manufacturing outputs, and more — all in natural language.
 
 ## Monorepo layout
 
@@ -79,11 +84,28 @@ Stubbed (Phase 2, see [SPEC.md](SPEC.md)): `get_project_bom`,
 `analyze_bom_cost`, `export_manufacturing_data`, `run_drc_summary`,
 `check_production_readiness`, `get_project_details`, `create_project`.
 
-Desktop command & control (Phase 3, requires AD24 running with
-`ad-script/AltiumRelay.js` loaded): `ad_ping`, `ad_status`,
-`ad_get_active_project`, `ad_open_project`, `ad_compile_project`,
-`ad_run_drc`, `ad_annotate_schematic`, `ad_generate_outputs`,
-`ad_auto_place`, `ad_auto_route`. See [ad-script/README.md](ad-script/README.md).
+Desktop command & control (requires AD 24 running with
+`ad-script/AltiumRelay.js` loaded):
+
+| Tool | What it does |
+|---|---|
+| `ad_ping` | Smoke test. Round-trips AD's version string. |
+| `ad_status` | Relay diagnostics. Safe to call without AD. |
+| `ad_screenshot` | **PNG of Altium's window** — Claude actually sees the pixels. Server-side via PowerShell; no relay needed. |
+| `ad_get_active_project` | Current project's path, name, documents. |
+| `ad_list_documents` | Enumerate schematic / PCB / OutJob / script documents. |
+| `ad_get_messages` | Read the Messages panel as structured data. Filter by severity + source. |
+| `ad_open_project` | Open a `.PrjPcb` / `.PrjSch` by path. |
+| `ad_new_project` | Create a fresh PCB project (+ optional blank schematic). |
+| `ad_save_project` | Save the active or named project. |
+| `ad_compile_project` | Compile + return ERC messages. |
+| `ad_run_drc` | Trigger the DRC on the active PCB. |
+| `ad_annotate_schematic` | Silent annotation with configurable order. |
+| `ad_generate_outputs` | Run an OutJob. |
+| `ad_auto_place` / `ad_auto_route` | Altium's built-in auto-placement / Situs auto-router. |
+
+See [ad-script/README.md](ad-script/README.md) for installing the
+in-Altium half of the relay.
 
 ## Architecture
 

@@ -14,6 +14,10 @@ export const AdMethod = z.enum([
   "ping",
   "get_active_project",
   "open_project",
+  "new_project",
+  "save_project",
+  "list_documents",
+  "get_messages",
   "compile_project",
   "run_drc",
   "annotate_schematic",
@@ -56,6 +60,54 @@ export const OpenProjectParams = z.object({
   path: z.string().min(1).describe("Full path to .PrjPcb / .PrjSch file"),
 });
 export type OpenProjectParams = z.infer<typeof OpenProjectParams>;
+
+export const NewProjectParams = z.object({
+  projectPath: z
+    .string()
+    .min(1)
+    .describe("Full path where the .PrjPcb will be saved (parent dirs auto-created)"),
+  addSchematic: z
+    .boolean()
+    .default(true)
+    .describe("Also create and save an empty .SchDoc as a project source document"),
+});
+export type NewProjectParams = z.infer<typeof NewProjectParams>;
+
+export const SaveProjectParams = z.object({
+  projectPath: z
+    .string()
+    .optional()
+    .describe("Project path; omit to save the active project"),
+});
+export type SaveProjectParams = z.infer<typeof SaveProjectParams>;
+
+export const ListDocumentsParams = z.object({
+  projectPath: z.string().optional().describe("Omit for the active project"),
+});
+export type ListDocumentsParams = z.infer<typeof ListDocumentsParams>;
+
+export const GetMessagesParams = z.object({
+  /** Max number of messages to return (most recent first). */
+  limit: z.coerce.number().int().min(1).max(1000).default(200),
+  /** Lowest severity to include. */
+  minLevel: z
+    .enum(["info", "warning", "error", "fatal"])
+    .default("info"),
+  /** Optionally filter by source panel, e.g. "Compiler", "DRC". */
+  source: z.string().optional(),
+});
+export type GetMessagesParams = z.infer<typeof GetMessagesParams>;
+
+export const ScreenshotParams = z.object({
+  /**
+   * 'window' captures just Altium Designer's main window (default).
+   * 'fullscreen' captures the whole virtual desktop.
+   */
+  target: z.enum(["window", "fullscreen"]).default("window"),
+  /** Maximum width in pixels; height scales to preserve aspect ratio. */
+  maxWidth: z.coerce.number().int().min(100).max(4000).default(1600),
+});
+export type ScreenshotParams = z.infer<typeof ScreenshotParams>;
 
 export const CompileProjectParams = z.object({
   projectPath: z

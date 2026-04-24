@@ -198,6 +198,23 @@ export async function startHttpServer(opts: {
     }
   });
 
+  app.post("/api/ad/new-project", async (req, reply) => {
+    const body = req.body as { projectPath?: string; addSchematic?: boolean };
+    if (!body?.projectPath) {
+      reply.code(400);
+      return { error: "projectPath required" };
+    }
+    try {
+      return await altium.adNewProject(relay, {
+        projectPath: body.projectPath,
+        addSchematic: body.addSchematic !== false,
+      });
+    } catch (err) {
+      reply.code(502);
+      return { error: (err as Error).message };
+    }
+  });
+
   await app.listen({ host, port });
   app.log.info(`Altium MCP HTTP + REST BFF listening on http://${host}:${port}`);
   return app;

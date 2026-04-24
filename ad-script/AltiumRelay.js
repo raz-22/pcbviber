@@ -128,6 +128,10 @@ function Dispatch(cmd) {
         case "ping":               return CmdPing(cmd.params);
         case "get_active_project": return CmdGetActiveProject(cmd.params);
         case "open_project":       return CmdOpenProject(cmd.params);
+        case "new_project":        return CmdNewProject(cmd.params);
+        case "save_project":       return CmdSaveProject(cmd.params);
+        case "list_documents":     return CmdListDocuments(cmd.params);
+        case "get_messages":       return CmdGetMessages(cmd.params);
         case "compile_project":    return CmdCompileProject(cmd.params);
         case "run_drc":            return CmdRunDrc(cmd.params);
         case "annotate_schematic": return CmdAnnotateSchematic(cmd.params);
@@ -189,13 +193,270 @@ function CmdOpenProject(params) {
     return { opened: params.path };
 }
 
+function CmdNewProject(params) {
+    // [EXPERIMENTAL] Create a new PCB project via the WorkspaceManager
+    // NewProject process, then save-as to the requested path. Optionally
+    // create + save an empty .SchDoc as a source document.
+    //
+    // AD's WorkspaceManager:NewProject API accepts parameters via the
+    // global ResetParameters / AddStringParameter mechanism. The exact
+    // parameter names vary across AD builds; we pass several known
+    // aliases defensively.
+    RequireString(params, "projectPath");
+    var projectPath = params.projectPath;
+    var addSchematic = (params.addSchematic !== false); // default true
+    var notes = [];
+
+    EnsureDirectoryFor(projectPath);
+
+    // 1. Create a new PCB project in memory.
+    ResetParametersAD();
+    TryAddStringParameter("NewProjectType", "PCB");
+    TryAddStringParameter("ProjectKind", "PCB");
+    TryAddStringParameter("ObjectKind", "PCB_Project");
+    Client.SendMessage("WorkspaceManager:NewProject", "", 512, Client.CurrentView);
+
+    var ws = GetWorkspace();
+    if (!ws) throw MakeError("No workspace available after NewProject.");
+    var proj = ws.DM_FocusedProject();
+    if (!proj) throw MakeError("NewProject ran but no focused project was found.");
+
+    // 2. Save-as to the requested path. Try the native DM method first,
+    //    fall back to the SendMessage form.
+    var savedProject = false;
+    try {
+        proj.DM_DoSaveAs(projectPath);
+        savedProject = true;
+    } catch (e1) {
+        try {
+            Client.SendMessage(
+                "WorkspaceManager:SaveProject",
+                "ObjectKind=Project|FileName=" + projectPath,
+                512, Client.CurrentView);
+            savedProject = true;
+        } catch (e2) {
+            notes.push("Project save fallbacks failed: "
+                + (e1.message || e1) + " / " + (e2.message || e2));
+        }
+    }
+
+    // 3. Optionally create + save a blank schematic as a project source doc.
+    var schematicPath = null;
+    if (addSchematic) {
+        ResetParametersAD();
+        TryAddStringParameter("ObjectKind", "Schematic");
+        TryAddStringParameter("NewDocumentType", "Schematic");
+        Client.SendMessage("WorkspaceManager:NewDocument", "", 512, Client.CurrentView);
+
+        schematicPath = DeriveSchematicPath(projectPath);
+        try {
+            Client.SendMessage(
+                "Sch:DocumentSaveAs",
+                "ObjectKind=Schematic|FileName=" + schematicPath,
+                512, Client.CurrentView);
+        } catch (e) {
+            notes.push("Schematic save failed: " + (e.message || e));
+            schematicPath = null;
+        }
+
+        // Re-save the project so the new doc is recorded in membership.
+        try {
+            Client.SendMessage("Project:Save", "", 512, Client.CurrentView);
+        } catch (_) { /* best-effort */ }
+    }
+
+    var out = {
+        projectPath: projectPath,
+        schematicPath: schematicPath,
+        savedProject: savedProject
+    };
+    if (notes.length) out.note = notes.join("; ");
+    return out;
+}
+
+function CmdSaveProject(params) {
+    // [DOCUMENTED] Save via the DM method on the focused project, falling
+    // back to Client.SendMessage("Project:Save", ...).
+    var ws = GetWorkspace();
+    if (!ws) throw MakeError("No workspace available.");
+
+    var proj = null;
+    if (params && params.projectPath) {
+        proj = FindProjectByPath(ws, params.projectPath);
+        if (!proj) throw MakeError("Project not open in workspace: " + params.projectPath);
+    } else {
+        proj = ws.DM_FocusedProject();
+        if (!proj) throw MakeError("No focused project to save.");
+    }
+
+    try {
+        proj.DM_DoSave();
+        return {
+            saved: true,
+            path: SafeStr(function () { return proj.DM_ProjectFullPath(); })
+        };
+    } catch (e1) {
+        try {
+            Client.SendMessage("Project:Save", "", 512, Client.CurrentView);
+            return {
+                saved: true,
+                path: SafeStr(function () { return proj.DM_ProjectFullPath(); }),
+                note: "Saved via SendMessage fallback: " + (e1.message || e1)
+            };
+        } catch (e2) {
+            throw MakeError(
+                "Project save failed: " + (e1.message || e1) + " / " + (e2.message || e2));
+        }
+    }
+}
+
+function CmdListDocuments(params) {
+    // [DOCUMENTED] Walk DM_LogicalDocuments on the focused (or named) project.
+    var ws = GetWorkspace();
+    if (!ws) throw MakeError("No workspace available.");
+
+    var proj = null;
+    if (params && params.projectPath) {
+        proj = FindProjectByPath(ws, params.projectPath);
+        if (!proj) throw MakeError("Project not open in workspace: " + params.projectPath);
+    } else {
+        proj = ws.DM_FocusedProject();
+        if (!proj) return { hasProject: false, count: 0, documents: [] };
+    }
+
+    var docs = [];
+    var count = 0;
+    try { count = proj.DM_LogicalDocumentCount(); } catch (_) { count = 0; }
+    for (var i = 0; i < count; i++) {
+        var d;
+        try { d = proj.DM_LogicalDocuments(i); } catch (_) { continue; }
+        if (!d) continue;
+        docs.push({
+            path: SafeStr(function () { return d.DM_FullPath(); }),
+            kind: SafeStr(function () { return d.DM_DocumentKind(); })
+        });
+    }
+    return {
+        hasProject: true,
+        projectName: SafeStr(function () { return proj.DM_ProjectFileName(); }),
+        projectPath: SafeStr(function () { return proj.DM_ProjectFullPath(); }),
+        count: docs.length,
+        documents: docs
+    };
+}
+
+function CmdGetMessages(params) {
+    // [DOCUMENTED] Read-only snapshot of the Messages panel, with optional
+    // filters. Does NOT clear the panel. Callers driving compile/DRC should
+    // use those dedicated commands, which clear the panel first.
+    var limit = 200;
+    var minLevel = "info";
+    var sourceFilter = "";
+    if (params) {
+        if (params.limit !== undefined && params.limit !== null)
+            limit = Number(params.limit) || 200;
+        if (params.minLevel) minLevel = String(params.minLevel).toLowerCase();
+        if (params.source) sourceFilter = String(params.source);
+    }
+    var minRank = LevelRank(minLevel);
+
+    var enumerated = EnumerateMessages();
+    var filtered = [];
+    for (var i = 0; i < enumerated.messages.length; i++) {
+        var m = enumerated.messages[i];
+        if (ClassRank(m.class) < minRank) continue;
+        if (sourceFilter && String(m.source).indexOf(sourceFilter) < 0) continue;
+        filtered.push(m);
+    }
+    // Most-recent-first ordering (per the shared schema comment).
+    filtered.reverse();
+    if (filtered.length > limit) filtered = filtered.slice(0, limit);
+
+    var out = {
+        messages: filtered,
+        returned: filtered.length,
+        total: enumerated.messages.length,
+        counts: enumerated.counts
+    };
+    if (enumerated.note) out.note = enumerated.note;
+    return out;
+}
+
+function LevelRank(level) {
+    if (level === "fatal")   return 3;
+    if (level === "error")   return 2;
+    if (level === "warning") return 1;
+    return 0; // info / hint / status / anything else
+}
+
+function ClassRank(cls) {
+    var c = (cls || "").toLowerCase();
+    if (c.indexOf("fatal")   >= 0) return 3;
+    if (c.indexOf("error")   >= 0) return 2;
+    if (c.indexOf("warning") >= 0) return 1;
+    return 0;
+}
+
+function FindProjectByPath(ws, path) {
+    var target = String(path).toLowerCase();
+    try {
+        var n = ws.DM_ProjectCount();
+        for (var i = 0; i < n; i++) {
+            var p;
+            try { p = ws.DM_Projects(i); } catch (_) { continue; }
+            if (!p) continue;
+            var pp = SafeStr(function () { return p.DM_ProjectFullPath(); }).toLowerCase();
+            if (pp === target) return p;
+        }
+    } catch (_) { /* fall through to null */ }
+    return null;
+}
+
+function DeriveSchematicPath(projectPath) {
+    // Replace .PrjPcb (case-insensitive) with .SchDoc; if no match, append.
+    var re = /\.PrjPcb$/i;
+    if (re.test(projectPath)) return projectPath.replace(re, ".SchDoc");
+    return projectPath + ".SchDoc";
+}
+
+function TryAddStringParameter(key, value) {
+    // AddStringParameter is a global from AD's script environment.
+    try { AddStringParameter(key, value); } catch (_) { /* older AD / wrong key */ }
+}
+
+function EnsureDirectoryFor(filePath) {
+    try {
+        var fso = new ActiveXObject("Scripting.FileSystemObject");
+        var parentDir = fso.GetParentFolderName(filePath);
+        EnsureFolderRecursive(fso, parentDir);
+    } catch (_) { /* best-effort — AD will error on save if the dir is really missing */ }
+}
+
+function EnsureFolderRecursive(fso, dir) {
+    if (!dir) return;
+    if (fso.FolderExists(dir)) return;
+    var parent = fso.GetParentFolderName(dir);
+    if (parent && parent !== dir) EnsureFolderRecursive(fso, parent);
+    try { fso.CreateFolder(dir); } catch (_) { /* race or perms */ }
+}
+
 function CmdCompileProject(_params) {
     // [DOCUMENTED] Project:Compile compiles the focused project.
+    // We clear the Messages panel first so we only return ERC output
+    // from THIS compile, not leftover entries from earlier runs.
     ResetParametersAD();
+    ClearMessages();
     Client.SendMessage("Project:Compile", "", 512, Client.CurrentView);
     // AD compile is synchronous from the script's perspective — when
-    // SendMessage returns, compile is done.
-    return { compiled: true, note: "Check AD Messages panel for ERC results." };
+    // SendMessage returns, compile is done and the Messages panel is populated.
+    var enumerated = EnumerateMessages();
+    var result = {
+        compiled: true,
+        messages: enumerated.messages,
+        counts: enumerated.counts
+    };
+    if (enumerated.note) result.note = enumerated.note;
+    return result;
 }
 
 function CmdRunDrc(params) {
@@ -322,6 +583,83 @@ function Sleep(ms) {
 
 function ResetParametersAD() {
     try { ResetParameters(); } catch (_) { /* older AD only */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Messages panel integration
+//
+// AD surfaces ERC / DRC / compile output through GetWorkspace().DM_MessagesManager.
+// The interface uses DelphiScript-style DM_ prefixes and is callable from
+// the DXP JScript engine as methods (not properties).
+//
+// This helper is defensive: the DM_ API shape varies slightly across AD
+// builds, so we feature-detect each accessor and fall back to an empty
+// result with a diagnostic note if enumeration fails. Callers should
+// always check `result.note` to see whether enumeration actually worked.
+// ─────────────────────────────────────────────────────────────────────
+
+function ClearMessages() {
+    // Best-effort — if the command isn't available, we just skip the clear
+    // and the caller will get mixed old+new messages back.
+    try {
+        Client.SendMessage("System:ClearMessages", "", 512, Client.CurrentView);
+    } catch (_) {
+        try {
+            Client.SendMessage("Workspace:ClearMessages", "", 512, Client.CurrentView);
+        } catch (__) { /* ignore */ }
+    }
+}
+
+function EnumerateMessages() {
+    var out = { messages: [], counts: { error: 0, warning: 0, info: 0, fatal: 0, other: 0 } };
+    var mm = null;
+    try {
+        var ws = GetWorkspace();
+        if (!ws) { out.note = "No workspace available for message enumeration."; return out; }
+        mm = ws.DM_MessagesManager();
+    } catch (e) {
+        out.note = "DM_MessagesManager unavailable: " + (e.message || e);
+        return out;
+    }
+    if (!mm) { out.note = "DM_MessagesManager returned null."; return out; }
+
+    var count = 0;
+    try { count = mm.DM_MessageCount(); }
+    catch (e) {
+        out.note = "DM_MessageCount unavailable: " + (e.message || e);
+        return out;
+    }
+
+    for (var i = 0; i < count; i++) {
+        var msg;
+        try { msg = mm.DM_Messages(i); } catch (_) { continue; }
+        if (!msg) continue;
+
+        var entry = {
+            class:    SafeStr(function () { return msg.DM_Class(); }),
+            document: SafeStr(function () { return msg.DM_Document(); }),
+            source:   SafeStr(function () { return msg.DM_Source(); }),
+            message:  SafeStr(function () { return msg.DM_Text(); }),
+            time:     SafeStr(function () { return msg.DM_Time(); })
+        };
+        out.messages.push(entry);
+
+        var cls = (entry.class || "").toLowerCase();
+        if (cls.indexOf("fatal") >= 0)        out.counts.fatal++;
+        else if (cls.indexOf("error") >= 0)   out.counts.error++;
+        else if (cls.indexOf("warning") >= 0) out.counts.warning++;
+        else if (cls.indexOf("info") >= 0 || cls.indexOf("hint") >= 0 || cls.indexOf("status") >= 0)
+            out.counts.info++;
+        else                                  out.counts.other++;
+    }
+    return out;
+}
+
+function SafeStr(fn) {
+    try {
+        var v = fn();
+        return (v === null || v === undefined) ? "" : String(v);
+    } catch (_) { return ""; }
 }
 
 // ─────────────────────────────────────────────────────────────────────
