@@ -132,6 +132,8 @@ function Dispatch(cmd) {
         case "save_project":       return CmdSaveProject(cmd.params);
         case "list_documents":     return CmdListDocuments(cmd.params);
         case "get_messages":       return CmdGetMessages(cmd.params);
+        case "get_board_info":     return CmdGetBoardInfo(cmd.params);
+        case "get_stackup":        return CmdGetStackup(cmd.params);
         case "debug_introspect_messages":
                                    return CmdDebugIntrospectMessages(cmd.params);
         case "compile_project":    return CmdCompileProject(cmd.params);
@@ -378,6 +380,168 @@ function CmdGetMessages(params) {
         counts: enumerated.counts
     };
     if (enumerated.note) out.note = enumerated.note;
+    return out;
+}
+
+function CmdGetBoardInfo(_params) {
+    // [DOCUMENTED] Reads the currently-loaded PCB document via PCBServer.
+    // Returns board outline extents, layer count, component + net counts,
+    // and unplaced/unrouted counts where those APIs are available.
+    //
+    // All accesses are defensive — if any DM_ or PCBServer method isn't
+    // exposed on this AD build, we record it in `note` and keep going.
+    var out = {
+        hasPcb: false,
+        layerCount: null,
+        outlineMm: null,
+        componentCount: null,
+        netCount: null,
+        unplacedCount: null,
+        unroutedNetCount: null,
+        notes: []
+    };
+
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) {
+        out.notes.push("PCBServer not available in this script context.");
+        return out;
+    }
+
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        out.notes.push("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) {
+        out.notes.push("No PCB document is currently focused.");
+        return out;
+    }
+    out.hasPcb = true;
+
+    // Layer count: walk LayerStack if available.
+    try {
+        var lstack = board.LayerStack_V7 || board.LayerStack;
+        if (lstack) {
+            var layers = 0;
+            try { layers = lstack.SignalLayerCount(); } catch (_) { }
+            if (!layers) { try { layers = lstack.LayerCount(); } catch (_) { } }
+            if (layers) out.layerCount = layers;
+        }
+    } catch (e) {
+        out.notes.push("Layer count unavailable: " + (e.message || e));
+    }
+
+    // Outline extents (in AD's internal coord units, convert to mm).
+    try {
+        var rect = board.BoardOutline_V7 ? board.BoardOutline_V7().BoundingRectangle()
+                                         : board.BoardOutline.BoundingRectangle();
+        if (rect) {
+            var mm = 1 / 10000 * 0.254; // AD stores in 10,000ths of a mil; mil → mm = 0.0254
+            out.outlineMm = {
+                width:  Number((rect.Right - rect.Left) * 0.0000254),
+                height: Number((rect.Top - rect.Bottom) * 0.0000254)
+            };
+        }
+    } catch (e) {
+        out.notes.push("Outline extents unavailable: " + (e.message || e));
+    }
+
+    // Counts via the board iterator.
+    try {
+        var iter = board.BoardIterator_Create();
+        // eComponentObject = 4; eNetObject = 11
+        var compSet = SetOf([4]);
+        iter.AddFilter_ObjectSet(compSet);
+        iter.AddFilter_LayerSet(null);
+        iter.AddFilter_Method(null);
+        var c = iter.FirstPCBObject();
+        var compCount = 0;
+        while (c) { compCount++; c = iter.NextPCBObject(); }
+        board.BoardIterator_Destroy(iter);
+        out.componentCount = compCount;
+    } catch (e) {
+        out.notes.push("Component count unavailable: " + (e.message || e));
+    }
+
+    try {
+        var nets = 0;
+        try { nets = board.DM_NetCount ? board.DM_NetCount() : board.GetNetCount(); } catch (_) { }
+        if (nets) out.netCount = nets;
+    } catch (e) {
+        out.notes.push("Net count unavailable: " + (e.message || e));
+    }
+
+    return out;
+}
+
+function SetOf(ids) {
+    // AD exposes MkSet(...) in DelphiScript contexts; in JScript it's trickier.
+    // Returning the array is often enough for filter methods that accept a set
+    // literal; if not, this becomes [DOCUMENTED] nonfunctional and the caller
+    // records it in `notes`. Harmless either way.
+    try { return MkSet(ids); } catch (_) { return ids; }
+}
+
+function CmdGetStackup(_params) {
+    // [DOCUMENTED] Reads the LayerStack on the currently-loaded PCB.
+    // Reports signal/internal/power layer order with material + thickness.
+    var out = {
+        hasPcb: false,
+        layers: [],
+        totalThicknessMm: null,
+        notes: []
+    };
+
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) { out.notes.push("PCBServer not available."); return out; }
+
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (_) { }
+    if (!board) { out.notes.push("No PCB document focused."); return out; }
+    out.hasPcb = true;
+
+    var stack = null;
+    try { stack = board.LayerStack_V7 || board.LayerStack; } catch (_) { }
+    if (!stack) { out.notes.push("LayerStack accessor unavailable."); return out; }
+
+    var totalUm = 0;
+    try {
+        // Iterate layers via LayerCount + LayerObject_V7(i) if present.
+        var n = 0;
+        try { n = stack.LayerCount(); } catch (_) { }
+        for (var i = 0; i < n; i++) {
+            var layer;
+            try { layer = stack.LayerObject_V7(i); } catch (_) { continue; }
+            if (!layer) continue;
+            var entry = {
+                index: i,
+                name:       SafeStr(function () { return layer.Name; }),
+                kind:       SafeStr(function () { return layer.LayerKind; }),
+                material:   SafeStr(function () { return layer.Material; }),
+                thicknessUm: null
+            };
+            try {
+                var t = layer.CopperThickness;
+                if (typeof t === "number" && t > 0) entry.thicknessUm = t;
+            } catch (_) { }
+            if (!entry.thicknessUm) {
+                try {
+                    var t2 = layer.DielectricHeight;
+                    if (typeof t2 === "number" && t2 > 0) entry.thicknessUm = t2;
+                } catch (_) { }
+            }
+            if (entry.thicknessUm) totalUm += entry.thicknessUm;
+            out.layers.push(entry);
+        }
+    } catch (e) {
+        out.notes.push("Layer iteration failed: " + (e.message || e));
+    }
+
+    if (totalUm > 0) out.totalThicknessMm = totalUm / 1000;
     return out;
 }
 

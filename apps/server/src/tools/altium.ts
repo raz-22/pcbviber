@@ -16,6 +16,9 @@ import {
   SaveProjectParams,
   ListDocumentsParams,
   GetMessagesParams,
+  GetBoardInfoParams,
+  GetStackupParams,
+  AuditProjectParams,
   ScreenshotParams,
   TailLogParams,
   SelfTestParams,
@@ -92,6 +95,27 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
     "List the source documents (schematics, PCB, OutJobs, scripts) of the active (or specified) project, including each document's file path and kind.",
     ListDocumentsParams.shape,
     async (args) => toMcpResponse(() => h.adListDocuments(relay, args))
+  );
+
+  server.tool(
+    "ad_get_board_info",
+    "Read the currently-focused PCB document and return layer count, board outline dimensions in mm, component count, and net count. Read-only.",
+    GetBoardInfoParams.shape,
+    async (args) => toMcpResponse(() => h.adGetBoardInfo(relay, args))
+  );
+
+  server.tool(
+    "ad_get_stackup",
+    "Return the PCB's layer stack: ordered layers with name, kind (signal/plane/dielectric/solder-mask), material, and thickness. Total stack-up thickness is computed in mm.",
+    GetStackupParams.shape,
+    async (args) => toMcpResponse(() => h.adGetStackup(relay, args))
+  );
+
+  server.tool(
+    "pcbviber_audit_project",
+    "Audit the current PCB project against the 9-stage professional design flow. Calls the safe read-only AD tools in parallel, maps findings to stages (infrastructure → components → schematic → layout → rules → placement → routing → verification → manufacturing docs), and returns completion status + prioritized next actions. Use this to understand where a half-built project stands and what to do next. Does not modify the project.",
+    AuditProjectParams.shape,
+    async (args) => toMcpResponse(() => h.pcbviberAuditProject(relay, args))
   );
 
   server.tool(

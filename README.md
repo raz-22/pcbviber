@@ -107,6 +107,57 @@ Desktop command & control (requires AD 24 running with
 See [ad-script/README.md](ad-script/README.md) for installing the
 in-Altium half of the relay.
 
+## Professional PCB design flow (MCP prompts)
+
+PCBviber ships three MCP **prompts** that turn the ad-hoc tool
+inventory into a disciplined professional workflow. An MCP client (like
+Claude Code) surfaces these as slash-commands.
+
+| Prompt | Use when |
+|---|---|
+| `pcb_design_flow` | Starting a new PCB from scratch. Guides through all 9 stages: project infrastructure → managed components → schematic → physical setup → rules → placement → routing → verification → manufacturing docs. Accepts `project_name`, `board_type`, `target_layers`, `target_quantity`. |
+| `pcb_project_audit` | Assessing a half-built project. Calls `pcbviber_audit_project`, interprets results, produces a prioritized fix list. Accepts a `focus` parameter (`all` / `layout` / `electrical` / `manufacturability`). |
+| `pcb_dfm_review` | Final production-readiness gate. Runs the DFM checklist: fiducials, solder-mask sliver, thermal relief, silkscreen clearance, etc. Accepts `fab_capabilities` for numeric thresholds. |
+
+### Audit tool
+
+`pcbviber_audit_project` — the analyzer under `pcb_project_audit` — is
+also available as a standalone tool. It calls all the read-only AD tools
+in parallel, maps findings against the 9-stage flow, and returns:
+
+```
+{
+  summary: { hasProject, projectPath, completedStages, totalStages, nextAction },
+  stages:  [ { stage, name, status, observations, recommendations } × 9 ],
+  raw:     { activeProject, documents, boardInfo, stackup, messages }
+}
+```
+
+Stage statuses: `done`, `in_progress`, `pending`, `blocked`, `unknown`.
+An `unknown` stage means PCBviber can't introspect that AD capability yet
+— it's not a silent "everything's fine."
+
+## Roadmap — capability gaps
+
+PCBviber today covers stages 1, 2, 3 (partial), 4, 6 (partial), 9
+(partial) of the pro flow. These are the Phase-4 gaps, in rough
+priority order:
+
+- **Messages panel enumeration** — `DM_MessageCount` is unavailable on
+  AD 24; use `ad_debug_introspect_messages` against live AD to find
+  the real API shape, then patch.
+- **Design rules introspection + CRUD** — read and edit constraints
+  via a script API.
+- **DRC violation enumeration** — walk PCBServer.GetCurrentPCBBoard()
+  for `eViolationObject` entries.
+- **xSignals / length tuning** — no scripting surface currently known.
+- **Variant Manager** — read/write Variant definitions.
+- **Draftsman document generation** — likely scriptable via OutJob,
+  needs verification.
+- **Signal/Power Integrity simulation** — SI panel + Power Analyzer
+  have limited script surface; may require GUI automation.
+- **Ansys EDB export** — extension-dependent; investigation needed.
+
 ## Architecture
 
 ```

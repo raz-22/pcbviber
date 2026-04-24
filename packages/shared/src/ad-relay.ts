@@ -18,6 +18,8 @@ export const AdMethod = z.enum([
   "save_project",
   "list_documents",
   "get_messages",
+  "get_board_info",
+  "get_stackup",
   "debug_introspect_messages",
   "compile_project",
   "run_drc",
@@ -111,6 +113,23 @@ export const SelfTestParams = z.object({
   logLines: z.coerce.number().int().min(1).max(200).default(30),
 });
 export type SelfTestParams = z.infer<typeof SelfTestParams>;
+
+export const GetBoardInfoParams = z.object({
+  projectPath: z.string().optional().describe("Omit for the active project"),
+});
+export type GetBoardInfoParams = z.infer<typeof GetBoardInfoParams>;
+
+export const GetStackupParams = z.object({
+  projectPath: z.string().optional().describe("Omit for the active project"),
+});
+export type GetStackupParams = z.infer<typeof GetStackupParams>;
+
+export const AuditProjectParams = z.object({
+  projectPath: z.string().optional(),
+  /** Include a window screenshot in the audit bundle (slower, larger). */
+  includeScreenshot: z.boolean().default(false),
+});
+export type AuditProjectParams = z.infer<typeof AuditProjectParams>;
 
 export const ScreenshotParams = z.object({
   /**

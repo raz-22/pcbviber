@@ -19,6 +19,7 @@ import { registerComponentTools } from "./tools/components.js";
 import { registerProjectTools } from "./tools/projects.js";
 import { registerManufacturingTools } from "./tools/manufacturing.js";
 import { registerAltiumTools } from "./tools/altium.js";
+import { registerPcbFlowPrompts } from "./prompts/pcb-flow.js";
 import { startHttpServer } from "./http.js";
 import { AdRelay } from "./ad-relay/relay.js";
 import type { AltiumConfig } from "@altium-mcp/shared";
@@ -74,6 +75,7 @@ export function buildMcpServer(nexar: NexarService, relay: AdRelay): McpServer {
   registerProjectTools(server, nexar);
   registerManufacturingTools(server, nexar);
   registerAltiumTools(server, relay);
+  registerPcbFlowPrompts(server);
   return server;
 }
 
