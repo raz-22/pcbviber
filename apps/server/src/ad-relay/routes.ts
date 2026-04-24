@@ -10,10 +10,14 @@ import type { AdRelay } from "./relay.js";
  * server with HTTP transport.
  */
 export function registerAdRelayRoutes(app: FastifyInstance, relay: AdRelay) {
-  // AD → server: long-poll for the next command.
-  // Returns 204 if no command arrives within the poll window (AD re-polls).
+  // AD → server: poll for the next command.
+  //
+  // IMPORTANT: this does NOT long-poll. AD's script runtime is single-
+  // threaded and blocks the UI for the duration of each sync HTTP call.
+  // We return 204 immediately if the queue is empty; the AD side polls
+  // every ~500ms, keeping UI frozen only during the brief request itself.
   app.get("/ad-relay/next", async (_req, reply) => {
-    const cmd = await relay.nextCommand(25_000);
+    const cmd = await relay.nextCommand(0);
     if (!cmd) {
       reply.code(204);
       return null;

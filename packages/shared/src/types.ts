@@ -107,4 +107,10 @@ export interface AltiumConfig {
   altium365WorkspaceUrl?: string;
   /** For Requirements & Systems Portal REST API */
   restApiToken?: string;
+  /**
+   * Optional pre-obtained Nexar access token. When set, the server uses it
+   * directly and skips client_credentials auth. Useful for testing against
+   * a user account whose app quota is 0. Tokens typically expire in ~24h.
+   */
+  nexarAccessToken?: string;
 }

@@ -12,6 +12,16 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   OpenProjectParams,
+  NewProjectParams,
+  SaveProjectParams,
+  ListDocumentsParams,
+  GetMessagesParams,
+  GetBoardInfoParams,
+  GetStackupParams,
+  AuditProjectParams,
+  ScreenshotParams,
+  TailLogParams,
+  SelfTestParams,
   CompileProjectParams,
   RunDrcParams,
   AnnotateSchematicParams,
@@ -39,6 +49,20 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
   );
 
   server.tool(
+    "ad_tail_log",
+    "Return the last N lines of the AltiumRelay script log (%TEMP%\\AltiumRelay.log). Useful for debugging relay behavior without having to SSH to the machine running AD. Does NOT require AD to be connected.",
+    TailLogParams.shape,
+    async (args) => toMcpResponse(async () => h.adTailLog(args))
+  );
+
+  server.tool(
+    "pcbviber_selftest",
+    "Run a full diagnostic: server version, relay status, live ad_ping (with latency), active project, and a tail of the AD-side log. Single call — everything you need to know whether PCBviber is healthy end-to-end. Skips AD-side calls gracefully if the relay is disconnected so the report always returns fast.",
+    SelfTestParams.shape,
+    async (args) => toMcpResponse(async () => h.pcbviberSelftest(relay, args))
+  );
+
+  server.tool(
     "ad_get_active_project",
     "Returns metadata about the project currently open and focused in Altium Designer: path, name, loaded documents, and active document.",
     {},
@@ -50,6 +74,79 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
     "Open an Altium Designer project (.PrjPcb / .PrjSch) from disk. The project becomes the active one.",
     OpenProjectParams.shape,
     async (args) => toMcpResponse(() => h.adOpenProject(relay, args))
+  );
+
+  server.tool(
+    "ad_new_project",
+    "[EXPERIMENTAL] Create a new empty PCB project at the given path, optionally with a blank schematic document. Parent directories are auto-created. Useful for setting up minimal test projects.",
+    NewProjectParams.shape,
+    async (args) => toMcpResponse(() => h.adNewProject(relay, args))
+  );
+
+  server.tool(
+    "ad_save_project",
+    "Save the active (or specified) project to disk. Returns the saved path.",
+    SaveProjectParams.shape,
+    async (args) => toMcpResponse(() => h.adSaveProject(relay, args))
+  );
+
+  server.tool(
+    "ad_list_documents",
+    "List the source documents (schematics, PCB, OutJobs, scripts) of the active (or specified) project, including each document's file path and kind.",
+    ListDocumentsParams.shape,
+    async (args) => toMcpResponse(() => h.adListDocuments(relay, args))
+  );
+
+  server.tool(
+    "ad_get_board_info",
+    "Read the currently-focused PCB document and return layer count, board outline dimensions in mm, component count, and net count. Read-only.",
+    GetBoardInfoParams.shape,
+    async (args) => toMcpResponse(() => h.adGetBoardInfo(relay, args))
+  );
+
+  server.tool(
+    "ad_get_stackup",
+    "Return the PCB's layer stack: ordered layers with name, kind (signal/plane/dielectric/solder-mask), material, and thickness. Total stack-up thickness is computed in mm.",
+    GetStackupParams.shape,
+    async (args) => toMcpResponse(() => h.adGetStackup(relay, args))
+  );
+
+  server.tool(
+    "pcbviber_audit_project",
+    "Audit the current PCB project against the 9-stage professional design flow. Calls the safe read-only AD tools in parallel, maps findings to stages (infrastructure → components → schematic → layout → rules → placement → routing → verification → manufacturing docs), and returns completion status + prioritized next actions. Use this to understand where a half-built project stands and what to do next. Does not modify the project.",
+    AuditProjectParams.shape,
+    async (args) => toMcpResponse(() => h.pcbviberAuditProject(relay, args))
+  );
+
+  server.tool(
+    "ad_get_messages",
+    "Return the current contents of Altium's Messages panel as structured entries (class, document, source, message, time) with severity counts. Supports filtering by min severity and source. Does NOT re-run any build.",
+    GetMessagesParams.shape,
+    async (args) => toMcpResponse(() => h.adGetMessages(relay, args))
+  );
+
+  server.tool(
+    "ad_debug_introspect_messages",
+    "[DIAGNOSTIC] Probe the live DM_MessagesManager object for accessor names (count methods, iteration methods, per-message fields). Use when ad_get_messages reports that DM_MessageCount / DM_Messages are unavailable — the report shows which accessors this AD build actually exposes so EnumerateMessages can be patched to match. Read-only.",
+    {},
+    async () => toMcpResponse(() => h.adDebugIntrospectMessages(relay))
+  );
+
+  server.tool(
+    "ad_screenshot",
+    "Capture a PNG screenshot of Altium Designer's main window (default) or the full virtual desktop. Returns the image inline so it can be viewed. Runs locally via PowerShell; does NOT require the AD relay.",
+    ScreenshotParams.shape,
+    async (args) => {
+      try {
+        return await h.adScreenshot(args);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    }
   );
 
   server.tool(

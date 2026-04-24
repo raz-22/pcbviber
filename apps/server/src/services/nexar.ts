@@ -31,6 +31,12 @@ export class NexarService {
   // ── Auth ──────────────────────────────────────────────
 
   private async authenticate(): Promise<string> {
+    // Dev override: pre-obtained user access token (bypasses client_credentials).
+    // Useful when the Nexar application's own quota is 0 but the user has entitlements.
+    if (this.config.nexarAccessToken) {
+      return this.config.nexarAccessToken;
+    }
+
     const now = Date.now();
     if (this.accessToken && now < this.tokenExpiresAt - 30_000) {
       return this.accessToken;
