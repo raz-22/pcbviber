@@ -183,3 +183,119 @@ test("getUser returns null for unknown ids", async () => {
   const auth = new LocalAuthProvider();
   assert.equal(await auth.getUser("nonexistent-id"), null);
 });
+
+// ─── Review additions — PR #3 second-pass coverage ────────────────────
+
+test("verifySession returns null after the user is deleted", async () => {
+  resetRevocation();
+  const auth = new LocalAuthProvider();
+  const { user, session } = await auth.signup({
+    email: "gets-deleted@acme.test",
+    password: "correct-horse-battery-staple",
+  });
+  // Sanity: verify works before the delete.
+  assert.ok(await auth.verifySession(session.sealed));
+
+  await prisma.user.delete({ where: { id: user.id } });
+
+  // Session token is still cryptographically valid, but the user row
+  // is gone — must resolve to null so middleware can force a re-login.
+  assert.equal(await auth.verifySession(session.sealed), null);
+});
+
+test("login with an empty password rejects as invalid_credentials (not 'password_too_weak')", async () => {
+  // Login should never leak weak-password info — only signup validates.
+  resetRevocation();
+  const auth = new LocalAuthProvider();
+  await auth.signup({
+    email: "emptypw@acme.test",
+    password: "correct-horse-battery-staple",
+  });
+  await assert.rejects(
+    () => auth.login({ email: "emptypw@acme.test", password: "" }),
+    (err: unknown) =>
+      err instanceof AuthError && err.code === "invalid_credentials"
+  );
+});
+
+test("login with non-@ email rejects as invalid_credentials (no trace of the normalizer)", async () => {
+  resetRevocation();
+  const auth = new LocalAuthProvider();
+  await assert.rejects(
+    () => auth.login({ email: "not-an-email", password: "whatever-long-enough" }),
+    (err: unknown) =>
+      err instanceof AuthError && err.code === "invalid_credentials"
+  );
+});
+
+test("timing: login with unknown email takes comparable time to login with known email", async () => {
+  resetRevocation();
+  const auth = new LocalAuthProvider();
+  const pw = "correct-horse-battery-staple";
+  await auth.signup({ email: "timing-known@acme.test", password: pw });
+
+  // Warm caches — measure AFTER a dry run so first-call overhead is gone.
+  await auth.login({ email: "timing-known@acme.test", password: pw }).catch(() => {});
+  await auth
+    .login({ email: "timing-unknown@acme.test", password: pw })
+    .catch(() => {});
+
+  const N = 3;
+  let knownWrong = 0;
+  let unknown = 0;
+  for (let i = 0; i < N; i++) {
+    const t0 = performance.now();
+    await auth
+      .login({ email: "timing-known@acme.test", password: "wrong-long-enough" })
+      .catch(() => {});
+    knownWrong += performance.now() - t0;
+
+    const t1 = performance.now();
+    await auth
+      .login({ email: "timing-unknown@acme.test", password: "wrong-long-enough" })
+      .catch(() => {});
+    unknown += performance.now() - t1;
+  }
+  const ratio = unknown / knownWrong;
+  // Give generous slack for noisy CI: the dummy-hash path should be
+  // within 50%-200% of the real-user path. If it were 10x faster, we'd
+  // fail — that's the enumeration leak we're preventing.
+  assert.ok(
+    ratio > 0.3 && ratio < 3,
+    `dummy-hash timing drifted: unknown/knownWrong = ${ratio.toFixed(2)} ` +
+      `(knownWrong=${knownWrong.toFixed(1)}ms, unknown=${unknown.toFixed(1)}ms)`
+  );
+});
+
+test("a session token from issueSession survives round-trip via verifySession", async () => {
+  resetRevocation();
+  const auth = new LocalAuthProvider();
+  const { user } = await auth.signup({
+    email: "issue@acme.test",
+    password: "correct-horse-battery-staple",
+  });
+  // issueSession is used post-refresh in Sprint 3; confirm it produces
+  // tokens that verify without going through login.
+  const fresh = await auth.issueSession(user.id);
+  const verified = await auth.verifySession(fresh.sealed);
+  assert.ok(verified);
+  assert.equal(verified.id, user.id);
+});
+
+test("logout is idempotent (second logout on same session is a no-op)", async () => {
+  resetRevocation();
+  const auth = new LocalAuthProvider();
+  const { session } = await auth.signup({
+    email: "double-logout@acme.test",
+    password: "correct-horse-battery-staple",
+  });
+  await auth.logout(session.sealed);
+  await auth.logout(session.sealed); // must not throw
+  assert.equal(await auth.verifySession(session.sealed), null);
+});
+
+test("logout on a garbage token is a silent no-op (never throws)", async () => {
+  const auth = new LocalAuthProvider();
+  await auth.logout("not-a-real-token"); // must not throw
+  await auth.logout(""); // must not throw
+});

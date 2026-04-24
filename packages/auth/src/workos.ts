@@ -154,7 +154,11 @@ function toAuthUser(user: {
   };
 }
 
-function mapWorkOSError(err: unknown): AuthError {
+/**
+ * Classify a WorkOS SDK error into one of our stable AuthError codes.
+ * Exported so it can be unit-tested without a live WorkOS tenant.
+ */
+export function mapWorkOSError(err: unknown): AuthError {
   // WorkOS error structure varies — we collapse everything sensitive
   // into invalid_credentials or email_taken so we never leak specifics
   // to the client. Real error text lives in server logs.

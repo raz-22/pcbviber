@@ -233,3 +233,162 @@ test("deleting an actor User sets AuditLog.actorUserId to null (preserve history
   assert.equal(logs.length, 1);
   assert.equal(logs[0].actorUserId, null); // SetNull kept the row
 });
+
+// ─── Review additions — PR #3 second-pass coverage ────────────────────
+
+test("User.email unique constraint fires", async () => {
+  await prisma.user.create({ data: { email: "unique-email@acme.test" } });
+  await assert.rejects(
+    () => prisma.user.create({ data: { email: "unique-email@acme.test" } }),
+    /Unique constraint failed/i
+  );
+});
+
+test("User.workosUserId unique constraint fires (when non-null)", async () => {
+  await prisma.user.create({
+    data: { email: "ws1@acme.test", workosUserId: "workos_user_xyz" },
+  });
+  await assert.rejects(
+    () =>
+      prisma.user.create({
+        data: { email: "ws2@acme.test", workosUserId: "workos_user_xyz" },
+      }),
+    /Unique constraint failed/i
+  );
+});
+
+test("multiple users with null workosUserId are allowed", async () => {
+  // Two Local users should not conflict on workosUserId = NULL.
+  await prisma.user.create({ data: { email: "null-ws-1@acme.test" } });
+  await prisma.user.create({ data: { email: "null-ws-2@acme.test" } });
+  // If this throws, the migration wrongly treated NULL as a value.
+});
+
+test("deleting a User cascades to their Memberships", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgCascadeU", slug: "org-cascade-u" },
+  });
+  const user = await prisma.user.create({ data: { email: "cu@acme.test" } });
+  await prisma.membership.create({
+    data: { orgId: org.id, userId: user.id, role: "member" },
+  });
+
+  await prisma.user.delete({ where: { id: user.id } });
+
+  const memberships = await prisma.membership.findMany({
+    where: { userId: user.id },
+  });
+  assert.equal(memberships.length, 0);
+  // Org itself survives.
+  const stillThere = await prisma.organization.findUnique({ where: { id: org.id } });
+  assert.ok(stillThere);
+});
+
+test("deleting a User sets UsageEvent.userId to null (preserve usage history)", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgUsage", slug: "org-usage" },
+  });
+  const user = await prisma.user.create({ data: { email: "ue@acme.test" } });
+  await prisma.usageEvent.create({
+    data: {
+      orgId: org.id,
+      userId: user.id,
+      tool: "search_parts",
+      metric: "bom_lookup",
+      idempotencyKey: "ue-" + randomBytes(6).toString("hex"),
+    },
+  });
+
+  await prisma.user.delete({ where: { id: user.id } });
+
+  const events = await prisma.usageEvent.findMany({ where: { orgId: org.id } });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].userId, null); // SetNull preserved the billing row
+});
+
+test("ApiKey.hashedKey unique constraint fires", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgApi", slug: "org-api" },
+  });
+  await prisma.apiKey.create({
+    data: {
+      orgId: org.id,
+      name: "primary",
+      hashedKey: "sha256_deadbeef",
+      scopes: "tools:read",
+    },
+  });
+  await assert.rejects(
+    () =>
+      prisma.apiKey.create({
+        data: {
+          orgId: org.id,
+          name: "conflict",
+          hashedKey: "sha256_deadbeef",
+          scopes: "tools:read",
+        },
+      }),
+    /Unique constraint failed/i
+  );
+});
+
+test("Invite.token unique constraint fires", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgInv", slug: "org-inv" },
+  });
+  const token = "inv-" + randomBytes(16).toString("hex");
+  const expiresAt = new Date(Date.now() + 24 * 3600 * 1000);
+  await prisma.invite.create({
+    data: { orgId: org.id, email: "a@acme.test", role: "member", token, expiresAt },
+  });
+  await assert.rejects(
+    () =>
+      prisma.invite.create({
+        data: { orgId: org.id, email: "b@acme.test", role: "member", token, expiresAt },
+      }),
+    /Unique constraint failed/i
+  );
+});
+
+test("Subscription requires an existing Plan (FK)", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgSub", slug: "org-sub" },
+  });
+  await assert.rejects(
+    () =>
+      prisma.subscription.create({
+        data: {
+          orgId: org.id,
+          planId: "does-not-exist",
+          status: "trialing",
+        },
+      }),
+    /Foreign key constraint (failed|violated)/i
+  );
+});
+
+test("Subscription succeeds when the Plan exists", async () => {
+  const plan = await prisma.plan.create({
+    data: { name: "team-test", seatLimit: 20 },
+  });
+  const org = await prisma.organization.create({
+    data: { name: "OrgSub2", slug: "org-sub-2" },
+  });
+  const sub = await prisma.subscription.create({
+    data: { orgId: org.id, planId: plan.id, status: "trialing", seats: 3 },
+  });
+  assert.equal(sub.status, "trialing");
+  assert.equal(sub.seats, 3);
+});
+
+test("Workspace encrypted-only fields can be null (workspace without creds yet)", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "OrgNoCreds", slug: "org-no-creds" },
+  });
+  const ws = await prisma.workspace.create({
+    data: { orgId: org.id, altiumWorkspaceUrl: "https://placeholder.altium365.com" },
+  });
+  assert.equal(ws.nexarClientIdEnc, null);
+  assert.equal(ws.nexarClientSecretEnc, null);
+  assert.equal(ws.altiumRestTokenEnc, null);
+});
