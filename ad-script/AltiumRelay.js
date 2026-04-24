@@ -194,14 +194,17 @@ function CmdOpenProject(params) {
 }
 
 function CmdNewProject(params) {
-    // [EXPERIMENTAL] Create a new PCB project via the WorkspaceManager
-    // NewProject process, then save-as to the requested path. Optionally
-    // create + save an empty .SchDoc as a source document.
+    // [EXPERIMENTAL] Create a new PCB project by writing a minimal .PrjPcb
+    // text file to disk, then opening it. This avoids the WorkspaceManager
+    // NewProject process — that process pops a modal "select template"
+    // dialog which blocks AD's UI thread (and thus our polling loop) until
+    // the user dismisses it.
     //
-    // AD's WorkspaceManager:NewProject API accepts parameters via the
-    // global ResetParameters / AddStringParameter mechanism. The exact
-    // parameter names vary across AD builds; we pass several known
-    // aliases defensively.
+    // .PrjPcb is a plain INI-style text file, so we can hand-author a
+    // minimal empty-shell project that AD will open cleanly. The schematic
+    // option is currently a no-op because .SchDoc is binary OLE and can't
+    // be authored without AD's APIs — and every AD "new schematic" command
+    // we've tried either needs UI or doesn't persist silently.
     RequireString(params, "projectPath");
     var projectPath = params.projectPath;
     var addSchematic = (params.addSchematic !== false); // default true
@@ -209,69 +212,61 @@ function CmdNewProject(params) {
 
     EnsureDirectoryFor(projectPath);
 
-    // 1. Create a new PCB project in memory.
-    ResetParametersAD();
-    TryAddStringParameter("NewProjectType", "PCB");
-    TryAddStringParameter("ProjectKind", "PCB");
-    TryAddStringParameter("ObjectKind", "PCB_Project");
-    Client.SendMessage("WorkspaceManager:NewProject", "", 512, Client.CurrentView);
+    // 1. Write a minimal .PrjPcb shell to disk.
+    WriteMinimalPrjPcb(projectPath);
 
-    var ws = GetWorkspace();
-    if (!ws) throw MakeError("No workspace available after NewProject.");
-    var proj = ws.DM_FocusedProject();
-    if (!proj) throw MakeError("NewProject ran but no focused project was found.");
-
-    // 2. Save-as to the requested path. Try the native DM method first,
-    //    fall back to the SendMessage form.
-    var savedProject = false;
+    // 2. Open it in AD. OpenDocument is non-interactive for an existing
+    //    on-disk file, so this does not trigger any dialog.
     try {
-        proj.DM_DoSaveAs(projectPath);
-        savedProject = true;
+        Client.OpenDocument("PcbProject", projectPath);
     } catch (e1) {
+        // Some AD builds use "Project" as the kind instead of "PcbProject".
         try {
-            Client.SendMessage(
-                "WorkspaceManager:SaveProject",
-                "ObjectKind=Project|FileName=" + projectPath,
-                512, Client.CurrentView);
-            savedProject = true;
+            Client.OpenDocument("Project", projectPath);
         } catch (e2) {
-            notes.push("Project save fallbacks failed: "
+            throw MakeError("OpenDocument failed for both 'PcbProject' and 'Project': "
                 + (e1.message || e1) + " / " + (e2.message || e2));
         }
     }
 
-    // 3. Optionally create + save a blank schematic as a project source doc.
+    // 3. Schematic creation: unsupported in this path. Flag it clearly so
+    //    callers know they got an empty project. Compile on an empty
+    //    project will typically emit a "project has no documents" warning,
+    //    which is still useful for exercising the Messages enumeration.
     var schematicPath = null;
     if (addSchematic) {
-        ResetParametersAD();
-        TryAddStringParameter("ObjectKind", "Schematic");
-        TryAddStringParameter("NewDocumentType", "Schematic");
-        Client.SendMessage("WorkspaceManager:NewDocument", "", 512, Client.CurrentView);
-
-        schematicPath = DeriveSchematicPath(projectPath);
-        try {
-            Client.SendMessage(
-                "Sch:DocumentSaveAs",
-                "ObjectKind=Schematic|FileName=" + schematicPath,
-                512, Client.CurrentView);
-        } catch (e) {
-            notes.push("Schematic save failed: " + (e.message || e));
-            schematicPath = null;
-        }
-
-        // Re-save the project so the new doc is recorded in membership.
-        try {
-            Client.SendMessage("Project:Save", "", 512, Client.CurrentView);
-        } catch (_) { /* best-effort */ }
+        notes.push("addSchematic=true is not yet supported in the file-write path. "
+            + "Project was created without a schematic document. "
+            + "Add one manually in AD or extend CmdNewProject with a non-interactive "
+            + "schematic creation path.");
     }
 
-    var out = {
+    return {
         projectPath: projectPath,
         schematicPath: schematicPath,
-        savedProject: savedProject
+        savedProject: true,
+        note: notes.length ? notes.join("; ") : undefined
     };
-    if (notes.length) out.note = notes.join("; ");
-    return out;
+}
+
+function WriteMinimalPrjPcb(path) {
+    // Minimal empty-shell PCB project. AD 24 reads .PrjPcb as INI; these
+    // three sections are sufficient for it to open the project cleanly.
+    var content =
+        "[Design]\r\n" +
+        "Version=1.0\r\n" +
+        "HierarchyMode=0\r\n" +
+        "IsWorkspace=0\r\n" +
+        "\r\n" +
+        "[Documents]\r\n" +
+        "DocumentCount=0\r\n" +
+        "\r\n" +
+        "[Configurations]\r\n" +
+        "ConfigurationCount=0\r\n";
+    var fso = new ActiveXObject("Scripting.FileSystemObject");
+    var stream = fso.OpenTextFile(path, 2 /* ForWriting */, true /* create */);
+    stream.Write(content);
+    stream.Close();
 }
 
 function CmdSaveProject(params) {
@@ -364,7 +359,9 @@ function CmdGetMessages(params) {
     var filtered = [];
     for (var i = 0; i < enumerated.messages.length; i++) {
         var m = enumerated.messages[i];
-        if (ClassRank(m.class) < minRank) continue;
+        // NOTE: AD's DXP script engine treats `class` as a reserved word,
+        // so `m.class` fails to parse. Bracket access sidesteps the check.
+        if (ClassRank(m["class"]) < minRank) continue;
         if (sourceFilter && String(m.source).indexOf(sourceFilter) < 0) continue;
         filtered.push(m);
     }
@@ -612,39 +609,43 @@ function ClearMessages() {
 
 function EnumerateMessages() {
     var out = { messages: [], counts: { error: 0, warning: 0, info: 0, fatal: 0, other: 0 } };
-    var mm = null;
-    try {
-        var ws = GetWorkspace();
-        if (!ws) { out.note = "No workspace available for message enumeration."; return out; }
-        mm = ws.DM_MessagesManager();
-    } catch (e) {
-        out.note = "DM_MessagesManager unavailable: " + (e.message || e);
+    var mm = ResolveMessagesManager();
+    if (!mm.manager) { out.note = mm.note; return out; }
+    var manager = mm.manager;
+
+    var strat = SelectMessageAccessors(manager);
+    if (!strat) {
+        out.note = "DM_MessagesManager acquired via " + mm.via
+            + " but no known count accessor worked. Tried: "
+            + "DM_MessageCount()/prop, MessageCount()/prop, Count()/prop, Length. "
+            + "Extend SelectMessageAccessors() with the correct names for this AD build.";
         return out;
     }
-    if (!mm) { out.note = "DM_MessagesManager returned null."; return out; }
 
     var count = 0;
-    try { count = mm.DM_MessageCount(); }
+    try { count = strat.count(manager); }
     catch (e) {
-        out.note = "DM_MessageCount unavailable: " + (e.message || e);
+        out.note = "Count read failed via '" + strat.name + "': " + (e.message || e);
         return out;
     }
 
     for (var i = 0; i < count; i++) {
-        var msg;
-        try { msg = mm.DM_Messages(i); } catch (_) { continue; }
+        var msg = null;
+        try { msg = strat.item(manager, i); } catch (_) { continue; }
         if (!msg) continue;
 
         var entry = {
-            class:    SafeStr(function () { return msg.DM_Class(); }),
-            document: SafeStr(function () { return msg.DM_Document(); }),
-            source:   SafeStr(function () { return msg.DM_Source(); }),
-            message:  SafeStr(function () { return msg.DM_Text(); }),
-            time:     SafeStr(function () { return msg.DM_Time(); })
+            // Quote reserved words as object keys — AD's DXP script parser
+            // rejects `class:` but accepts `"class":`.
+            "class":  ReadFieldFlex(msg, ["DM_Class",    "Class"]),
+            document: ReadFieldFlex(msg, ["DM_Document", "Document"]),
+            source:   ReadFieldFlex(msg, ["DM_Source",   "Source"]),
+            message:  ReadFieldFlex(msg, ["DM_Text",     "Text", "Message"]),
+            time:     ReadFieldFlex(msg, ["DM_Time",     "Time"])
         };
         out.messages.push(entry);
 
-        var cls = (entry.class || "").toLowerCase();
+        var cls = (entry["class"] || "").toLowerCase();
         if (cls.indexOf("fatal") >= 0)        out.counts.fatal++;
         else if (cls.indexOf("error") >= 0)   out.counts.error++;
         else if (cls.indexOf("warning") >= 0) out.counts.warning++;
@@ -652,7 +653,78 @@ function EnumerateMessages() {
             out.counts.info++;
         else                                  out.counts.other++;
     }
+    out.accessor = strat.name;
     return out;
+}
+
+function ResolveMessagesManager() {
+    // AD's DM_MessagesManager may be exposed as a method call, a property,
+    // or via a top-level helper depending on the build. Try each in order
+    // and record which path succeeded for diagnostics.
+    var ws = null;
+    try { ws = GetWorkspace(); }
+    catch (e) { return { note: "GetWorkspace threw: " + (e.message || e) }; }
+    if (!ws) return { note: "GetWorkspace returned null." };
+
+    try { var m = ws.DM_MessagesManager(); if (m) return { manager: m, via: "ws.DM_MessagesManager()" }; } catch (_) {}
+    try { var m2 = ws.DM_MessagesManager;   if (m2) return { manager: m2, via: "ws.DM_MessagesManager (prop)" }; } catch (_) {}
+    try { var m3 = GetMessagesManager();    if (m3) return { manager: m3, via: "GetMessagesManager()" }; } catch (_) {}
+
+    return { note: "No DM_MessagesManager accessor found (tried method, property, global helper)." };
+}
+
+function SelectMessageAccessors(mm) {
+    // Probe common count+item pairings. The first count call that returns
+    // a non-negative number wins. We avoid actually fetching an item so an
+    // empty-but-valid manager doesn't fail the probe.
+    var candidates = [
+        { name: "DM_MessageCount() / DM_Messages(i)",
+          count: function (m) { return m.DM_MessageCount(); },
+          item:  function (m, i) { return m.DM_Messages(i); } },
+        { name: "DM_MessageCount (prop) / DM_Messages(i)",
+          count: function (m) { return m.DM_MessageCount; },
+          item:  function (m, i) { return m.DM_Messages(i); } },
+        { name: "MessageCount() / Messages(i)",
+          count: function (m) { return m.MessageCount(); },
+          item:  function (m, i) { return m.Messages(i); } },
+        { name: "MessageCount (prop) / Messages(i)",
+          count: function (m) { return m.MessageCount; },
+          item:  function (m, i) { return m.Messages(i); } },
+        { name: "Count() / Item(i)",
+          count: function (m) { return m.Count(); },
+          item:  function (m, i) { return m.Item(i); } },
+        { name: "Count (prop) / Item(i)",
+          count: function (m) { return m.Count; },
+          item:  function (m, i) { return m.Item(i); } },
+        { name: "Length (prop) / [i]",
+          count: function (m) { return m.Length; },
+          item:  function (m, i) { return m[i]; } }
+    ];
+    for (var k = 0; k < candidates.length; k++) {
+        try {
+            var n = candidates[k].count(mm);
+            if (typeof n === "number" && !isNaN(n) && n >= 0) return candidates[k];
+        } catch (_) { /* try next */ }
+    }
+    return null;
+}
+
+function ReadFieldFlex(obj, names) {
+    // Try each name as method first, then as property. Returns "" if none hit.
+    for (var i = 0; i < names.length; i++) {
+        var n = names[i];
+        try {
+            if (typeof obj[n] === "function") {
+                var v = obj[n]();
+                if (v !== undefined && v !== null) return String(v);
+            }
+        } catch (_) { /* try next form */ }
+        try {
+            var p = obj[n];
+            if (typeof p !== "function" && p !== undefined && p !== null) return String(p);
+        } catch (_) { /* try next name */ }
+    }
+    return "";
 }
 
 function SafeStr(fn) {

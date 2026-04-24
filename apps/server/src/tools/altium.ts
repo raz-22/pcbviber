@@ -17,6 +17,8 @@ import {
   ListDocumentsParams,
   GetMessagesParams,
   ScreenshotParams,
+  TailLogParams,
+  SelfTestParams,
   CompileProjectParams,
   RunDrcParams,
   AnnotateSchematicParams,
@@ -41,6 +43,20 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
     "Relay connection diagnostics. Shows whether Altium Designer is polling, recent command stats, and queue depth. Does NOT require AD to be connected.",
     {},
     async () => toMcpResponse(async () => h.adStatus(relay))
+  );
+
+  server.tool(
+    "ad_tail_log",
+    "Return the last N lines of the AltiumRelay script log (%TEMP%\\AltiumRelay.log). Useful for debugging relay behavior without having to SSH to the machine running AD. Does NOT require AD to be connected.",
+    TailLogParams.shape,
+    async (args) => toMcpResponse(async () => h.adTailLog(args))
+  );
+
+  server.tool(
+    "pcbviber_selftest",
+    "Run a full diagnostic: server version, relay status, live ad_ping (with latency), active project, and a tail of the AD-side log. Single call — everything you need to know whether PCBviber is healthy end-to-end. Skips AD-side calls gracefully if the relay is disconnected so the report always returns fast.",
+    SelfTestParams.shape,
+    async (args) => toMcpResponse(async () => h.pcbviberSelftest(relay, args))
   );
 
   server.tool(

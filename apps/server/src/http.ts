@@ -147,7 +147,12 @@ export async function startHttpServer(opts: {
     }
   });
 
-  app.get("/api/health", async () => ({ ok: true, version: "0.2.0" }));
+  app.get("/api/health", async () => ({
+    ok: true,
+    name: "pcbviber",
+    version: "0.3.0",
+    relay: relay.status().connected ? "connected" : "disconnected",
+  }));
 
   // ── REST wrappers for AD tools (no MCP protocol required) ────────
   // These call the same handlers the MCP tools use. Useful for curl,

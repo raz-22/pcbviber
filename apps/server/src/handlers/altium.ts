@@ -23,6 +23,8 @@ import type {
   ListDocumentsParams,
   GetMessagesParams,
   ScreenshotParams,
+  TailLogParams,
+  SelfTestParams,
   CompileProjectParams,
   RunDrcParams,
   AnnotateSchematicParams,
@@ -205,6 +207,84 @@ export async function adScreenshot(
     // Clean up the temp dir after we've loaded the file.
     rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+// ─── Self-test / diagnostics — for agents and humans alike ───────────
+// These bypass the AD relay where possible, so they always return
+// something useful even when AD has disconnected.
+
+export async function adTailLog(
+  params: TailLogParams
+): Promise<{ path: string; exists: boolean; lines: string[] }> {
+  const path = join(tmpdir(), "AltiumRelay.log");
+  try {
+    const contents = await readFile(path, "utf8");
+    const all = contents.split(/\r?\n/);
+    const nonEmpty = all[all.length - 1] === "" ? all.slice(0, -1) : all;
+    const tail = nonEmpty.slice(-params.lines);
+    return { path, exists: true, lines: tail };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { path, exists: false, lines: [] };
+    }
+    throw err;
+  }
+}
+
+export async function pcbviberSelftest(
+  relay: AdRelay,
+  params: SelfTestParams
+): Promise<{
+  server: { ok: true; version: string; name: string };
+  relay: ReturnType<AdRelay["status"]>;
+  ping:
+    | { ok: true; result: unknown; latencyMs: number }
+    | { ok: false; error: string };
+  activeProject:
+    | { ok: true; result: unknown }
+    | { ok: false; error: string };
+  log?: { path: string; exists: boolean; lines: string[] };
+}> {
+  const relayStatus = relay.status();
+
+  // Only actually ping/query AD if the relay says it's connected; otherwise
+  // we'd rack up timeouts and the report would take 10+ seconds.
+  let ping:
+    | { ok: true; result: unknown; latencyMs: number }
+    | { ok: false; error: string };
+  let activeProject:
+    | { ok: true; result: unknown }
+    | { ok: false; error: string };
+
+  if (relayStatus.connected) {
+    const t0 = Date.now();
+    try {
+      const result = await relay.execute("ping", {}, 5_000);
+      ping = { ok: true, result, latencyMs: Date.now() - t0 };
+    } catch (err) {
+      ping = { ok: false, error: (err as Error).message };
+    }
+    try {
+      const result = await relay.execute("get_active_project", {}, 10_000);
+      activeProject = { ok: true, result };
+    } catch (err) {
+      activeProject = { ok: false, error: (err as Error).message };
+    }
+  } else {
+    ping = { ok: false, error: "relay not connected; skipped" };
+    activeProject = { ok: false, error: "relay not connected; skipped" };
+  }
+
+  const out: Awaited<ReturnType<typeof pcbviberSelftest>> = {
+    server: { ok: true, name: "pcbviber", version: "0.3.0" },
+    relay: relayStatus,
+    ping,
+    activeProject,
+  };
+  if (params.includeLog) {
+    out.log = await adTailLog({ lines: params.logLines } as TailLogParams);
+  }
+  return out;
 }
 
 function buildScreenshotPowerShell(opts: {

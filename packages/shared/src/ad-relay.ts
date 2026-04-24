@@ -98,6 +98,19 @@ export const GetMessagesParams = z.object({
 });
 export type GetMessagesParams = z.infer<typeof GetMessagesParams>;
 
+export const TailLogParams = z.object({
+  lines: z.coerce.number().int().min(1).max(1000).default(40),
+});
+export type TailLogParams = z.infer<typeof TailLogParams>;
+
+export const SelfTestParams = z.object({
+  /** Include a log tail in the result. */
+  includeLog: z.boolean().default(true),
+  /** If includeLog, how many trailing lines. */
+  logLines: z.coerce.number().int().min(1).max(200).default(30),
+});
+export type SelfTestParams = z.infer<typeof SelfTestParams>;
+
 export const ScreenshotParams = z.object({
   /**
    * 'window' captures just Altium Designer's main window (default).
