@@ -1,0 +1,198 @@
+// Altium-MCP tenant & billing schema.
+//
+// Per the internal design spec §2.4. The model is deliberately kept
+// narrow for Sprint 1 — only the tables Sprint 1 through Sprint 4 need.
+// Row-Level Security notes are in the package README; RLS is enabled
+// per-table via a migration hook in Sprint 2.
+//
+// Dev default is SQLite so the package builds without any external
+// service. Production points DATABASE_URL at Postgres 16 and re-runs
+// `prisma migrate deploy` — no schema changes required (SQLite-specific
+// types are avoided on purpose).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Tenancy ──────────────────────────────────────────────────────────
+
+model Organization {
+  id                 String         @id @default(cuid())
+  name               String
+  slug               String         @unique
+  billingCustomerId  String?        // Stripe customer id; set in Sprint 4
+  planId             String?
+  plan               Plan?          @relation(fields: [planId], references: [id])
+  createdAt          DateTime       @default(now())
+  deletedAt          DateTime?
+
+  memberships        Membership[]
+  workspaces         Workspace[]
+  apiKeys            ApiKey[]
+  subscriptions      Subscription[]
+  usageEvents        UsageEvent[]
+  invites            Invite[]
+  auditLogs          AuditLog[]
+
+  @@index([slug])
+  @@index([createdAt])
+}
+
+model User {
+  id              String       @id @default(cuid())
+  email           String       @unique
+  emailVerifiedAt DateTime?
+  workosUserId    String?      @unique
+  createdAt       DateTime     @default(now())
+
+  memberships     Membership[]
+  usageEvents     UsageEvent[]
+  auditLogs       AuditLog[]
+
+  @@index([email])
+}
+
+model Membership {
+  id        String       @id @default(cuid())
+  orgId     String
+  userId    String
+  role      String       // owner | admin | member | billing_only
+  createdAt DateTime     @default(now())
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([orgId])
+  @@index([userId])
+}
+
+// ─── Workspaces (per-tenant Nexar credentials, encrypted at rest) ─────
+
+model Workspace {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  altiumWorkspaceUrl    String?
+  nexarClientIdEnc      String?  // AES-256-GCM via CREDENTIAL_ENCRYPTION_KEY
+  nexarClientSecretEnc  String?
+  altiumRestTokenEnc    String?
+  createdAt             DateTime @default(now())
+
+  org                   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+// ─── API keys for the MCP transport ───────────────────────────────────
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  orgId      String
+  name       String
+  hashedKey  String    @unique  // sha256 of the plaintext; plaintext shown once at creation
+  scopes     String    // space-separated scope names; normalize later if needed
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([hashedKey])
+}
+
+// ─── Billing ──────────────────────────────────────────────────────────
+
+model Plan {
+  id                String @id @default(cuid())
+  name              String @unique   // starter | team | enterprise
+  stripeProductId   String?
+  seatPriceId       String?
+  meterBomPriceId   String?
+  meterCostPriceId  String?
+  meterExportPriceId String?
+  // Quotas stored as JSON-in-string for SQLite portability; migrate to Json on Postgres.
+  includedQuotas    String @default("{}")
+  seatLimit         Int    @default(0)
+
+  organizations     Organization[]
+  subscriptions     Subscription[]
+}
+
+model Subscription {
+  id                   String        @id @default(cuid())
+  orgId                String
+  stripeSubId          String?       @unique
+  planId               String
+  seats                Int           @default(1)
+  status               String        // trialing | active | past_due | canceled | suspended
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+
+  org                  Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan                 Plan          @relation(fields: [planId], references: [id])
+
+  @@index([orgId])
+  @@index([status])
+}
+
+model UsageEvent {
+  id              String   @id @default(cuid())
+  orgId           String
+  userId          String?
+  tool            String   // e.g. "search_parts"
+  metric          String   // e.g. "bom_lookup", "cost_analysis", "export"
+  quantity        Int      @default(1)
+  timestamp       DateTime @default(now())
+  idempotencyKey  String   @unique
+
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user            User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, timestamp])
+  @@index([tool])
+}
+
+// ─── Membership lifecycle ─────────────────────────────────────────────
+
+model Invite {
+  id         String    @id @default(cuid())
+  orgId      String
+  email      String
+  role       String
+  token      String    @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([email])
+}
+
+// ─── Audit log (append-only; exports in Sprint 7) ─────────────────────
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  orgId        String
+  actorUserId  String?
+  action       String   // signup | login | member.add | workspace.add | api_key.create | etc.
+  target       String?  // resource id / slug
+  ip           String?
+  userAgent    String?
+  metadata     String?  // JSON string
+  timestamp    DateTime @default(now())
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor        User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, timestamp])
+  @@index([action])
+}

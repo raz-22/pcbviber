@@ -1,0 +1,31 @@
+{
+  "name": "@altium-mcp/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "default": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "build": "prisma generate && tsc",
+    "generate": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "validate": "prisma validate",
+    "studio": "prisma studio",
+    "test": "node --test --experimental-test-coverage --test-reporter=spec build/**/*.test.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "prisma": "^5.22.0",
+    "typescript": "^5.7.0"
+  }
+}
