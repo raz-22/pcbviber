@@ -18,6 +18,7 @@ import { registerAuthRoutes } from "./auth/routes.js";
 import { registerOrgRoutes } from "./auth/org-routes.js";
 import { registerWorkspaceRoutes } from "./workspaces/routes.js";
 import { registerNexarRoutes } from "./workspaces/nexar-routes.js";
+import { registerMemberRoutes } from "./members/routes.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
@@ -70,6 +71,8 @@ export async function startHttpServer(opts: {
   // Library / Altium-365 query goes through factory.forWorkspace(...)
   // and is gated by org-membership + workspace-belongs-to-org.
   await registerNexarRoutes(app, authProvider, { nexarFactory });
+  // Members + invitations (Sprint 3 PR 3.1).
+  await registerMemberRoutes(app, authProvider);
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
