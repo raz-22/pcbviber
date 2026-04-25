@@ -57,6 +57,7 @@ export type CanAction =
   | "api_key.list"
   | "api_key.revoke"
   | "billing.checkout"
+  | "billing.portal_manage"
   | "tools.use";
 
 export interface Actor {
@@ -153,10 +154,11 @@ export function can(
       return actor.role === "owner" || actor.role === "admin";
 
     case "billing.checkout":
-      // Owner only. Picking a plan or seat count is an owner decision
-      // per spec §3.4 ("admin — no billing"). billing_only sees
-      // invoices once that's wired but doesn't initiate billing
-      // changes — view-only by definition.
+    case "billing.portal_manage":
+      // Owner only. Picking a plan / changing seats / cancelling /
+      // updating payment method are all owner decisions per spec
+      // §3.4 ("admin — no billing"). billing_only is view-only and
+      // gets a separate (future) action for invoice access.
       return actor.role === "owner";
 
     case "workspace.read":

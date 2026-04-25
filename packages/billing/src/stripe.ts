@@ -3,6 +3,8 @@ import type {
   BillingProvider,
   CheckoutSessionRequest,
   CheckoutSessionResult,
+  PortalSessionRequest,
+  PortalSessionResult,
   WebhookEvent,
 } from "./types.js";
 import { WebhookSignatureInvalid } from "./types.js";
@@ -75,6 +77,24 @@ export class StripeBillingProvider implements BillingProvider {
     }
 
     return { url: session.url, sessionId: session.id };
+  }
+
+  async createPortalSession(
+    input: PortalSessionRequest
+  ): Promise<PortalSessionResult> {
+    const session = await this.stripe.billingPortal.sessions.create({
+      customer: input.customerId,
+      return_url: input.returnUrl,
+      // Configuration: defaults to the Customer Portal config in the
+      // Stripe dashboard for the current account. To pin a specific
+      // configuration (e.g. block downgrades over seat cap, per spec
+      // §4.1), pass `configuration: <portal_config_id>`. Deferring
+      // until we have explicit per-plan rules to enforce.
+    });
+    if (!session.url) {
+      throw new Error("stripe_returned_no_url");
+    }
+    return { url: session.url };
   }
 
   verifyWebhook(rawBody: Buffer, signature: string): WebhookEvent {

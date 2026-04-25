@@ -44,6 +44,7 @@ test("billing_only cannot do ANY currently-defined action", () => {
     "api_key.list",
     "api_key.revoke",
     "billing.checkout",
+    "billing.portal_manage",
     "tools.use",
   ];
   for (const action of actions) {
@@ -320,6 +321,17 @@ test("billing.checkout: owner only — admin / member / billing_only denied", ()
   assert.equal(can(actor("admin"), "billing.checkout"), false);
   assert.equal(can(actor("member"), "billing.checkout"), false);
   assert.equal(can(actor("billing_only"), "billing.checkout"), false);
+});
+
+test("billing.portal_manage: owner only — same gating as billing.checkout", () => {
+  // The Customer Portal handles plan switches, seat changes, payment-
+  // method updates, and cancellation. All four are owner decisions;
+  // billing_only specifically does NOT get this action — view-only
+  // invoice access (when wired) is a separate action.
+  assert.equal(can(actor("owner"), "billing.portal_manage"), true);
+  assert.equal(can(actor("admin"), "billing.portal_manage"), false);
+  assert.equal(can(actor("member"), "billing.portal_manage"), false);
+  assert.equal(can(actor("billing_only"), "billing.portal_manage"), false);
 });
 
 // ─── tools.use ───────────────────────────────────────────────────────

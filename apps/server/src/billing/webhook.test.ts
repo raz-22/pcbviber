@@ -55,6 +55,9 @@ const stubBilling: BillingProvider = {
   createCheckoutSession: async () => {
     throw new Error("not used by webhook tests");
   },
+  createPortalSession: async () => {
+    throw new Error("not used by webhook tests");
+  },
   verifyWebhook: (_rawBody, _signature) => {
     if (capture.event === "invalid") {
       throw new WebhookSignatureInvalid("test invalid sig");

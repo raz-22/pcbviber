@@ -52,6 +52,27 @@ export interface CheckoutSessionResult {
 }
 
 /**
+ * Input to `createPortalSession`. The portal lets the user self-serve
+ * everything billing-related (plan switch, seat change, payment-method
+ * update, cancellation, invoice download) on Stripe-hosted pages. We
+ * just hand them a URL.
+ */
+export interface PortalSessionRequest {
+  /**
+   * Stripe customer id from a prior checkout. Required — the portal
+   * is for an existing customer; pre-checkout orgs can't reach it.
+   */
+  customerId: string;
+  /** Where Stripe sends the user when they click "Return to <site>". */
+  returnUrl: string;
+}
+
+export interface PortalSessionResult {
+  /** Stripe-hosted URL. Single-use (Stripe expires it after a few min). */
+  url: string;
+}
+
+/**
  * Provider-agnostic webhook event shape. Mirrors the small subset
  * of `Stripe.Event` the route + handlers actually read; the Stripe
  * implementation passes the SDK's event object through unchanged
@@ -82,6 +103,13 @@ export interface BillingProvider {
   /** Cheap synchronous check; routes use it to gate 503s. */
   isConfigured(): boolean;
   createCheckoutSession(input: CheckoutSessionRequest): Promise<CheckoutSessionResult>;
+  /**
+   * Returns a Stripe-hosted Customer Portal URL for the given
+   * customer. The portal handles plan switches, seat changes,
+   * payment-method updates, and cancellation; cancellations come
+   * back through `customer.subscription.deleted` webhooks.
+   */
+  createPortalSession(input: PortalSessionRequest): Promise<PortalSessionResult>;
   /**
    * Parses + verifies a webhook delivery. Throws
    * `WebhookSignatureInvalid` on bad signature; the route 400s.
