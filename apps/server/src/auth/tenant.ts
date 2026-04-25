@@ -45,6 +45,25 @@ declare module "fastify" {
 }
 
 /**
+ * Canonical list of role strings we honor. The Membership.role column
+ * is `String` at the schema level (chosen for SQLite portability —
+ * Postgres switch to a CHECK constraint or enum is Sprint 6 work), so
+ * defense-in-depth against a corrupt row lives here in the middleware.
+ */
+const KNOWN_ROLES: readonly Role[] = [
+  "owner",
+  "admin",
+  "member",
+  "billing_only",
+];
+
+function asKnownRole(role: string): Role | null {
+  return (KNOWN_ROLES as readonly string[]).includes(role)
+    ? (role as Role)
+    : null;
+}
+
+/**
  * Factory: returns a Fastify preHandler that requires the calling user
  * to be a member of `:orgId` (URL param) AND hold one of the allowed
  * roles. Pass `[]` to allow any role.
@@ -75,10 +94,17 @@ export function makeRequireOrgRole(
       reply.code(403);
       throw new Error("forbidden");
     }
-    if (
-      allowedRoles.length > 0 &&
-      !allowedRoles.includes(membership.role as Role)
-    ) {
+
+    const role = asKnownRole(membership.role);
+    if (!role) {
+      // Defense in depth: a corrupt role string in the DB ("admIn",
+      // "superadmin", "") must not silently bypass the role check.
+      // Fail closed — same 403 the user would see if they weren't a
+      // member at all.
+      reply.code(403);
+      throw new Error("forbidden");
+    }
+    if (allowedRoles.length > 0 && !allowedRoles.includes(role)) {
       reply.code(403);
       throw new Error("forbidden");
     }
@@ -90,7 +116,7 @@ export function makeRequireOrgRole(
         slug: membership.org.slug,
         name: membership.org.name,
       },
-      role: membership.role as Role,
+      role,
     };
   };
 }

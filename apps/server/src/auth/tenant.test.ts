@@ -278,6 +278,106 @@ test("a user in two orgs gets the right role per org context", async () => {
   assert.equal(bobsOrg.json().you.role, "member");
 });
 
+// ─── PR #7 review additions ─────────────────────────────────────────
+
+test("a corrupt role string in DB is rejected as 403 (fail-closed defense)", async () => {
+  // Add Bob to Alice's org with a deliberately-garbage role.
+  const { prisma } = await import("@altium-mcp/db");
+  // Bob is already in his own org from before/setup; if a previous
+  // test added him to Alice's, we'd hit a unique-constraint. Use a
+  // distinct extra user to keep this test independent.
+  const extraSignup = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `corruptrole-${randomBytes(3).toString("hex")}@tenant-test.example`,
+      password: STRONG,
+    },
+  });
+  const extraCookie = extractCookie(extraSignup.headers["set-cookie"])!;
+  const extraUserId = extraSignup.json().user.id;
+
+  await prisma.membership.create({
+    data: { orgId: aliceOrgId, userId: extraUserId, role: "superadmin" },
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/info`,
+    headers: { cookie: extraCookie },
+  });
+  // Despite being a "member" of Alice's org via the corrupt row, the
+  // middleware refuses to honor an unknown role.
+  assert.equal(res.statusCode, 403);
+});
+
+test("requireOrgOwner shorthand: accepts owner, rejects member", async () => {
+  // Build a route protected by the requireOrgOwner shorthand.
+  const { requireOrgOwner } = await import("./tenant.js");
+  const { makeRequireAuth } = await import("./middleware.js");
+  const { selectAuthProvider } = await import("@altium-mcp/auth");
+  const { registerAuthRoutes } = await import("./routes.js");
+  const auth = selectAuthProvider();
+
+  const local = Fastify({ logger: false });
+  await local.register(cookie);
+  await registerAuthRoutes(local, auth);
+  local.get(
+    "/api/orgs/:orgId/owner-only",
+    { preHandler: [makeRequireAuth(auth), requireOrgOwner] },
+    async () => ({ ok: true })
+  );
+  await local.ready();
+
+  // Alice owns aliceOrg → 200.
+  const ownerRes = await local.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/owner-only`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(ownerRes.statusCode, 200);
+
+  // Alice is a `member` (not owner) of bobOrg per the earlier "two-org"
+  // test that added the membership → 403.
+  const memberRes = await local.inject({
+    method: "GET",
+    url: `/api/orgs/${bobOrgId}/owner-only`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(memberRes.statusCode, 403);
+
+  await local.close();
+});
+
+test("a malformed / extremely long :orgId stays in the 4xx range (no 500)", async () => {
+  // Two cases worth pinning:
+  //   1. A 4 KB orgId exceeds Fastify's default maxParamLength (100)
+  //      and is rejected at routing → 404. That's fine; the request
+  //      never reached our middleware.
+  //   2. A short-but-bogus orgId reaches the middleware and 403s on
+  //      "no Membership for this user in this org".
+  // The contract: the server must NEVER 500 because of a malformed
+  // path segment — that would be an unhandled exception in the
+  // middleware, not a tenant-scope outcome.
+  const longId = "X".repeat(4096);
+  const long = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${longId}/info`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.ok(
+    long.statusCode >= 400 && long.statusCode < 500,
+    `expected 4xx for over-long orgId, got ${long.statusCode}`
+  );
+
+  const bogus = await app.inject({
+    method: "GET",
+    url: "/api/orgs/cklbogus000000000000000xx/info",
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(bogus.statusCode, 403);
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {
