@@ -16,7 +16,17 @@ export function selectBillingProvider(): BillingProvider {
   if (cached) return cached;
   const key = process.env.STRIPE_SECRET_KEY;
   if (key && key.trim().length > 0) {
-    cached = new StripeBillingProvider({ secretKey: key });
+    // Webhook secret is required for the webhook route; falls through
+    // to a verifyWebhook-throws path when unset (intentional — staging
+    // envs sometimes have STRIPE_SECRET_KEY but not yet a webhook
+    // endpoint configured in the Stripe dashboard).
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET ?? null;
+    cached = new StripeBillingProvider({
+      secretKey: key,
+      webhookSecret: webhookSecret && webhookSecret.trim().length > 0
+        ? webhookSecret.trim()
+        : null,
+    });
   } else {
     cached = new NoopBillingProvider();
   }

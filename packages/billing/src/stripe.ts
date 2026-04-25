@@ -3,7 +3,9 @@ import type {
   BillingProvider,
   CheckoutSessionRequest,
   CheckoutSessionResult,
+  WebhookEvent,
 } from "./types.js";
+import { WebhookSignatureInvalid } from "./types.js";
 
 /**
  * Stripe-backed implementation. Constructed by `selectBillingProvider`
@@ -15,11 +17,23 @@ import type {
  */
 export class StripeBillingProvider implements BillingProvider {
   private readonly stripe: Stripe;
+  private readonly webhookSecret: string | null;
 
-  constructor(opts: { secretKey: string; apiVersion?: Stripe.LatestApiVersion }) {
+  constructor(opts: {
+    secretKey: string;
+    apiVersion?: Stripe.LatestApiVersion;
+    /**
+     * Stripe webhook signing secret (`whsec_…`). Required to verify
+     * incoming webhook deliveries. When unset, verifyWebhook throws —
+     * the dev path is to set STRIPE_WEBHOOK_SECRET alongside
+     * STRIPE_SECRET_KEY; production uses a real Stripe-issued secret.
+     */
+    webhookSecret?: string | null;
+  }) {
     this.stripe = new Stripe(opts.secretKey, {
       apiVersion: opts.apiVersion ?? "2025-02-24.acacia",
     });
+    this.webhookSecret = opts.webhookSecret ?? null;
   }
 
   isConfigured(): boolean {
@@ -61,5 +75,30 @@ export class StripeBillingProvider implements BillingProvider {
     }
 
     return { url: session.url, sessionId: session.id };
+  }
+
+  verifyWebhook(rawBody: Buffer, signature: string): WebhookEvent {
+    if (!this.webhookSecret) {
+      // STRIPE_WEBHOOK_SECRET wasn't set even though STRIPE_SECRET_KEY
+      // was. Treat as misconfiguration: we don't know what secret to
+      // verify against, so we can't trust the body.
+      throw new WebhookSignatureInvalid("webhook secret not configured");
+    }
+    try {
+      // Stripe SDK does HMAC verification + timestamp check internally.
+      // Tolerance defaults to 5 minutes — enough for clock skew, tight
+      // enough that an attacker can't hold a captured payload for hours
+      // and replay it.
+      return this.stripe.webhooks.constructEvent(
+        rawBody,
+        signature,
+        this.webhookSecret
+      );
+    } catch (err) {
+      // Stripe throws a typed StripeSignatureVerificationError. We
+      // rewrap so callers don't depend on the SDK's type hierarchy.
+      const reason = err instanceof Error ? err.message : "unknown";
+      throw new WebhookSignatureInvalid(reason);
+    }
   }
 }
