@@ -27,7 +27,11 @@ import {
 } from "@altium-mcp/shared";
 import type { AuthProvider } from "@altium-mcp/auth";
 import { makeRequireAuth } from "../auth/middleware.js";
-import { makeRequireOrgRole, makeRequireWorkspace } from "../auth/tenant.js";
+import {
+  makeRequireOrgRole,
+  makeRequireWorkspace,
+  requireActiveBilling,
+} from "../auth/tenant.js";
 import * as components from "../handlers/components.js";
 import * as projects from "../handlers/projects.js";
 import type { NexarServiceFactory } from "../services/nexar-factory.js";
@@ -81,7 +85,7 @@ export async function registerNexarRoutes(
   // ── Parts ────────────────────────────────────────────────────────────
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/search",
-    { preHandler: [requireAuth, requireMember, requireWorkspace] },
+    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
     async (req, reply) => {
       const parsed = SearchPartsInput.safeParse(req.query);
       if (!parsed.success) {
@@ -101,7 +105,7 @@ export async function registerNexarRoutes(
 
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/availability",
-    { preHandler: [requireAuth, requireMember, requireWorkspace] },
+    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
     async (req, reply) => {
       const parsed = CheckAvailabilityInput.safeParse(req.query);
       if (!parsed.success) {
@@ -121,7 +125,7 @@ export async function registerNexarRoutes(
 
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/alternatives",
-    { preHandler: [requireAuth, requireMember, requireWorkspace] },
+    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
     async (req, reply) => {
       const parsed = FindAlternativePartsInput.safeParse(req.query);
       if (!parsed.success) {
@@ -149,7 +153,7 @@ export async function registerNexarRoutes(
   });
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/library/components",
-    { preHandler: [requireAuth, requireMember, requireWorkspace] },
+    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
     async (req, reply) => {
       const parsed = LibraryQuery.safeParse(req.query);
       if (!parsed.success) {
@@ -186,7 +190,7 @@ export async function registerNexarRoutes(
   // vs. PCBviber's own /api/orgs/:orgId/workspaces.
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/altium-365/workspaces",
-    { preHandler: [requireAuth, requireMember, requireWorkspace] },
+    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
     async (req, reply) => {
       const nexar = await loadNexarOr503(req, reply);
       if (!nexar) return;
@@ -204,7 +208,7 @@ export async function registerNexarRoutes(
   });
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/altium-365/projects",
-    { preHandler: [requireAuth, requireMember, requireWorkspace] },
+    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
     async (req, reply) => {
       const parsed = Altium365ProjectsQuery.safeParse(req.query);
       if (!parsed.success) {

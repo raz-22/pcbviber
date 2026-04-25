@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Nav } from "./components/Nav";
+import { BillingBanner } from "./components/BillingBanner";
 import { RequireAuth, RedirectIfAuthed } from "./components/RequireAuth";
 import { HomePage } from "./pages/Home";
 import { LoginPage } from "./pages/Login";
@@ -23,6 +24,7 @@ export function App() {
     <BrowserRouter>
       <div className="min-h-screen">
         <Nav />
+        <BillingBanner />
         <main>
           <Routes>
             <Route

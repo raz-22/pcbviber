@@ -31,10 +31,15 @@ import type { AuthUser, Role } from "@altium-mcp/auth";
  * Membership is verified. Routes can rely on `req.ctx` being populated
  * — if the middleware didn't attach it, the request was already
  * rejected with 401/403/404.
+ *
+ * `org.billingStatus` is loaded inline so requireActiveBilling and
+ * any future billing-aware middleware can read it without a second
+ * query. Vocab matches Organization.billingStatus on the schema:
+ * free | trialing | active | past_due | suspended | canceled.
  */
 export interface RequestContext {
   user: AuthUser;
-  org: { id: string; slug: string; name: string };
+  org: { id: string; slug: string; name: string; billingStatus: string };
   role: Role;
 }
 
@@ -100,7 +105,16 @@ export function makeRequireOrgRole(
 
     const membership = await prisma.membership.findUnique({
       where: { orgId_userId: { orgId, userId: req.user.id } },
-      include: { org: { select: { id: true, slug: true, name: true } } },
+      include: {
+        org: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            billingStatus: true,
+          },
+        },
+      },
     });
 
     // Conflate "no such org" and "not a member" into a single 403 so
@@ -130,6 +144,7 @@ export function makeRequireOrgRole(
         id: membership.org.id,
         slug: membership.org.slug,
         name: membership.org.name,
+        billingStatus: membership.org.billingStatus,
       },
       role,
     };
@@ -198,6 +213,44 @@ export const requireOrgOwner = makeRequireOrgRole(["owner"]);
 
 /** Shorthand: owner or admin (write actions on org settings). */
 export const requireOrgAdmin = makeRequireOrgRole(["owner", "admin"]);
+
+/**
+ * Per spec §4.2: "Trial end → if no payment method, degrade org to
+ * status: suspended (read-only MCP tools, banner in UI)." This
+ * middleware enforces the soft-degrade: tenant data routes (Nexar
+ * parts/library/altium-365 etc.) return 402 when the org's
+ * billingStatus is `suspended` or `canceled`. Settings routes,
+ * billing routes, and member management stay open so the user can
+ * still recover (subscribe, manage members, etc.).
+ *
+ * MUST run AFTER makeRequireOrgRole — it relies on req.ctx.org.
+ * Order:  [requireAuth, requireOrgMember, requireActiveBilling]
+ *
+ * Reads from req.ctx, not the DB — no extra query. The tenant
+ * middleware already JOINed billingStatus when it loaded the
+ * Membership row.
+ */
+export async function requireActiveBilling(
+  req: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  if (!req.ctx) {
+    // Programmer error: middleware chain is wrong.
+    reply.code(500);
+    throw new Error("requireActiveBilling called without req.ctx");
+  }
+  const status = req.ctx.org.billingStatus;
+  if (status === "suspended" || status === "canceled") {
+    reply.code(402);
+    throw new Error(`billing_inactive:${status}`);
+  }
+  // free / trialing / active / past_due all pass through. past_due is
+  // intentionally allowed: Stripe Smart Retries handles the failed
+  // payment in the background; soft-degrading the tools immediately
+  // would punish customers who just had a transient card decline.
+  // Once Smart Retries gives up (typically 7 days), the webhook
+  // handler flips the org to suspended and THIS middleware kicks in.
+}
 
 /**
  * Centralized error handler so every 401/403 from the middleware

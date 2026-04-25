@@ -378,6 +378,138 @@ test("a malformed / extremely long :orgId stays in the 4xx range (no 500)", asyn
   assert.equal(bogus.statusCode, 403);
 });
 
+// ─── ctx.org carries billingStatus ──────────────────────────────────
+
+test("ctx.org.billingStatus is exposed on the request context", async () => {
+  // The tenant middleware loads billingStatus alongside slug/name so
+  // requireActiveBilling (and any other billing-aware middleware) can
+  // read it without a second query. The /info endpoint returns
+  // ctx.org as-is.
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/info`,
+    headers: { cookie: aliceCookie },
+  });
+  const body = res.json();
+  // Fresh signup: billingStatus = "trialing" per PR 4.1.
+  assert.equal(body.org.billingStatus, "trialing");
+});
+
+// ─── requireActiveBilling middleware ───────────────────────────────
+
+test("requireActiveBilling: trialing / active / free / past_due all PASS", async () => {
+  const { requireActiveBilling, requireOrgMember } = await import("./tenant.js");
+  const { makeRequireAuth } = await import("./middleware.js");
+  const { selectAuthProvider } = await import("@altium-mcp/auth");
+  const { registerAuthRoutes } = await import("./routes.js");
+  const { prisma } = await import("@altium-mcp/db");
+
+  const local = Fastify({ logger: false });
+  await local.register(cookie);
+  const auth = selectAuthProvider();
+  await registerAuthRoutes(local, auth);
+  const requireAuth = makeRequireAuth(auth);
+  local.get(
+    "/api/orgs/:orgId/active-billing-test",
+    { preHandler: [requireAuth, requireOrgMember, requireActiveBilling] },
+    async () => ({ ok: true })
+  );
+  await local.ready();
+
+  for (const status of ["trialing", "active", "free", "past_due"] as const) {
+    await prisma.organization.update({
+      where: { id: aliceOrgId },
+      data: { billingStatus: status },
+    });
+    const res = await local.inject({
+      method: "GET",
+      url: `/api/orgs/${aliceOrgId}/active-billing-test`,
+      headers: { cookie: aliceCookie },
+    });
+    assert.equal(
+      res.statusCode,
+      200,
+      `expected 200 for billingStatus=${status}, got ${res.statusCode}`
+    );
+  }
+  await local.close();
+});
+
+test("requireActiveBilling: suspended → 402", async () => {
+  const { requireActiveBilling, requireOrgMember } = await import("./tenant.js");
+  const { makeRequireAuth } = await import("./middleware.js");
+  const { selectAuthProvider } = await import("@altium-mcp/auth");
+  const { registerAuthRoutes } = await import("./routes.js");
+  const { prisma } = await import("@altium-mcp/db");
+
+  const local = Fastify({ logger: false });
+  await local.register(cookie);
+  const auth = selectAuthProvider();
+  await registerAuthRoutes(local, auth);
+  const requireAuth = makeRequireAuth(auth);
+  local.get(
+    "/api/orgs/:orgId/active-billing-test",
+    { preHandler: [requireAuth, requireOrgMember, requireActiveBilling] },
+    async () => ({ ok: true })
+  );
+  await local.ready();
+
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingStatus: "suspended" },
+  });
+  const res = await local.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/active-billing-test`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 402);
+
+  // Restore for subsequent tests in this suite.
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingStatus: "trialing" },
+  });
+  await local.close();
+});
+
+test("requireActiveBilling: canceled → 402 (same as suspended)", async () => {
+  const { requireActiveBilling, requireOrgMember } = await import("./tenant.js");
+  const { makeRequireAuth } = await import("./middleware.js");
+  const { selectAuthProvider } = await import("@altium-mcp/auth");
+  const { registerAuthRoutes } = await import("./routes.js");
+  const { prisma } = await import("@altium-mcp/db");
+
+  const local = Fastify({ logger: false });
+  await local.register(cookie);
+  const auth = selectAuthProvider();
+  await registerAuthRoutes(local, auth);
+  const requireAuth = makeRequireAuth(auth);
+  local.get(
+    "/api/orgs/:orgId/active-billing-test",
+    { preHandler: [requireAuth, requireOrgMember, requireActiveBilling] },
+    async () => ({ ok: true })
+  );
+  await local.ready();
+
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingStatus: "canceled" },
+  });
+  const res = await local.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/active-billing-test`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 402);
+
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingStatus: "trialing" },
+  });
+  await local.close();
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {

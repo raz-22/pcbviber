@@ -613,6 +613,58 @@ test("POST /portal-session: 502 billing_upstream_error when Stripe throws (no me
   });
 });
 
+// ═══ GET /api/billing/plans ════════════════════════════════════════════
+
+test("GET /plans: returns the env-configured plans (label + name + priceId)", async () => {
+  const res = await app.inject({
+    method: "GET",
+    url: "/api/billing/plans",
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  // Test setup configured both Starter + Team. Enterprise has no env
+  // entry so it must NOT appear (Enterprise is invoiced, not Checkout).
+  assert.equal(body.plans.length, 2);
+  const starter = body.plans.find((p: { name: string }) => p.name === "starter");
+  const team = body.plans.find((p: { name: string }) => p.name === "team");
+  assert.ok(starter);
+  assert.ok(team);
+  assert.equal(starter.priceId, STARTER_PRICE);
+  assert.equal(starter.label, "Starter");
+  assert.equal(team.priceId, TEAM_PRICE);
+  assert.equal(team.label, "Team");
+});
+
+test("GET /plans: 401 without a session", async () => {
+  // Untenanted but auth-required — the catalog isn't a secret but it
+  // doesn't surface to anonymous probes either.
+  const res = await app.inject({
+    method: "GET",
+    url: "/api/billing/plans",
+  });
+  assert.equal(res.statusCode, 401);
+});
+
+test("GET /plans: omits plans whose env var isn't set", async () => {
+  // Temporarily blank STRIPE_PRICE_STARTER_SEAT to verify the route
+  // re-reads env per request and skips empty entries cleanly.
+  const prev = process.env.STRIPE_PRICE_STARTER_SEAT;
+  process.env.STRIPE_PRICE_STARTER_SEAT = "";
+  try {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/billing/plans",
+      headers: { cookie: aliceCookie },
+    });
+    const body = res.json();
+    assert.equal(body.plans.length, 1);
+    assert.equal(body.plans[0].name, "team");
+  } finally {
+    process.env.STRIPE_PRICE_STARTER_SEAT = prev;
+  }
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {
