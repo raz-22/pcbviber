@@ -13,6 +13,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
+import csrfProtection from "@fastify/csrf-protection";
+import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { selectAuthProvider } from "@altium-mcp/auth";
 import { prisma } from "@altium-mcp/db";
@@ -43,6 +45,11 @@ import {
   installRateLimitErrorHandler,
   rateLimitErrorBuilder,
 } from "./security/rate-limits.js";
+import { helmetOptionsFor } from "./security/headers.js";
+import {
+  getCsrfTokenFromHeader,
+  installCsrfErrorHandler,
+} from "./security/csrf.js";
 import { startWorker } from "./jobs/worker.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -81,6 +88,56 @@ export async function startHttpServer(opts: {
   });
 
   await app.register(cookie);
+
+  // ── Security headers ────────────────────────────────────
+  // CSP / HSTS (prod only) / X-Frame-Options / X-Content-Type-Options /
+  // Referrer-Policy. Dev relaxes connect-src to allow Vite HMR.
+  await app.register(helmet, helmetOptionsFor(process.env));
+
+  // ── CSRF protection ─────────────────────────────────────
+  // Per-route opt-in via the route's preHandler (`app.csrfProtection`).
+  // The plugin sets a signed cookie + exposes `reply.generateCsrf()`
+  // for the bootstrap endpoint below. The SPA's fetch wrapper sends
+  // `x-csrf-token: <token>` on every state-change request; mismatch
+  // → 403 csrf_invalid.
+  //
+  // Routes that DON'T use the preHandler:
+  //   - /mcp (Bearer-token auth, not cookies)
+  //   - /api/billing/webhook (Stripe HMAC, not session)
+  //   - /api/auth/{signup,login} (no session yet to bind to)
+  //   - GET /api/csrf (the bootstrap)
+  //   - All GETs (read-only, not state-changing)
+  // The full rationale for each skip lives at the top of csrf.ts.
+  await app.register(csrfProtection, {
+    sessionPlugin: "@fastify/cookie",
+    cookieKey: "_csrf",
+    cookieOpts: {
+      // httpOnly: the SPA reads the token from the response body
+      // of GET /api/csrf, never the cookie itself, so we keep the
+      // cookie unreachable from JS (defense against XSS-stealing
+      // the CSRF cookie).
+      httpOnly: true,
+      // sameSite: "lax" — sent on top-level navigations + same-
+      // site requests. With our credentials:include CORS for the
+      // dev-mode cross-origin SPA, "strict" would block all
+      // SPA→API requests; "lax" plus the explicit origin
+      // allow-list in CORS gives the right balance.
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+    },
+    getToken: getCsrfTokenFromHeader,
+  });
+  installCsrfErrorHandler(app);
+
+  // GET /api/csrf — token bootstrap. SPA calls this on first
+  // state-change attempt (or proactively on app load). The plugin
+  // sets the cookie and we return the token so the SPA can echo
+  // it back as the x-csrf-token header.
+  app.get("/api/csrf", async (_req, reply) => {
+    const csrfToken = reply.generateCsrf();
+    return { csrfToken };
+  });
 
   // ── Rate limiting ───────────────────────────────────────
   // Per-route opt-in via `config.rateLimit` on each protected route.

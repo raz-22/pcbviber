@@ -5,13 +5,34 @@
 
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { api, ApiError } from "./api";
+import { api, ApiError, __resetCsrfTokenCacheForTests } from "./api";
 
 type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 const realFetch = globalThis.fetch;
 
+/**
+ * Wraps a test fetch stub so `GET /api/csrf` is auto-handled with a
+ * canned token. Without this, every state-change test would have to
+ * mock the CSRF bootstrap as well. The token cache is reset in
+ * beforeEach so successive tests don't share state.
+ *
+ * Tests that specifically exercise the CSRF flow override the wrap
+ * by calling `installFetchRaw` instead.
+ */
 function installFetch(impl: FetchStub) {
+  const wrapped: FetchStub = async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/api/csrf") && (init?.method ?? "GET") === "GET") {
+      return jsonResponse(200, { csrfToken: "test-csrf-token" });
+    }
+    return impl(url, init);
+  };
+  globalThis.fetch = wrapped as typeof globalThis.fetch;
+}
+
+/** No-wrap variant for CSRF-specific tests that must control the bootstrap. */
+function installFetchRaw(impl: FetchStub) {
   globalThis.fetch = impl as typeof globalThis.fetch;
 }
 
@@ -23,8 +44,10 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 beforeEach(() => {
-  // Restore real fetch between tests so a forgotten stub doesn't leak.
+  // Restore real fetch + drop the CSRF cache between tests so a
+  // forgotten stub or stale token doesn't leak.
   globalThis.fetch = realFetch;
+  __resetCsrfTokenCacheForTests();
 });
 
 // ─── credentials: include — sent on every request ────────────────────
@@ -877,4 +900,140 @@ test("402 billing_inactive (from a tools call when suspended) surfaces", async (
     assert.equal(err.status, 402);
     assert.equal(err.code, "billing_inactive");
   }
+});
+
+// ─── CSRF: state-change requests inject x-csrf-token ─────────────────
+
+test("POST/PATCH/DELETE bootstrap CSRF token from /api/csrf and inject the header", async () => {
+  // First call to a state-change route triggers GET /api/csrf to
+  // fetch the token, then sends the actual request with the
+  // header. The wrapped installFetch handles /api/csrf with a
+  // canned token; we capture what got sent on the protected POST.
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  installFetch(async (url, init) => {
+    seen.push({
+      url: String(url),
+      headers: { ...((init?.headers as Record<string, string>) ?? {}) },
+    });
+    return jsonResponse(200, { ok: true });
+  });
+
+  await api.logout();
+
+  // First request: bootstrap GET /api/csrf — handled by the
+  // installFetch wrapper, NOT pushed to `seen`. The wrapper
+  // intercepts before the inner stub runs.
+  // Second request (in seen[0]): the actual POST /api/auth/logout
+  // with the x-csrf-token header.
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.url, "/api/auth/logout");
+  assert.equal(seen[0]!.headers["x-csrf-token"], "test-csrf-token");
+});
+
+test("GET requests do NOT inject x-csrf-token (read-only, no bucket consumed)", async () => {
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  installFetch(async (url, init) => {
+    seen.push({
+      url: String(url),
+      headers: { ...((init?.headers as Record<string, string>) ?? {}) },
+    });
+    return jsonResponse(200, {
+      user: null,
+      orgs: [],
+    });
+  });
+
+  await api.me();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.url, "/api/auth/me");
+  assert.equal(seen[0]!.headers["x-csrf-token"], undefined);
+});
+
+test("CSRF token is cached across calls — only one /api/csrf bootstrap", async () => {
+  // After the first state-change call fetches the token, subsequent
+  // state-changes reuse the cached value. Verify by counting how
+  // many times /api/csrf is hit.
+  let csrfHits = 0;
+  installFetchRaw(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/api/csrf")) {
+      csrfHits += 1;
+      return jsonResponse(200, { csrfToken: "tok-1" });
+    }
+    return jsonResponse(200, { ok: true });
+  });
+
+  await api.logout();
+  await api.logout();
+  await api.logout();
+  assert.equal(csrfHits, 1, "CSRF token should be cached after first bootstrap");
+});
+
+test("on 403 csrf_invalid the wrapper refetches the token and retries once", async () => {
+  // Simulates the cookie expiring or rotating between requests.
+  // First state-change attempt: server returns 403 csrf_invalid.
+  // Wrapper drops the cache, re-bootstraps, retries. Second
+  // attempt with the fresh token: 200.
+  const csrfTokens = ["stale-token", "fresh-token"];
+  let csrfHits = 0;
+  let postCalls = 0;
+  installFetchRaw(async (url, init) => {
+    const u = String(url);
+    if (u.endsWith("/api/csrf")) {
+      const tok = csrfTokens[csrfHits];
+      csrfHits += 1;
+      return jsonResponse(200, { csrfToken: tok });
+    }
+    // The protected route. First call sees stale-token → 403.
+    // Second call sees fresh-token → 200.
+    const headers = (init?.headers as Record<string, string>) ?? {};
+    postCalls += 1;
+    if (headers["x-csrf-token"] === "fresh-token") {
+      return jsonResponse(200, { ok: true });
+    }
+    return jsonResponse(403, { error: "csrf_invalid" });
+  });
+
+  await api.logout();
+  assert.equal(csrfHits, 2, "expected token refetch after 403");
+  assert.equal(postCalls, 2, "expected POST retry after csrf_invalid");
+});
+
+test("repeated csrf_invalid (token rotation race not resolved) propagates as ApiError", async () => {
+  // Pathological case: server keeps rejecting our token. The
+  // wrapper retries once; a second 403 propagates as ApiError so
+  // the caller can show a real error rather than retry forever.
+  installFetchRaw(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/api/csrf")) {
+      return jsonResponse(200, { csrfToken: "any-token" });
+    }
+    return jsonResponse(403, { error: "csrf_invalid" });
+  });
+
+  try {
+    await api.logout();
+    assert.fail("expected the second 403 to throw");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 403);
+    assert.equal(err.code, "csrf_invalid");
+  }
+});
+
+test("__resetCsrfTokenCacheForTests forces re-bootstrap", async () => {
+  let csrfHits = 0;
+  installFetchRaw(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/api/csrf")) {
+      csrfHits += 1;
+      return jsonResponse(200, { csrfToken: "tok" });
+    }
+    return jsonResponse(200, { ok: true });
+  });
+
+  await api.logout();
+  __resetCsrfTokenCacheForTests();
+  await api.logout();
+  assert.equal(csrfHits, 2, "reset should force a re-bootstrap");
 });

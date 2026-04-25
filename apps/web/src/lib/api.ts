@@ -30,20 +30,94 @@ interface ApiOpts {
   body?: unknown;
 }
 
+// ── CSRF token cache + bootstrap ────────────────────────────────────
+//
+// State-change requests (POST/PATCH/DELETE) carry an `x-csrf-token`
+// header. The token comes from `GET /api/csrf` which sets a signed
+// cookie + returns the matching token in the response body. We cache
+// the token in module memory; on first state-change OR on a 403
+// `csrf_invalid` response, we refetch.
+
+let cachedCsrfToken: string | null = null;
+/** Reset for tests + sign-out flows so the next call refetches. */
+export function __resetCsrfTokenCacheForTests(): void {
+  cachedCsrfToken = null;
+}
+
+async function fetchCsrfToken(): Promise<string> {
+  const res = await fetch("/api/csrf", { credentials: "include" });
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      "csrf_bootstrap_failed",
+      null,
+      "Could not initialize CSRF token"
+    );
+  }
+  // Defensive: a malformed body shouldn't surface as an
+  // unhandled SyntaxError — wrap it so the caller's catch sees
+  // the same ApiError shape every other fetch failure produces.
+  let data: { csrfToken?: string };
+  try {
+    data = (await res.json()) as { csrfToken?: string };
+  } catch {
+    throw new ApiError(
+      res.status,
+      "csrf_bootstrap_failed",
+      null,
+      "CSRF endpoint returned non-JSON body"
+    );
+  }
+  if (typeof data.csrfToken !== "string" || data.csrfToken.length === 0) {
+    throw new ApiError(
+      res.status,
+      "csrf_bootstrap_failed",
+      null,
+      "CSRF endpoint returned no token"
+    );
+  }
+  cachedCsrfToken = data.csrfToken;
+  return data.csrfToken;
+}
+
+function isStateChange(method: string): boolean {
+  return method === "POST" || method === "PATCH" || method === "DELETE";
+}
+
 /**
  * Single fetch wrapper used for every backend call. `credentials: "include"`
  * is essential — otherwise the browser won't send the session cookie on
  * cross-origin requests during dev (Vite :5173 → Fastify :3000).
+ *
+ * State-change requests auto-inject the `x-csrf-token` header. On the
+ * first 403 with `error: "csrf_invalid"` we refetch the token and
+ * retry once (handles cookie expiry / token rotation). Subsequent
+ * 403s propagate as ApiError so the caller can show an error.
  */
 async function call<T>(path: string, opts: ApiOpts = {}): Promise<T> {
-  const init: RequestInit = {
-    method: opts.method ?? "GET",
-    credentials: "include",
-    headers: opts.body ? { "Content-Type": "application/json" } : undefined,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  };
+  const method = opts.method ?? "GET";
+  return await callWithCsrfRetry<T>(path, method, opts, /* retried */ false);
+}
 
-  const res = await fetch(path, init);
+async function callWithCsrfRetry<T>(
+  path: string,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  opts: ApiOpts,
+  retried: boolean
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (opts.body) headers["Content-Type"] = "application/json";
+  if (isStateChange(method)) {
+    const token = cachedCsrfToken ?? (await fetchCsrfToken());
+    headers["x-csrf-token"] = token;
+  }
+
+  const res = await fetch(path, {
+    method,
+    credentials: "include",
+    headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
 
   if (res.status === 204) {
     return undefined as T;
@@ -72,6 +146,17 @@ async function call<T>(path: string, opts: ApiOpts = {}): Promise<T> {
       detail?: unknown;
     };
     const code = typeof obj.error === "string" ? obj.error : null;
+    // CSRF token expired / rotated — refetch once and retry.
+    // Subsequent failures propagate as ApiError so the caller can
+    // surface a stable error.
+    if (
+      code === "csrf_invalid" &&
+      isStateChange(method) &&
+      !retried
+    ) {
+      cachedCsrfToken = null;
+      return await callWithCsrfRetry<T>(path, method, opts, true);
+    }
     const message =
       code ?? `${res.status} ${res.statusText}`.trim() ?? "request failed";
     throw new ApiError(res.status, code, obj.detail, message);

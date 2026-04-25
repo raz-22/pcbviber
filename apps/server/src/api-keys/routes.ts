@@ -41,6 +41,7 @@ import { makeRequireOrgRole } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
 import { can } from "../auth/can.js";
 import { generateApiKey } from "./keys.js";
+import { csrfOrPassthrough } from "../security/csrf.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
 
@@ -110,7 +111,7 @@ export async function registerApiKeyRoutes(
   // ── POST /api/orgs/:orgId/api-keys ───────────────────────────────────
   app.post(
     "/api/orgs/:orgId/api-keys",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const parsed = CreateApiKeyBody.safeParse(req.body);
       if (!parsed.success) {
@@ -180,7 +181,7 @@ export async function registerApiKeyRoutes(
   // to without rotating the key plaintext.
   app.patch(
     "/api/orgs/:orgId/api-keys/:keyId",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const parsed = PatchApiKeyBody.safeParse(req.body);
       if (!parsed.success) {
@@ -266,7 +267,7 @@ export async function registerApiKeyRoutes(
   // ── DELETE /api/orgs/:orgId/api-keys/:keyId ──────────────────────────
   app.delete(
     "/api/orgs/:orgId/api-keys/:keyId",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const ctx = req.ctx!;
       const { keyId } = req.params as { keyId: string };

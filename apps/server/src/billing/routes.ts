@@ -47,6 +47,7 @@ import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
 import { can } from "../auth/can.js";
+import { csrfOrPassthrough } from "../security/csrf.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
 
@@ -143,7 +144,7 @@ export async function registerBillingRoutes(
 
   app.post(
     "/api/orgs/:orgId/billing/checkout-session",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const ctx = req.ctx!;
 
@@ -246,7 +247,7 @@ export async function registerBillingRoutes(
   // ── POST /api/orgs/:orgId/billing/portal-session ─────────────────────
   app.post(
     "/api/orgs/:orgId/billing/portal-session",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const ctx = req.ctx!;
 

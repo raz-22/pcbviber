@@ -30,6 +30,7 @@ import { makeRequireOrgRole } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
 import type { AuthProvider } from "@altium-mcp/auth";
 import type { NexarServiceFactory } from "../services/nexar-factory.js";
+import { csrfOrPassthrough } from "../security/csrf.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
 
@@ -91,7 +92,7 @@ export async function registerWorkspaceRoutes(
   // ── Test connection (no row created, no row updated) ────────────────
   app.post(
     "/api/orgs/:orgId/workspaces/test-connection",
-    { preHandler: [requireAuth, requireAdmin] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireAdmin] },
     async (req, reply) => {
       const parsed = TestConnectionBody.safeParse(req.body);
       if (!parsed.success) {
@@ -157,7 +158,7 @@ export async function registerWorkspaceRoutes(
   // ── Create ──────────────────────────────────────────────────────────
   app.post(
     "/api/orgs/:orgId/workspaces",
-    { preHandler: [requireAuth, requireAdmin] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireAdmin] },
     async (req, reply) => {
       const parsed = CreateWorkspaceBody.safeParse(req.body);
       if (!parsed.success) {
@@ -220,7 +221,7 @@ export async function registerWorkspaceRoutes(
   // ── Update ──────────────────────────────────────────────────────────
   app.patch(
     "/api/orgs/:orgId/workspaces/:workspaceId",
-    { preHandler: [requireAuth, requireAdmin] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireAdmin] },
     async (req, reply) => {
       const parsed = UpdateWorkspaceBody.safeParse(req.body);
       if (!parsed.success) {
@@ -310,7 +311,7 @@ export async function registerWorkspaceRoutes(
   // ── Delete ──────────────────────────────────────────────────────────
   app.delete(
     "/api/orgs/:orgId/workspaces/:workspaceId",
-    { preHandler: [requireAuth, requireAdmin] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireAdmin] },
     async (req, reply) => {
       const ctx = req.ctx!;
       const { workspaceId } = req.params as { workspaceId: string };

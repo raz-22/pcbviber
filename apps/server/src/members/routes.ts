@@ -49,6 +49,7 @@ import { writeAuditLog, clientIp } from "../auth/audit.js";
 import { can } from "../auth/can.js";
 import { generateInviteToken, inviteExpiry } from "./tokens.js";
 import { INVITE_RATE_LIMIT } from "../security/rate-limits.js";
+import { csrfOrPassthrough } from "../security/csrf.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
 
@@ -140,7 +141,7 @@ export async function registerMemberRoutes(
   // than "forbidden".
   app.patch(
     "/api/orgs/:orgId/members/:userId",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const parsed = ChangeRoleBody.safeParse(req.body);
       if (!parsed.success) {
@@ -233,7 +234,7 @@ export async function registerMemberRoutes(
   // (next request just sees 0 memberships in this org and 403s).
   app.delete(
     "/api/orgs/:orgId/members/:userId",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireMember] },
     async (req, reply) => {
       const ctx = req.ctx!;
       const { userId: targetUserId } = req.params as { userId: string };
@@ -296,7 +297,7 @@ export async function registerMemberRoutes(
   app.post(
     "/api/orgs/:orgId/invites",
     {
-      preHandler: [requireAuth, requireAdmin],
+      preHandler: [csrfOrPassthrough(app), requireAuth, requireAdmin],
       // Rate-limited 10/hour/orgId. Stops a compromised owner/admin
       // (or a runaway script) from spam-inviting hundreds of users.
       config: { rateLimit: INVITE_RATE_LIMIT },
@@ -390,7 +391,7 @@ export async function registerMemberRoutes(
   // point, via the member-removal endpoint.
   app.delete(
     "/api/orgs/:orgId/invites/:inviteId",
-    { preHandler: [requireAuth, requireAdmin] },
+    { preHandler: [csrfOrPassthrough(app), requireAuth, requireAdmin] },
     async (req, reply) => {
       const ctx = req.ctx!;
       const { inviteId } = req.params as { inviteId: string };
@@ -430,7 +431,10 @@ export async function registerMemberRoutes(
   // /login) before clicking the accept link. The server matches the
   // invite's email to the logged-in user's email — a leaked URL can
   // NOT auto-bind to whichever account happens to be signed in.
-  app.post("/api/invites/:token/accept", { preHandler: [requireAuth] }, async (req, reply) => {
+  app.post(
+    "/api/invites/:token/accept",
+    { preHandler: [csrfOrPassthrough(app), requireAuth] },
+    async (req, reply) => {
     const user = req.user!;
     const { token } = req.params as { token: string };
 
@@ -508,7 +512,8 @@ export async function registerMemberRoutes(
       },
       org,
     };
-  });
+    }
+  );
 }
 
 // ─── Response shape ───────────────────────────────────────────────────
