@@ -14,15 +14,19 @@
   "scripts": {
     "build": "tsc",
     "test": "cross-env NODE_ENV=test node --test --experimental-test-coverage --test-reporter=spec \"build/**/*.test.js\"",
-    "seed:plans": "dotenv -e ../../.env -- node build/seed-cli.js"
+    "seed:plans": "dotenv -e ../../.env -- node build/seed-cli.js",
+    "reconcile": "dotenv -e ../../.env -- node build/reconcile-cli.js"
   },
   "dependencies": {
-    "@altium-mcp/db": "workspace:*"
+    "@altium-mcp/db": "workspace:*",
+    "ioredis": "^5.4.1"
   },
   "devDependencies": {
+    "@types/ioredis-mock": "^8.2.7",
     "@types/node": "^22.0.0",
     "cross-env": "^7.0.3",
     "dotenv-cli": "^7.4.4",
+    "ioredis-mock": "^8.9.0",
     "typescript": "^5.7.0"
   }
 }

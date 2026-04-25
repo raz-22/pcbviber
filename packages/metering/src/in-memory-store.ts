@@ -42,6 +42,23 @@ export class InMemoryQuotaStore implements QuotaStore {
     return next;
   }
 
+  /**
+   * Reconciliation-only escape hatch for setting an absolute value.
+   * Not part of the public `QuotaStore` interface — route code uses
+   * `increment` exclusively. See reconciliation.ts for the contract.
+   */
+  async setExact(
+    orgId: string,
+    metric: Metric,
+    value: number,
+    period: Period
+  ): Promise<void> {
+    if (value < 0) {
+      throw new Error(`InMemoryQuotaStore.setExact: value must be >= 0, got ${value}`);
+    }
+    this.counters.set(keyFor(orgId, metric, period), value);
+  }
+
   reset(): void {
     this.counters.clear();
   }
