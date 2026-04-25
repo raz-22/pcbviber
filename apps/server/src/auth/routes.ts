@@ -21,6 +21,7 @@ import {
   makeRequireAuth,
 } from "./middleware.js";
 import { createOrgForOwner } from "./org.js";
+import { writeAuditLog, clientIp } from "./audit.js";
 
 const SignupBody = z.object({
   email: z.string().email(),
@@ -192,45 +193,9 @@ function serializeUser(user: { id: string; email: string; emailVerifiedAt: Date 
   };
 }
 
-function clientIp(req: { ip?: string; headers: Record<string, unknown> }): string | undefined {
-  // Cloudflare / Fly add headers; req.ip handles the standard cases.
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.length > 0) {
-    return xff.split(",")[0]?.trim();
-  }
-  return req.ip;
-}
-
-interface AuditWrite {
-  orgId: string;
-  actorUserId?: string | null;
-  action: string;
-  target?: string;
-  ip?: string;
-  userAgent?: unknown;
-  metadata?: Record<string, unknown>;
-}
-
-async function writeAuditLog(entry: AuditWrite): Promise<void> {
-  try {
-    await prisma.auditLog.create({
-      data: {
-        orgId: entry.orgId,
-        actorUserId: entry.actorUserId ?? null,
-        action: entry.action,
-        target: entry.target,
-        ip: entry.ip,
-        userAgent:
-          typeof entry.userAgent === "string"
-            ? entry.userAgent.slice(0, 512)
-            : null,
-        metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
-      },
-    });
-  } catch {
-    // Never fail an auth request because the audit log misbehaves.
-  }
-}
+// `writeAuditLog` and `clientIp` were extracted to ./audit.ts in
+// Sprint 2 PR 2.2 so workspace + future routes share the same audit
+// vocabulary and bounded-input handling.
 
 function mapAuthError(reply: import("fastify").FastifyReply, err: unknown) {
   if (err instanceof AuthError) {

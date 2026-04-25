@@ -16,6 +16,8 @@ import cookie from "@fastify/cookie";
 import { selectAuthProvider } from "@altium-mcp/auth";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { registerOrgRoutes } from "./auth/org-routes.js";
+import { registerWorkspaceRoutes } from "./workspaces/routes.js";
+import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   SearchPartsInput,
@@ -64,8 +66,13 @@ export async function startHttpServer(opts: {
   // CLI uses is what the server runs against. `selectAuthProvider` is
   // env-gated: WorkOS in prod, LocalAuthProvider in dev.
   const authProvider = selectAuthProvider();
+  // Single factory shared across the process — lifts the per-workspace
+  // NexarService cache so repeat tool calls don't re-decrypt creds.
+  // PR 2.3 will cut Nexar-using tool handlers over to this factory.
+  const nexarFactory = new NexarServiceFactory();
   await registerAuthRoutes(app, authProvider);
   await registerOrgRoutes(app, authProvider);
+  await registerWorkspaceRoutes(app, authProvider, { nexarFactory });
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
