@@ -30,6 +30,8 @@ import {
   makeBillingSigner,
   selectBillingProvider,
 } from "@altium-mcp/billing";
+import { selectQuotaStore } from "@altium-mcp/metering";
+import { startWorker, type MeteringWorker } from "./jobs/worker.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
@@ -110,6 +112,37 @@ export async function startHttpServer(opts: {
     billing,
     signer: billingSigner,
   });
+
+  // Metering background worker — boots only when REDIS_URL is set
+  // (BullMQ requires Redis). In dev without Redis the meter wrapper
+  // still works against the InMemoryQuotaStore; jobs just don't run,
+  // and pending UsageEvent rows wait until a Redis-backed env runs
+  // them via `pnpm -F @altium-mcp/server run-job meter-push`.
+  let meteringWorker: MeteringWorker | null = null;
+  if (process.env.REDIS_URL?.trim()) {
+    const { prisma } = await import("@altium-mcp/db");
+    meteringWorker = await startWorker({
+      prisma,
+      billing,
+      store: selectQuotaStore(),
+      connection: { url: process.env.REDIS_URL.trim() },
+      log: app.log as unknown as Pick<Console, "info" | "warn" | "error">,
+    });
+    // SIGTERM / SIGINT: drain in-flight jobs before exit. Fly sends
+    // SIGTERM with a 30s grace period; BullMQ's worker.close() resolves
+    // once the current job returns, so we get clean shutdown without
+    // dropping a meter-push mid-batch.
+    const shutdown = async (signal: string) => {
+      app.log.info(`metering worker: caught ${signal}, draining jobs`);
+      try {
+        await meteringWorker?.close();
+      } catch (err) {
+        app.log.error({ err }, "metering worker close failed");
+      }
+    };
+    process.once("SIGTERM", () => void shutdown("SIGTERM"));
+    process.once("SIGINT", () => void shutdown("SIGINT"));
+  }
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);

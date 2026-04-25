@@ -5,6 +5,8 @@ import {
   type CheckoutSessionResult,
   type PortalSessionRequest,
   type PortalSessionResult,
+  type RecordUsageRequest,
+  type RecordUsageResult,
   type WebhookEvent,
 } from "./types.js";
 
@@ -35,6 +37,14 @@ export class NoopBillingProvider implements BillingProvider {
     // No secret to verify against; reject everything. Webhook route
     // 503s on this — Stripe retries 5xx but in a no-Stripe env there
     // shouldn't be any incoming webhooks anyway.
+    throw new BillingNotConfigured();
+  }
+
+  async recordUsage(_input: RecordUsageRequest): Promise<RecordUsageResult> {
+    // Meter-push job catches BillingNotConfigured and skips the
+    // batch with a log line. UsageEvent rows stay un-pushed (no
+    // pushedToStripeAt set) so they get retried once Stripe is
+    // wired — meter accounting stays consistent across env changes.
     throw new BillingNotConfigured();
   }
 }

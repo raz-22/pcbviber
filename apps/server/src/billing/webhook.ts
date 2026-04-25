@@ -238,11 +238,18 @@ async function onCheckoutCompleted(
   // mutations are queryable in the meantime.
 }
 
+interface StripeSubscriptionItem {
+  /** Stripe subscription_item id (`si_…`). */
+  id?: string;
+  price?: { id?: string };
+  quantity?: number;
+}
+
 interface StripeSubscription {
   id?: string;
   customer?: string | null;
   status?: string;
-  items?: { data: Array<{ price?: { id?: string }; quantity?: number }> };
+  items?: { data: StripeSubscriptionItem[] };
   current_period_start?: number;
   current_period_end?: number;
 }
@@ -262,9 +269,13 @@ async function onSubscriptionUpdated(
     return;
   }
   const status = obj.status ?? sub.status;
-  const item = obj.items?.data?.[0];
-  const seats = typeof item?.quantity === "number" ? item.quantity : sub.seats;
-  const stripePriceId = item?.price?.id ?? sub.stripePriceId;
+  const items = obj.items?.data ?? [];
+  // Seat-priced item is the one whose quantity is set; metered items
+  // ship without `quantity` (their billable quantity comes from
+  // usage records). For the seats column we look at the seat item.
+  const seatItem = items.find((it) => typeof it.quantity === "number");
+  const seats = typeof seatItem?.quantity === "number" ? seatItem.quantity : sub.seats;
+  const stripePriceId = seatItem?.price?.id ?? sub.stripePriceId;
   const currentPeriodStart =
     typeof obj.current_period_start === "number"
       ? new Date(obj.current_period_start * 1000)
@@ -273,10 +284,22 @@ async function onSubscriptionUpdated(
     typeof obj.current_period_end === "number"
       ? new Date(obj.current_period_end * 1000)
       : sub.currentPeriodEnd;
+  // Metered subscription items: match each item's price.id against the
+  // STRIPE_PRICE_METER_* env vars and persist the {metric → si_…} map.
+  // The meter-push job reads this on every tick — without it we have
+  // no way to know which subscription_item to charge for which metric.
+  const meterItemIdsJson = buildMeterItemIdsJson(items, sub.meterItemIdsJson);
 
   await tx.subscription.update({
     where: { stripeSubId },
-    data: { status, seats, stripePriceId, currentPeriodStart, currentPeriodEnd },
+    data: {
+      status,
+      seats,
+      stripePriceId,
+      currentPeriodStart,
+      currentPeriodEnd,
+      meterItemIdsJson,
+    },
   });
 
   // Mirror Stripe-side status onto Organization for the SPA's
@@ -370,6 +393,52 @@ async function orgIdFromInvoice(
     if (org) return org.id;
   }
   return null;
+}
+
+/**
+ * Walks the Stripe subscription's items, matches each item's
+ * price.id against `STRIPE_PRICE_METER_BOM/COST/EXPORT` env vars,
+ * and returns a `{metric: subscription_item_id}` JSON-string. When
+ * none match, returns the existing `meterItemIdsJson` so a partial
+ * webhook doesn't clear a previously-correct map (Stripe sometimes
+ * sends `customer.subscription.updated` events whose `items.data`
+ * is empty during certain modifications).
+ */
+function buildMeterItemIdsJson(
+  items: StripeSubscriptionItem[],
+  existingJson: string | null
+): string | null {
+  if (items.length === 0) return existingJson;
+  const env = process.env;
+  const priceToMetric: Record<string, string> = {};
+  if (env.STRIPE_PRICE_METER_BOM?.trim()) {
+    priceToMetric[env.STRIPE_PRICE_METER_BOM.trim()] = "bom_lookup";
+  }
+  if (env.STRIPE_PRICE_METER_COST?.trim()) {
+    priceToMetric[env.STRIPE_PRICE_METER_COST.trim()] = "cost_analysis";
+  }
+  if (env.STRIPE_PRICE_METER_EXPORT?.trim()) {
+    priceToMetric[env.STRIPE_PRICE_METER_EXPORT.trim()] = "export";
+  }
+  if (Object.keys(priceToMetric).length === 0) {
+    // No metered prices in env (yet). Don't clear an existing map.
+    return existingJson;
+  }
+  const meterItems: Record<string, string> = {};
+  for (const item of items) {
+    const itemId = item.id;
+    const priceId = item.price?.id;
+    if (!itemId || !priceId) continue;
+    const metric = priceToMetric[priceId];
+    if (metric) meterItems[metric] = itemId;
+  }
+  if (Object.keys(meterItems).length === 0) {
+    // No metered items in this delivery. Don't overwrite a prior
+    // good map with `null` — the seat item without metered items is
+    // a valid Stripe state during e.g. a plan downgrade.
+    return existingJson;
+  }
+  return JSON.stringify(meterItems);
 }
 
 /**

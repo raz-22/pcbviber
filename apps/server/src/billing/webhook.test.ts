@@ -70,6 +70,9 @@ const stubBilling: BillingProvider = {
     }
     return capture.event;
   },
+  recordUsage: async () => {
+    throw new Error("recordUsage not used by webhook tests");
+  },
 };
 
 before(async () => {
@@ -480,4 +483,174 @@ test("webhook invoice with no matching subscription is acked but no-op", async (
   };
   const res = await postWebhook({});
   assert.equal(res.statusCode, 200);
+});
+
+// ═══ meterItemIdsJson population (Sprint 5 PR 5.3) ═══════════════════════
+
+test("webhook customer.subscription.updated populates meterItemIdsJson when env price IDs match", async () => {
+  // Re-create an active subscription so we have something for the
+  // updated event to match against.
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.subscription.upsert({
+    where: { stripeSubId: "sub_meter_test" },
+    create: {
+      orgId: testOrgId,
+      stripeSubId: "sub_meter_test",
+      stripePriceId: "price_team_seat_test",
+      seats: 1,
+      status: "active",
+    },
+    update: { status: "active", meterItemIdsJson: null },
+  });
+
+  // Set the env vars the webhook reads. The match is exact on the
+  // env-trimmed string; the webhook ignores items whose price.id
+  // doesn't appear in the env map.
+  const prevBom = process.env.STRIPE_PRICE_METER_BOM;
+  const prevCost = process.env.STRIPE_PRICE_METER_COST;
+  process.env.STRIPE_PRICE_METER_BOM = "price_meter_bom";
+  process.env.STRIPE_PRICE_METER_COST = "price_meter_cost";
+
+  try {
+    reset();
+    capture.event = {
+      id: "evt_meter_items_1",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: "sub_meter_test",
+          status: "active",
+          items: {
+            data: [
+              { id: "si_seat", price: { id: "price_team_seat_test" }, quantity: 5 },
+              { id: "si_meter_bom", price: { id: "price_meter_bom" } },
+              { id: "si_meter_cost", price: { id: "price_meter_cost" } },
+            ],
+          },
+        },
+      },
+    };
+    const res = await postWebhook({});
+    assert.equal(res.statusCode, 200);
+
+    const sub = await prisma.subscription.findUnique({
+      where: { stripeSubId: "sub_meter_test" },
+    });
+    assert.ok(sub?.meterItemIdsJson);
+    const map = JSON.parse(sub!.meterItemIdsJson!);
+    assert.equal(map.bom_lookup, "si_meter_bom");
+    assert.equal(map.cost_analysis, "si_meter_cost");
+    // export wasn't in the env map, so it doesn't appear here.
+    assert.equal(map.export, undefined);
+  } finally {
+    if (prevBom === undefined) delete process.env.STRIPE_PRICE_METER_BOM;
+    else process.env.STRIPE_PRICE_METER_BOM = prevBom;
+    if (prevCost === undefined) delete process.env.STRIPE_PRICE_METER_COST;
+    else process.env.STRIPE_PRICE_METER_COST = prevCost;
+  }
+});
+
+test("webhook does not clear existing meterItemIdsJson when env is unset", async () => {
+  // Pre-seed a Subscription with a known meterItemIdsJson, then
+  // process an updated event with NO STRIPE_PRICE_METER_* env vars.
+  // The webhook must preserve the existing map (not overwrite to
+  // null) so a partial deploy doesn't blank out the meter map.
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.subscription.upsert({
+    where: { stripeSubId: "sub_preserve_meter" },
+    create: {
+      orgId: testOrgId,
+      stripeSubId: "sub_preserve_meter",
+      stripePriceId: "price_team_seat_test",
+      seats: 1,
+      status: "active",
+      meterItemIdsJson: JSON.stringify({ bom_lookup: "si_existing" }),
+    },
+    update: {
+      status: "active",
+      meterItemIdsJson: JSON.stringify({ bom_lookup: "si_existing" }),
+    },
+  });
+
+  const prevBom = process.env.STRIPE_PRICE_METER_BOM;
+  const prevCost = process.env.STRIPE_PRICE_METER_COST;
+  const prevExport = process.env.STRIPE_PRICE_METER_EXPORT;
+  delete process.env.STRIPE_PRICE_METER_BOM;
+  delete process.env.STRIPE_PRICE_METER_COST;
+  delete process.env.STRIPE_PRICE_METER_EXPORT;
+
+  try {
+    reset();
+    capture.event = {
+      id: "evt_preserve_meter_1",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: "sub_preserve_meter",
+          status: "active",
+          items: {
+            data: [
+              { id: "si_seat", price: { id: "price_team_seat_test" }, quantity: 5 },
+            ],
+          },
+        },
+      },
+    };
+    const res = await postWebhook({});
+    assert.equal(res.statusCode, 200);
+
+    const sub = await prisma.subscription.findUnique({
+      where: { stripeSubId: "sub_preserve_meter" },
+    });
+    assert.ok(sub?.meterItemIdsJson);
+    const map = JSON.parse(sub!.meterItemIdsJson!);
+    assert.equal(map.bom_lookup, "si_existing");
+  } finally {
+    if (prevBom !== undefined) process.env.STRIPE_PRICE_METER_BOM = prevBom;
+    if (prevCost !== undefined) process.env.STRIPE_PRICE_METER_COST = prevCost;
+    if (prevExport !== undefined) process.env.STRIPE_PRICE_METER_EXPORT = prevExport;
+  }
+});
+
+test("webhook preserves meterItemIdsJson when items array is empty", async () => {
+  // Some Stripe `customer.subscription.updated` deliveries arrive
+  // with an empty items.data (e.g. during certain modifications).
+  // The webhook must NOT clobber a previously-good map.
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.subscription.upsert({
+    where: { stripeSubId: "sub_empty_items" },
+    create: {
+      orgId: testOrgId,
+      stripeSubId: "sub_empty_items",
+      stripePriceId: "price_team_seat_test",
+      seats: 1,
+      status: "active",
+      meterItemIdsJson: JSON.stringify({ bom_lookup: "si_kept" }),
+    },
+    update: {
+      status: "active",
+      meterItemIdsJson: JSON.stringify({ bom_lookup: "si_kept" }),
+    },
+  });
+
+  reset();
+  capture.event = {
+    id: "evt_empty_items_1",
+    type: "customer.subscription.updated",
+    data: {
+      object: {
+        id: "sub_empty_items",
+        status: "active",
+        items: { data: [] },
+      },
+    },
+  };
+  const res = await postWebhook({});
+  assert.equal(res.statusCode, 200);
+
+  const sub = await prisma.subscription.findUnique({
+    where: { stripeSubId: "sub_empty_items" },
+  });
+  const map = JSON.parse(sub!.meterItemIdsJson!);
+  assert.equal(map.bom_lookup, "si_kept");
 });
