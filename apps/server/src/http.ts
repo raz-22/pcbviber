@@ -20,6 +20,10 @@ import { registerWorkspaceRoutes } from "./workspaces/routes.js";
 import { registerNexarRoutes } from "./workspaces/nexar-routes.js";
 import { registerMemberRoutes } from "./members/routes.js";
 import { registerApiKeyRoutes } from "./api-keys/routes.js";
+import {
+  installApiKeyErrorHandler,
+  makeRequireApiKey,
+} from "./api-keys/middleware.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
@@ -83,7 +87,12 @@ export async function startHttpServer(opts: {
   registerAdRelayRoutes(app, relay);
 
   // ── MCP over HTTP (stateless) ──────────────────────────
-  app.post("/mcp", async (req, reply) => {
+  // Bearer-token auth gates every /mcp request: the middleware hashes
+  // the token, looks up the ApiKey row, rejects revoked/expired, and
+  // populates req.apiKeyCtx. Tools currently still use the env-loaded
+  // singleton; the per-tenant cutover is a follow-up.
+  const requireApiKey = makeRequireApiKey();
+  app.post("/mcp", { preHandler: requireApiKey }, async (req, reply) => {
     const server = buildMcpServer(nexar, relay);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -95,6 +104,10 @@ export async function startHttpServer(opts: {
     await server.connect(transport);
     await transport.handleRequest(req.raw, reply.raw, req.body);
   });
+  // Reshape the middleware's 401 throws into the SPA-friendly
+  // `{ error: "not_authenticated" }` body. Mounted last so all
+  // routes are registered before the error handler is replaced.
+  installApiKeyErrorHandler(app);
 
   app.get("/api/health", async () => ({
     ok: true,
