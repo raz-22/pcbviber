@@ -88,13 +88,6 @@ export async function startHttpServer(opts: {
     await transport.handleRequest(req.raw, reply.raw, req.body);
   });
 
-  // ── Parts / Library / Altium-365: see workspaces/nexar-routes.ts ─
-  //
-  // Pre-multitenant routes (`/api/parts/*`, `/api/library/components`,
-  // `/api/workspaces`, `/api/workspaces/projects`) lived here through
-  // PR 2.3 and were removed in PR 2.5 once the SPA cut over to the
-  // tenant-scoped equivalents under `/api/orgs/:orgId/workspaces/:id/*`.
-
   app.get("/api/health", async () => ({
     ok: true,
     name: "pcbviber",

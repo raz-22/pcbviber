@@ -62,17 +62,20 @@ pnpm -F "@altium-mcp/server" inspect          # MCP Inspector
 
 `POST /mcp` speaks MCP's StreamableHTTP transport — same tools as stdio.
 
-REST BFF (used by the UI, also usable from any HTTP client):
+REST BFF (used by the UI, also usable from any HTTP client). All
+data routes are tenant-scoped: pick the org + workspace via the
+SPA's Settings page or the workspace CRUD endpoints, then call the
+Nexar / Altium-365 routes under that workspace's id.
 
-| Method | Path | Query |
+| Method | Path | Query / body |
 |---|---|---|
 | GET | `/api/health` | — |
-| GET | `/api/parts/search` | `query`, `limit` |
-| GET | `/api/parts/availability` | `mpn` |
-| GET | `/api/parts/alternatives` | `mpn`, `criteria` |
-| GET | `/api/library/components` | `workspaceUrl` |
-| GET | `/api/workspaces` | — |
-| GET | `/api/workspaces/projects` | `workspaceUrl` |
+| GET | `/api/orgs/:orgId/workspaces/:workspaceId/parts/search` | `query`, `limit` |
+| GET | `/api/orgs/:orgId/workspaces/:workspaceId/parts/availability` | `mpn` |
+| GET | `/api/orgs/:orgId/workspaces/:workspaceId/parts/alternatives` | `mpn`, `criteria` |
+| GET | `/api/orgs/:orgId/workspaces/:workspaceId/library/components` | `altiumWorkspaceUrl?` |
+| GET | `/api/orgs/:orgId/workspaces/:workspaceId/altium-365/workspaces` | — |
+| GET | `/api/orgs/:orgId/workspaces/:workspaceId/altium-365/projects` | `altiumWorkspaceUrl?` |
 
 ## Tool surface
 
