@@ -22,6 +22,7 @@ import rateLimit from "@fastify/rate-limit";
 import {
   AUTH_RATE_LIMIT,
   INVITE_RATE_LIMIT,
+  MCP_RATE_LIMIT,
   installRateLimitErrorHandler,
   rateLimitErrorBuilder,
 } from "./rate-limits.js";
@@ -350,4 +351,43 @@ test("INVITE keyGenerator falls back to 'unknown' when orgId param is missing", 
     typeof INVITE_RATE_LIMIT.keyGenerator
   >[0];
   assert.equal(INVITE_RATE_LIMIT.keyGenerator(fakeReq), "invite:unknown");
+});
+
+test("MCP keyGenerator uses apiKeyCtx.apiKey.id when present (per-key bucket)", () => {
+  // The hook is preHandler so by the time the rate-limit fires the
+  // api-key middleware has populated apiKeyCtx. The bucket is keyed
+  // by ApiKey.id — two different keys from the same IP get
+  // INDEPENDENT buckets (the spec's "per-key" intent).
+  const fakeReq = {
+    apiKeyCtx: {
+      apiKey: { id: "ak_alice", orgId: "org_a", name: "alice's", scopes: [] },
+      org: { id: "org_a", slug: "alice", name: "Alice" },
+    },
+    headers: {},
+    ip: "127.0.0.1",
+  } as unknown as Parameters<typeof MCP_RATE_LIMIT.keyGenerator>[0];
+  assert.equal(MCP_RATE_LIMIT.keyGenerator(fakeReq), "mcp:ak_alice");
+});
+
+test("MCP keyGenerator falls back to mcp:ip:<ip> when apiKeyCtx absent", () => {
+  // Defense in depth: should never happen in production (api-key
+  // middleware 401s first), but a misregistered route shouldn't
+  // collapse every anonymous probe into the same bucket. The
+  // distinct namespace (`mcp:ip:` vs `mcp:`) keeps anon probes
+  // from sharing a bucket with authenticated calls from the same
+  // proxied IP.
+  const fakeReq = {
+    headers: { "x-forwarded-for": "203.0.113.5" },
+    ip: "127.0.0.1",
+  } as unknown as Parameters<typeof MCP_RATE_LIMIT.keyGenerator>[0];
+  assert.equal(MCP_RATE_LIMIT.keyGenerator(fakeReq), "mcp:ip:203.0.113.5");
+});
+
+test("MCP_RATE_LIMIT runs at preHandler (so apiKeyCtx is populated)", () => {
+  // Without this hook override, the plugin's default `onRequest`
+  // fires before the api-key middleware — every request would
+  // collapse to an IP bucket regardless of which key authenticated.
+  // This test pins the requirement so a future "tidy up the config"
+  // PR doesn't accidentally drop the hook.
+  assert.equal(MCP_RATE_LIMIT.hook, "preHandler");
 });

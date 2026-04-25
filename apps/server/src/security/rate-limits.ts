@@ -41,6 +41,18 @@ export interface RouteRateLimit {
    * by API-key id for /mcp.
    */
   keyGenerator: (req: import("fastify").FastifyRequest) => string;
+  /**
+   * Fastify lifecycle hook the rate-limit check runs in. The plugin
+   * defaults to "onRequest" (earliest) — fast, but the keyGenerator
+   * doesn't see anything populated by later preHandlers (e.g.
+   * `req.apiKeyCtx` from the api-key middleware). Override to
+   * "preHandler" when the bucket key needs data later in the
+   * lifecycle. Trade-off: unauthed requests reach the api-key
+   * middleware (which 401s) BEFORE the rate-limit can fire — so
+   * the bucket only gates AUTHENTICATED requests. For /mcp that's
+   * the right cap; auth probes are themselves cheap.
+   */
+  hook?: "onRequest" | "preHandler";
 }
 
 // ── Limits per spec §3.6 ─────────────────────────────────────────────
@@ -81,13 +93,20 @@ export const INVITE_RATE_LIMIT: RouteRateLimit = {
  * a tool workflow without tripping; revisit if customers complain
  * or we see a pattern of agents getting throttled.
  *
- * Falls back to the IP when apiKeyCtx isn't populated (the
- * api-key middleware would 401 first, but defense in depth — a
- * misconfigured route shouldn't accidentally bypass the bucket).
+ * Runs at `preHandler` so the api-key middleware has populated
+ * `req.apiKeyCtx`. Without that hook override, the default
+ * `onRequest` fires too early and apiKeyCtx is undefined — every
+ * request would then collapse to an IP bucket regardless of which
+ * key was authenticating.
+ *
+ * The `mcp:ip:` fallback covers misconfiguration only — in practice
+ * the api-key middleware already 401s an unauthenticated request
+ * before this runs.
  */
 export const MCP_RATE_LIMIT: RouteRateLimit = {
   max: 60,
   timeWindow: 60_000,
+  hook: "preHandler",
   keyGenerator: (req) => {
     const id = req.apiKeyCtx?.apiKey.id;
     return id ? `mcp:${id}` : `mcp:ip:${clientIp(req)}`;
