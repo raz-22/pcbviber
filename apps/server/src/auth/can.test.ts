@@ -43,6 +43,7 @@ test("billing_only cannot do ANY currently-defined action", () => {
     "api_key.create",
     "api_key.list",
     "api_key.revoke",
+    "billing.checkout",
     "tools.use",
   ];
   for (const action of actions) {
@@ -307,6 +308,18 @@ test("api_key.create / .list / .revoke: owner + admin only", () => {
     assert.equal(can(actor("member"), action), false);
     assert.equal(can(actor("billing_only"), action), false);
   }
+});
+
+// ─── billing.checkout ────────────────────────────────────────────────
+
+test("billing.checkout: owner only — admin / member / billing_only denied", () => {
+  // Picking a plan + seat count is an owner action per spec §3.4
+  // ("admin — no billing"). Even billing_only is denied; that role
+  // is view-only on invoices, never the one that starts a checkout.
+  assert.equal(can(actor("owner"), "billing.checkout"), true);
+  assert.equal(can(actor("admin"), "billing.checkout"), false);
+  assert.equal(can(actor("member"), "billing.checkout"), false);
+  assert.equal(can(actor("billing_only"), "billing.checkout"), false);
 });
 
 // ─── tools.use ───────────────────────────────────────────────────────

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@altium-mcp/auth": "workspace:*",
+    "@altium-mcp/billing": "workspace:^",
     "@altium-mcp/db": "workspace:*",
     "@altium-mcp/shared": "workspace:*",
     "@fastify/cookie": "^11.0.1",
