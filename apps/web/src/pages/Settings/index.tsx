@@ -12,6 +12,7 @@ import { MembersSettingsPage } from "./Members";
 import { ApiKeysSettingsPage } from "./ApiKeys";
 import { BillingSettingsPage } from "./Billing";
 import { UsageSettingsPage } from "./Usage";
+import { AuditSettingsPage } from "./Audit";
 
 interface Tab {
   to: string;
@@ -26,6 +27,7 @@ const tabs: Tab[] = [
   { to: "/settings/api-keys", label: "API keys", available: true },
   { to: "/settings/billing", label: "Billing", available: true },
   { to: "/settings/usage", label: "Usage", available: true },
+  { to: "/settings/audit", label: "Audit log", available: true },
   { to: "/settings/organization", label: "Organization", available: false, comingIn: "later" },
 ];
 
@@ -86,6 +88,7 @@ export function SettingsRoutes() {
         <Route path="api-keys" element={<ApiKeysSettingsPage />} />
         <Route path="billing" element={<BillingSettingsPage />} />
         <Route path="usage" element={<UsageSettingsPage />} />
+        <Route path="audit" element={<AuditSettingsPage />} />
       </Route>
     </Routes>
   );
