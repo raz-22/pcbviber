@@ -106,6 +106,10 @@ export function can(
 
     case "member.role_change": {
       if (resource?.kind !== "member") return false;
+      // Defense in depth: role_change is meaningless without a target
+      // role. Routes always set it; future callers that forget will
+      // get a clean `false` instead of a misleading `true`.
+      if (resource.newRole === undefined) return false;
       if (actor.role !== "owner" && actor.role !== "admin") return false;
       const isOwnerTransition =
         resource.currentRole === "owner" || resource.newRole === "owner";
@@ -140,12 +144,9 @@ export function can(
 
     case "workspace.read":
     case "tools.use":
-      // Any non-billing role.
-      return (
-        actor.role === "owner" ||
-        actor.role === "admin" ||
-        actor.role === "member"
-      );
+      // billing_only is filtered above; the remaining roles
+      // (owner / admin / member) all get read + tool access.
+      return true;
 
     default: {
       // Exhaustiveness — if a new CanAction was added without a case,

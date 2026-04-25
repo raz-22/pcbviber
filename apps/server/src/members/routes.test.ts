@@ -711,8 +711,14 @@ test("PATCH /members/:userId: admin CANNOT promote a member to owner (403)", asy
 });
 
 test("PATCH /members/:userId: admin CANNOT demote an owner (403)", async () => {
+  // Make sure Alice isn't the only owner — the route's last-owner
+  // state check fires before the privilege check, and we want THIS
+  // test to pin the privilege gate (403 forbidden) rather than the
+  // state gate (409 cannot_demote_last_owner). Adding an explicit
+  // co-owner makes the test self-contained instead of relying on
+  // earlier tests in this file having promoted someone.
+  await makeAliceMember("owner");
   const admin = await makeAliceMember("admin");
-  // Alice is owner. The admin tries to demote her.
   const res = await app.inject({
     method: "PATCH",
     url: `/api/orgs/${aliceOrgId}/members/${aliceUserId}`,

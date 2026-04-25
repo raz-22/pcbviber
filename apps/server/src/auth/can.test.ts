@@ -77,6 +77,19 @@ test("role_change without a member resource is always denied", () => {
   }
 });
 
+test("role_change with no newRole is denied even for owner", () => {
+  // Defense in depth: a partially-formed role_change call must NOT
+  // pass through to true just because the actor has high privilege.
+  // The route always sets newRole; this test pins the contract for
+  // future callers.
+  const allowed = can(
+    actor("owner"),
+    "member.role_change",
+    memberResource({ currentRole: "member" /* newRole intentionally unset */ })
+  );
+  assert.equal(allowed, false);
+});
+
 test("role_change: member can never change roles", () => {
   assert.equal(
     can(actor("member"), "member.role_change", memberResource()),
