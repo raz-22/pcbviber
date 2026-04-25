@@ -14,6 +14,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { selectAuthProvider } from "@altium-mcp/auth";
+import { prisma } from "@altium-mcp/db";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { registerOrgRoutes } from "./auth/org-routes.js";
 import { registerWorkspaceRoutes } from "./workspaces/routes.js";
@@ -31,7 +32,7 @@ import {
   selectBillingProvider,
 } from "@altium-mcp/billing";
 import { selectQuotaStore } from "@altium-mcp/metering";
-import { startWorker, type MeteringWorker } from "./jobs/worker.js";
+import { startWorker } from "./jobs/worker.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
@@ -118,10 +119,8 @@ export async function startHttpServer(opts: {
   // still works against the InMemoryQuotaStore; jobs just don't run,
   // and pending UsageEvent rows wait until a Redis-backed env runs
   // them via `pnpm -F @altium-mcp/server run-job meter-push`.
-  let meteringWorker: MeteringWorker | null = null;
   if (process.env.REDIS_URL?.trim()) {
-    const { prisma } = await import("@altium-mcp/db");
-    meteringWorker = await startWorker({
+    const meteringWorker = await startWorker({
       prisma,
       billing,
       store: selectQuotaStore(),
@@ -135,7 +134,7 @@ export async function startHttpServer(opts: {
     const shutdown = async (signal: string) => {
       app.log.info(`metering worker: caught ${signal}, draining jobs`);
       try {
-        await meteringWorker?.close();
+        await meteringWorker.close();
       } catch (err) {
         app.log.error({ err }, "metering worker close failed");
       }

@@ -485,7 +485,7 @@ test("webhook invoice with no matching subscription is acked but no-op", async (
   assert.equal(res.statusCode, 200);
 });
 
-// ═══ meterItemIdsJson population (Sprint 5 PR 5.3) ═══════════════════════
+// ═══ meterItemIdsJson population ═════════════════════════════════════════
 
 test("webhook customer.subscription.updated populates meterItemIdsJson when env price IDs match", async () => {
   // Re-create an active subscription so we have something for the

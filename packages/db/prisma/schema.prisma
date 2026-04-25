@@ -157,7 +157,7 @@ model Subscription {
   currentPeriodEnd     DateTime?
   /// JSON map of metric → Stripe subscription_item id, e.g.
   /// `{"bom_lookup":"si_abc","cost_analysis":"si_def","export":"si_ghi"}`.
-  /// Populated by the webhook on customer.subscription.created/updated
+  /// Populated by the customer.subscription.updated webhook handler
   /// when the subscription has metered Prices matching
   /// STRIPE_PRICE_METER_BOM/COST/EXPORT env vars. The meter-push job
   /// reads it to know which subscription_item to bill against.

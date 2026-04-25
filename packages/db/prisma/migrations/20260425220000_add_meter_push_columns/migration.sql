@@ -1,7 +1,3 @@
--- Sprint 5 PR 5.3 — meter-push background job needs to track which
--- UsageEvent rows have already been pushed to Stripe, and which
--- subscription_item id to bill against per metric.
-
 -- AlterTable
 ALTER TABLE "UsageEvent" ADD COLUMN "pushedToStripeAt" DATETIME;
 
