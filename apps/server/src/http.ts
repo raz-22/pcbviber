@@ -13,6 +13,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
+import rateLimit from "@fastify/rate-limit";
 import { selectAuthProvider } from "@altium-mcp/auth";
 import { prisma } from "@altium-mcp/db";
 import { registerAuthRoutes } from "./auth/routes.js";
@@ -32,7 +33,16 @@ import {
   makeBillingSigner,
   selectBillingProvider,
 } from "@altium-mcp/billing";
-import { selectQuotaStore, writeUsageEvent } from "@altium-mcp/metering";
+import {
+  getRedisClient,
+  selectQuotaStore,
+  writeUsageEvent,
+} from "@altium-mcp/metering";
+import {
+  MCP_RATE_LIMIT,
+  installRateLimitErrorHandler,
+  rateLimitErrorBuilder,
+} from "./security/rate-limits.js";
 import { startWorker } from "./jobs/worker.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -71,6 +81,37 @@ export async function startHttpServer(opts: {
   });
 
   await app.register(cookie);
+
+  // ── Rate limiting ───────────────────────────────────────
+  // Per-route opt-in via `config.rateLimit` on each protected route.
+  // Storage: ioredis when REDIS_URL is set (state shared across
+  // replicas — without this, an attacker could N× their effective
+  // rate by hitting different replicas). In-memory fallback for
+  // dev / tests is the plugin's default.
+  //
+  // selectQuotaStore() is called before getRedisClient() so the
+  // metering layer's lazy-construction path runs first; both share
+  // the same ioredis instance via the metering factory's cache.
+  selectQuotaStore();
+  const rateLimitRedis = getRedisClient();
+  await app.register(rateLimit, {
+    // Global off so routes opt in via `config.rateLimit`. Saves us
+    // from accidentally rate-limiting /api/health or anything else
+    // that shouldn't be capped.
+    global: false,
+    redis: rateLimitRedis ?? undefined,
+    // The plugin throws what this builder returns; we attach a
+    // marker so the error handler below can reshape into our
+    // `{ error: "rate_limited", detail: { … } }` body. Without the
+    // handler reshape, Fastify's default error serializer would
+    // emit `{statusCode, error, message}` (Fastify's standard
+    // error shape) — close, but inconsistent with the rest of
+    // the API.
+    errorResponseBuilder: rateLimitErrorBuilder,
+  });
+  // Mount BEFORE installApiKeyErrorHandler so the api-key handler
+  // stays the outermost wrapper for unhandled errors.
+  installRateLimitErrorHandler(app);
 
   // ── Auth (signup / login / logout / me) ─────────────────
   // Lazy-construct the provider here so the same env-gated factory the
@@ -162,7 +203,13 @@ export async function startHttpServer(opts: {
   // before.
   const requireApiKey = makeRequireApiKey();
   const meteringStore = selectQuotaStore();
-  app.post("/mcp", { preHandler: requireApiKey }, async (req, reply) => {
+  app.post(
+    "/mcp",
+    {
+      preHandler: requireApiKey,
+      config: { rateLimit: MCP_RATE_LIMIT },
+    },
+    async (req, reply) => {
     const apiKeyCtx = req.apiKeyCtx;
     if (!apiKeyCtx) {
       // Programmer error: middleware should have populated this.
@@ -214,7 +261,8 @@ export async function startHttpServer(opts: {
     });
     await server.connect(transport);
     await transport.handleRequest(req.raw, reply.raw, req.body);
-  });
+    }
+  );
   // Reshape the middleware's 401 throws into the SPA-friendly
   // `{ error: "not_authenticated" }` body. Mounted last so all
   // routes are registered before the error handler is replaced.

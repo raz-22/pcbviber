@@ -48,6 +48,7 @@ import { makeRequireOrgRole } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
 import { can } from "../auth/can.js";
 import { generateInviteToken, inviteExpiry } from "./tokens.js";
+import { INVITE_RATE_LIMIT } from "../security/rate-limits.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
 
@@ -294,7 +295,12 @@ export async function registerMemberRoutes(
   // Real email delivery lands when SMTP / WorkOS is wired.
   app.post(
     "/api/orgs/:orgId/invites",
-    { preHandler: [requireAuth, requireAdmin] },
+    {
+      preHandler: [requireAuth, requireAdmin],
+      // Rate-limited 10/hour/orgId. Stops a compromised owner/admin
+      // (or a runaway script) from spam-inviting hundreds of users.
+      config: { rateLimit: INVITE_RATE_LIMIT },
+    },
     async (req, reply) => {
       const parsed = CreateInviteBody.safeParse(req.body);
       if (!parsed.success) {
