@@ -105,9 +105,9 @@ export async function startHttpServer(opts: {
   //   - /mcp (Bearer-token auth, not cookies)
   //   - /api/billing/webhook (Stripe HMAC, not session)
   //   - /api/auth/{signup,login} (no session yet to bind to)
-  //   - /api/invites/:token/accept (URL token IS the auth)
   //   - GET /api/csrf (the bootstrap)
   //   - All GETs (read-only, not state-changing)
+  // The full rationale for each skip lives at the top of csrf.ts.
   await app.register(csrfProtection, {
     sessionPlugin: "@fastify/cookie",
     cookieKey: "_csrf",

@@ -54,7 +54,20 @@ async function fetchCsrfToken(): Promise<string> {
       "Could not initialize CSRF token"
     );
   }
-  const data = (await res.json()) as { csrfToken?: string };
+  // Defensive: a malformed body shouldn't surface as an
+  // unhandled SyntaxError — wrap it so the caller's catch sees
+  // the same ApiError shape every other fetch failure produces.
+  let data: { csrfToken?: string };
+  try {
+    data = (await res.json()) as { csrfToken?: string };
+  } catch {
+    throw new ApiError(
+      res.status,
+      "csrf_bootstrap_failed",
+      null,
+      "CSRF endpoint returned non-JSON body"
+    );
+  }
   if (typeof data.csrfToken !== "string" || data.csrfToken.length === 0) {
     throw new ApiError(
       res.status,

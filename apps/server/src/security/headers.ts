@@ -113,9 +113,10 @@ export function helmetOptionsFor(env: NodeJS.ProcessEnv): FastifyHelmetOptions {
       policy: "strict-origin-when-cross-origin",
     },
     // Cross-origin isolation: dial these back to the helmet default
-    // so the SPA + REST work without surprises. Production tightens
-    // these along with the rest of the launch hardening (Sprint 6
-    // observability + 8 launch).
+    // so the SPA + REST work without surprises. Tightening COEP /
+    // COOP belongs with the rest of the launch hardening once the
+    // production deploy topology (Cloudflare in front, separate
+    // marketing site, etc.) is settled.
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "same-origin" },
   };

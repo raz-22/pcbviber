@@ -20,9 +20,13 @@
  *   - /api/billing/webhook (Stripe HMAC, not session)
  *   - /api/auth/signup, /api/auth/login (no session yet → can't
  *     have a token to check)
- *   - /api/invites/:token/accept (the URL token IS the auth)
  *   - GET /api/csrf itself (the bootstrap call)
  *   - Every GET (read-only, not state-changing)
+ *
+ * /api/invites/:token/accept IS protected — the URL token only
+ * authorizes the join target, but the COOKIE authenticates the
+ * caller, so a malicious link could trick a signed-in user into
+ * accepting an invite they didn't intend to.
  *
  * The csrf-protection plugin throws a typed error on mismatch;
  * we install a small Fastify error handler that maps it to the
@@ -38,15 +42,15 @@ import type {
 } from "fastify";
 
 /**
- * Marker the csrf-protection plugin attaches to its 403 errors.
- * Pinned here so the error handler doesn't depend on string
- * matches against the plugin's message.
+ * The two error codes `@fastify/csrf-protection` v7 throws on a
+ * failed check (verified against the plugin source — see
+ * `node_modules/.../@fastify/csrf-protection/index.js`). Pinned
+ * here so the error handler doesn't depend on string matches
+ * against the plugin's message text.
  */
 const CSRF_ERROR_CODES = new Set([
   "FST_CSRF_MISSING_SECRET",
-  "FST_CSRF_INVALID_SESSION_SECRET",
   "FST_CSRF_INVALID_TOKEN",
-  "FST_CSRF_BROKEN_TOKEN_FORMAT",
 ]);
 
 /**
