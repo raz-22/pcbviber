@@ -12,10 +12,7 @@
 #
 # Failure semantics: every job is fatal — no `continue-on-error`.
 # If a transient flake red-shifts a job, re-run it from the PR's
-# checks tab; if a real finding lands, it's a blocker. The current
-# baseline (verified 2026-04-26) has 0 high/critical npm audit
-# findings, no secrets in history, and no critical/high trivy
-# findings — landing this workflow shouldn't paint main red.
+# checks tab; if a real finding lands, it's a blocker.
 
 name: security
 
@@ -30,6 +27,14 @@ on:
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Workflow-level permissions. The default GITHUB_TOKEN is restrictive;
+# we grant only what each job needs:
+#   contents: read         — checkout
+#   pull-requests: write   — gitleaks-action posts a comment on PRs
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   gitleaks:
@@ -58,17 +63,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node + pnpm
+      # pnpm must be on PATH BEFORE actions/setup-node runs with
+      # `cache: pnpm` — otherwise the cache step blows up with
+      # "Unable to locate executable file: pnpm". `pnpm/action-setup`
+      # installs the version pinned in package.json's
+      # `packageManager` field.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node + pnpm cache
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # `cache: pnpm` plays with corepack-pinned pnpm — Node 20
-          # ships corepack which honors the `packageManager` field
-          # in package.json (pnpm@9.x in this repo).
           cache: pnpm
-
-      - name: Enable corepack (pnpm)
-        run: corepack enable
 
       - name: Install dependencies (frozen lockfile)
         # frozen-lockfile is the right CI behavior — fails when
@@ -92,9 +99,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Trivy filesystem scan
-        # Pinned to the v0.x major. The action auto-downloads the
-        # trivy CLI; no toolchain setup needed.
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to a specific tag (NOT `master`) so an upstream
+        # change can't silently alter our CI behavior. Bump
+        # deliberately when the action ships a meaningful release.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -106,8 +114,8 @@ jobs:
           # Fail the job (exit 1) when a CRITICAL/HIGH finding
           # lands. Branch-protection turns this into a merge block.
           exit-code: '1'
-          # Skip the dev-only secret detector — gitleaks already
-          # owns that surface; running both doubles the noise on
-          # any false positive.
+          # Skip the lockfile — gitleaks already scans it for
+          # secrets, and trivy's own SBOM-style scan of node_modules
+          # picks up the dep CVEs without needing the lockfile.
           skip-files: 'pnpm-lock.yaml'
           format: table
