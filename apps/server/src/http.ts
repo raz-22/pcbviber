@@ -12,6 +12,9 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
+import { selectAuthProvider } from "@altium-mcp/auth";
+import { registerAuthRoutes } from "./auth/routes.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   SearchPartsInput,
@@ -47,8 +50,20 @@ export async function startHttpServer(opts: {
       ];
       cb(null, allowed.includes(origin));
     },
-    credentials: false,
+    // Browser sends the session cookie on cross-origin requests during
+    // dev (Vite on :5173 → Fastify on :3000). Enable credentials so the
+    // SPA can authenticate.
+    credentials: true,
   });
+
+  await app.register(cookie);
+
+  // ── Auth (signup / login / logout / me) ─────────────────
+  // Lazy-construct the provider here so the same env-gated factory the
+  // CLI uses is what the server runs against. `selectAuthProvider` is
+  // env-gated: WorkOS in prod, LocalAuthProvider in dev.
+  const authProvider = selectAuthProvider();
+  await registerAuthRoutes(app, authProvider);
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
