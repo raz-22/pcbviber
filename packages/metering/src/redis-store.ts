@@ -89,8 +89,9 @@ export class RedisQuotaStore implements QuotaStore {
 
   /**
    * Reconciliation-only escape hatch for setting an absolute value.
-   * Not part of the public `QuotaStore` interface — route code uses
-   * `increment` exclusively. See reconciliation.ts for the contract.
+   * Route code MUST use `increment` instead — see the doc on
+   * `QuotaStore.setExact` in types.ts. Reconciliation owns this
+   * method.
    *
    * Uses SET + PEXPIREAT so the TTL is preserved (we don't want a
    * reconciliation write to leave a key without expiry).

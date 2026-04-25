@@ -13,7 +13,7 @@
  * environments without Redis never spin up a connection.
  */
 
-import IORedis, { type Redis, type RedisOptions } from "ioredis";
+import IORedis, { type Redis } from "ioredis";
 import { InMemoryQuotaStore } from "./in-memory-store.js";
 import { RedisQuotaStore } from "./redis-store.js";
 import type { QuotaStore } from "./types.js";
@@ -25,14 +25,8 @@ let cachedRedis: Redis | null = null;
  * Returns the process-wide QuotaStore. Memoized — repeated calls
  * return the same instance. Tests must call
  * `__resetQuotaStoreCacheForTests()` before flipping REDIS_URL.
- *
- * `redisOptions` is forwarded to the ioredis constructor when
- * REDIS_URL is set. Lets server boot pass a logger / TLS config
- * without leaking those into env-string parsing.
  */
-export function selectQuotaStore(
-  redisOptions: RedisOptions = {}
-): QuotaStore {
+export function selectQuotaStore(): QuotaStore {
   if (cachedStore) return cachedStore;
   const url = process.env.REDIS_URL?.trim();
   if (url && url.length > 0) {
@@ -47,7 +41,6 @@ export function selectQuotaStore(
       // Lazy connect so import-time side effects stay nil; the first
       // command opens the socket.
       lazyConnect: true,
-      ...redisOptions,
     });
     cachedStore = new RedisQuotaStore(cachedRedis);
   } else {
@@ -78,11 +71,3 @@ export async function __resetQuotaStoreCacheForTests(): Promise<void> {
   }
 }
 
-/**
- * Test-only: peek at the cached Redis client (or null when the
- * in-memory store is active). Used by reconciliation tests that
- * need to flush the test Redis between cases.
- */
-export function __getRedisClientForTests(): Redis | null {
-  return cachedRedis;
-}

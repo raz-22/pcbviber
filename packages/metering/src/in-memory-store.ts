@@ -44,8 +44,8 @@ export class InMemoryQuotaStore implements QuotaStore {
 
   /**
    * Reconciliation-only escape hatch for setting an absolute value.
-   * Not part of the public `QuotaStore` interface — route code uses
-   * `increment` exclusively. See reconciliation.ts for the contract.
+   * Route code MUST use `increment` instead — see the doc on
+   * `QuotaStore.setExact` in types.ts.
    */
   async setExact(
     orgId: string,
