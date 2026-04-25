@@ -1,0 +1,28 @@
+{
+  "name": "@altium-mcp/auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "default": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "cross-env NODE_ENV=test node --test --experimental-test-coverage --test-reporter=spec \"build/**/*.test.js\""
+  },
+  "dependencies": {
+    "@altium-mcp/db": "workspace:*",
+    "@workos-inc/node": "^7.45.0",
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.7.0"
+  }
+}

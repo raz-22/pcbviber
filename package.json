@@ -11,7 +11,11 @@
     "dev:web": "pnpm -F @altium-mcp/web dev",
     "inspect": "pnpm -F @altium-mcp/server inspect",
     "start": "pnpm -F @altium-mcp/server start",
-    "start:http": "pnpm -F @altium-mcp/server start:http"
+    "start:http": "pnpm -F @altium-mcp/server start:http",
+    "db:generate": "pnpm -F @altium-mcp/db generate",
+    "db:migrate": "pnpm -F @altium-mcp/db migrate:dev",
+    "db:studio": "pnpm -F @altium-mcp/db studio",
+    "db:test": "pnpm -F @altium-mcp/db test"
   },
   "engines": {
     "node": ">=20.0.0",

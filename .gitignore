@@ -12,3 +12,9 @@ dist
 *.tsbuildinfo
 .claude/
 test-projects/
+
+# Prisma dev artifacts
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
