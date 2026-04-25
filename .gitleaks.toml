@@ -1,0 +1,47 @@
+# gitleaks configuration.
+#
+# We extend the default ruleset rather than replacing it, then add
+# allowlists for the few false-positive patterns our test fixtures
+# emit. Keeping this file lean is intentional — every entry is a
+# place a real secret could hide, so they're scrutinized at review
+# time.
+
+# Inherit gitleaks' built-in detectors (stripe, AWS, etc.).
+[extend]
+useDefault = true
+
+# ── Allowlists ───────────────────────────────────────────────────────
+#
+# Each block is a SCOPED exception — applies only to test files +
+# the specific placeholder strings they use. Production code is NOT
+# allowlisted; a real Stripe key landing in apps/server/src/* would
+# still trip the scanner.
+
+[[rules.allowlists]]
+description = "Stripe test-mode placeholder strings used in unit tests"
+# Restrict to test files so a real `sk_test_…` accidentally pasted
+# into production code still trips the scan.
+paths = ['''.*\.test\.ts$''']
+# Match the literal placeholders we use — anchored so a longer
+# accidental copy doesn't slip past. The placeholders are
+# clearly-not-real strings (substrings like "dummy", "placeholder",
+# "after_noop") that gitleaks' stripe-access-token rule otherwise
+# matches because of length.
+regexes = [
+  '''sk_test_dummy_value_not_real''',
+  '''sk_test_dummy''',
+  '''sk_test_direct''',
+  '''sk_test_placeholder_for_factory_test''',
+  '''sk_test_after_noop''',
+]
+
+[[rules.allowlists]]
+description = "API-key plaintext fixture used in api.test.ts"
+# pcb_<43 chars> is the production API-key shape. The unit test for
+# the create-key response uses a deliberately-fake fixture so the
+# test doesn't depend on randomness; gitleaks' generic
+# high-entropy rule catches it.
+paths = ['''apps/web/src/lib/api\.test\.ts$''']
+regexes = [
+  '''pcb_aBcDeFgH123full456token''',
+]

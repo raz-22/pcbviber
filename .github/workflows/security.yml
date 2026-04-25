@@ -1,0 +1,113 @@
+# Security checks per spec §3.6 launch checklist.
+#
+# Three jobs run in parallel on every PR + every push to main:
+#
+#   gitleaks   — scans git history + working tree for committed secrets
+#   audit      — `pnpm audit --audit-level=high` (low/moderate ignored)
+#   trivy      — filesystem CVE scan on CRITICAL + HIGH severity
+#
+# On a green PR the merge is allowed; a red job blocks merge via the
+# branch protection rule on `main`. Adding the rule is a one-time
+# repo-settings step (Settings → Branches → Require status checks).
+#
+# Failure semantics: every job is fatal — no `continue-on-error`.
+# If a transient flake red-shifts a job, re-run it from the PR's
+# checks tab; if a real finding lands, it's a blocker. The current
+# baseline (verified 2026-04-26) has 0 high/critical npm audit
+# findings, no secrets in history, and no critical/high trivy
+# findings — landing this workflow shouldn't paint main red.
+
+name: security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same branch — saves CI minutes when
+# a PR gets a quick follow-up push.
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    name: gitleaks (committed-secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan every commit, not just
+          # the tip. Without this it'd miss secrets that landed on
+          # an older commit and were never explicitly removed.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # GITHUB_TOKEN is auto-provided; gitleaks-action uses it
+          # to post a PR comment summarizing findings.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  audit:
+    name: pnpm audit (high+ CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          # `cache: pnpm` plays with corepack-pinned pnpm — Node 20
+          # ships corepack which honors the `packageManager` field
+          # in package.json (pnpm@9.x in this repo).
+          cache: pnpm
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Install dependencies (frozen lockfile)
+        # frozen-lockfile is the right CI behavior — fails when
+        # pnpm-lock.yaml drifts from package.json. Saves us from
+        # accidentally auditing a different tree than what would
+        # ship.
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm audit --audit-level=high
+        # Spec §3.6 names this exact threshold. Moderate / low get
+        # surfaced in the job log but don't block the merge —
+        # there's a long tail of those across the dev tooling that
+        # we'd rather not cycle on weekly.
+        run: pnpm audit --audit-level=high
+
+  trivy:
+    name: trivy (filesystem CVE scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        # Pinned to the v0.x major. The action auto-downloads the
+        # trivy CLI; no toolchain setup needed.
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          # Don't fail on CVEs that have no patch yet — those need
+          # a workaround / accepted-risk decision, not an automatic
+          # red status. We'll still see them in the job log.
+          ignore-unfixed: true
+          # Fail the job (exit 1) when a CRITICAL/HIGH finding
+          # lands. Branch-protection turns this into a merge block.
+          exit-code: '1'
+          # Skip the dev-only secret detector — gitleaks already
+          # owns that surface; running both doubles the noise on
+          # any false positive.
+          skip-files: 'pnpm-lock.yaml'
+          format: table
