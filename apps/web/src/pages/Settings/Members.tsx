@@ -367,7 +367,6 @@ function InviteRow({
   canEdit: boolean;
 }) {
   const revoke = useRevokeInvite(orgId);
-  const acceptUrl = `${window.location.origin}/invites/accept?token=…`;
   return (
     <li className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-4">
@@ -377,9 +376,9 @@ function InviteRow({
             role: <span className="font-mono">{invite.role}</span> · expires{" "}
             {new Date(invite.expiresAt).toLocaleDateString()}
           </p>
-          <p className="mt-1 text-xs text-slate-400" title={acceptUrl}>
-            Send the recipient the accept URL from the create response — server
-            doesn't store the token.
+          <p className="mt-1 text-xs text-slate-400">
+            The accept URL is shown only at creation. To re-share, revoke and
+            invite again.
           </p>
         </div>
         {canEdit && (

@@ -17,7 +17,7 @@
  * the auth cache so /me reflects the new membership.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../lib/api";
@@ -32,9 +32,18 @@ export function AcceptInvitePage() {
   const { me } = useAuth();
   const navigate = useNavigate();
 
+  // useRef gate, NOT mutation state, because in React 18 StrictMode the
+  // effect runs twice per mount: between the two runs, mutateAsync has
+  // been called but its `isPending` state update hasn't propagated yet.
+  // Both runs would fire — the second hits the server and gets 409
+  // invite_already_accepted, and React Query overwrites the success
+  // with that error. The ref flips synchronously and persists across
+  // the StrictMode cleanup → re-run cycle, which mutation state does
+  // not.
+  const fired = useRef(false);
   useEffect(() => {
-    if (!token) return;
-    if (accept.isPending || accept.isSuccess || accept.isError) return;
+    if (!token || fired.current) return;
+    fired.current = true;
     accept
       .mutateAsync(token)
       .then(() => {
@@ -44,9 +53,6 @@ export function AcceptInvitePage() {
       .catch(() => {
         /* error rendered below */
       });
-    // We deliberately depend on `token` only — re-running on every
-    // render would re-fire the mutation. The internal isPending /
-    // isSuccess / isError flags above gate the second invocation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
