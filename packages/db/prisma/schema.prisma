@@ -143,14 +143,21 @@ model Subscription {
   id                   String        @id @default(cuid())
   orgId                String
   stripeSubId          String?       @unique
-  planId               String
+  /// Nullable until Plan rows are seeded — the webhook handler records
+  /// stripePriceId directly on the row and links to a Plan when one
+  /// gets seeded later. Pre-seed orgs read planName / pricing through
+  /// stripePriceId-keyed env config instead.
+  planId               String?
+  /// Stripe Price id this subscription is on (e.g. `price_…`). Set by
+  /// the webhook handler from the line_items on the Stripe sub.
+  stripePriceId        String?
   seats                Int           @default(1)
   status               String        // trialing | active | past_due | canceled | suspended
   currentPeriodStart   DateTime?
   currentPeriodEnd     DateTime?
 
   org                  Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  plan                 Plan          @relation(fields: [planId], references: [id])
+  plan                 Plan?         @relation(fields: [planId], references: [id])
 
   @@index([orgId])
   @@index([status])
@@ -188,6 +195,26 @@ model Invite {
 
   @@index([orgId])
   @@index([email])
+}
+
+// ─── Stripe webhook idempotency ───────────────────────────────────────
+//
+// Idempotency table for Stripe webhooks. The handler tries to insert
+// a row keyed on stripeEventId before applying the event; a unique-
+// constraint failure means the event was already processed and the
+// handler returns 200 without re-applying. Stripe retries failed
+// webhook deliveries, so every handler must be idempotent — this
+// table is what enforces it.
+
+model WebhookEvent {
+  id              String   @id @default(cuid())
+  /// Stripe `event.id` — the natural idempotency key.
+  stripeEventId   String   @unique
+  /// `event.type` for cheap "what kind?" queries on the table.
+  eventType       String
+  receivedAt      DateTime @default(now())
+
+  @@index([eventType, receivedAt])
 }
 
 // ─── Audit log (append-only; exports in Sprint 7) ─────────────────────

@@ -74,6 +74,12 @@ const stubBilling: BillingProvider = {
     if (capture.shouldThrow) throw capture.shouldThrow;
     return capture.result;
   },
+  // The checkout-session route doesn't call verifyWebhook; stubbing
+  // it here keeps the BillingProvider interface satisfied without
+  // pulling webhook test fixtures into this file.
+  verifyWebhook: () => {
+    throw new Error("verifyWebhook not used by checkout-session tests");
+  },
 };
 
 before(async () => {

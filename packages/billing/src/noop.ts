@@ -3,6 +3,7 @@ import {
   type BillingProvider,
   type CheckoutSessionRequest,
   type CheckoutSessionResult,
+  type WebhookEvent,
 } from "./types.js";
 
 /**
@@ -19,6 +20,13 @@ export class NoopBillingProvider implements BillingProvider {
   async createCheckoutSession(
     _input: CheckoutSessionRequest
   ): Promise<CheckoutSessionResult> {
+    throw new BillingNotConfigured();
+  }
+
+  verifyWebhook(_rawBody: Buffer, _signature: string): WebhookEvent {
+    // No secret to verify against; reject everything. Webhook route
+    // 503s on this — Stripe retries 5xx but in a no-Stripe env there
+    // shouldn't be any incoming webhooks anyway.
     throw new BillingNotConfigured();
   }
 }

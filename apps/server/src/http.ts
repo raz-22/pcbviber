@@ -25,6 +25,7 @@ import {
   makeRequireApiKey,
 } from "./api-keys/middleware.js";
 import { registerBillingRoutes } from "./billing/routes.js";
+import { registerBillingWebhookRoute } from "./billing/webhook.js";
 import {
   makeBillingSigner,
   selectBillingProvider,
@@ -101,6 +102,13 @@ export async function startHttpServer(opts: {
     billing,
     signer: billingSigner,
     appBaseUrl,
+  });
+  // Webhook route — UNTENANTED (signed by Stripe, not by user). Lives
+  // in a child Fastify scope so its raw-body content-type parser
+  // doesn't affect any other application/json route.
+  await registerBillingWebhookRoute(app, {
+    billing,
+    signer: billingSigner,
   });
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
