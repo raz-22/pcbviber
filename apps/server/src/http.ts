@@ -11,6 +11,7 @@
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
+import * as Sentry from "@sentry/node";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import csrfProtection from "@fastify/csrf-protection";
@@ -88,6 +89,19 @@ export async function startHttpServer(opts: {
   });
 
   await app.register(cookie);
+
+  // ── Sentry per-request tenant attribution ───────────────
+  // We don't add an app-level preHandler here: Fastify runs
+  // app-level `addHook("preHandler", ...)` hooks BEFORE
+  // route-level preHandler arrays, so req.ctx / req.apiKeyCtx
+  // would always be undefined at that stage. The auth/tenant
+  // middleware (auth/tenant.ts) and api-key middleware
+  // (api-keys/middleware.ts) call `tagRequestUser` /
+  // `tagRequestApiKey` themselves, immediately after they
+  // populate the context. Sentry's async-context tracking
+  // attaches those tags to the current request's scope, so
+  // any error captured later (via setupFastifyErrorHandler
+  // below) carries the right tenant attribution.
 
   // ── Security headers ────────────────────────────────────
   // CSP / HSTS (prod only) / X-Frame-Options / X-Content-Type-Options /
@@ -324,6 +338,15 @@ export async function startHttpServer(opts: {
   // `{ error: "not_authenticated" }` body. Mounted last so all
   // routes are registered before the error handler is replaced.
   installApiKeyErrorHandler(app);
+
+  // Sentry's Fastify error handler: captures any error that
+  // bubbles out of a route handler. Mounted AFTER our own
+  // error handlers so they get first crack at reshaping known
+  // error codes (csrf_invalid, rate_limited, not_authenticated,
+  // quota_exceeded). Whatever lands here is by definition an
+  // "unexpected" error — exactly what Sentry should see.
+  // No-op when SENTRY_DSN is unset.
+  Sentry.setupFastifyErrorHandler(app);
 
   app.get("/api/health", async () => ({
     ok: true,
