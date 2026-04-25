@@ -8,8 +8,8 @@
  *     echoed in listings; expiry is honored (410); double-accept 409;
  *     wrong-email accept is 403 with no email leak
  *   - Self-invite, already-member: collapse to 409 already_member
- *   - Owner role can NOT be granted via invite (only via PR 3.2's
- *     promotion endpoint)
+ *   - Owner role can NOT be granted via invite (only via the role-
+ *     change endpoint, which carries the last-owner protection)
  *   - Audit log: every mutation writes a row with the right action
  *     and metadata
  *

@@ -22,13 +22,13 @@
  * Stable error codes (kept in sync with the SPA's mapper):
  *   not_authenticated  invalid_input  forbidden  not_found
  *   already_member               — invitee email is already a member
- *   invite_invalid_role          — POST .../invites with role outside admin|member|billing_only
  *   invite_email_mismatch        — accept by a user whose email != invite.email
  *   invite_expired               — accept after expiresAt
  *   invite_already_accepted      — token already consumed
  *
- * Owner promotions are NOT done via invite — only PR 3.2's
- * /members/:userId PATCH (with last-owner protection) can grant owner.
+ * Owner promotions are NOT done via invite. Owners are minted at signup
+ * and otherwise granted via the role-change endpoint (which carries the
+ * last-owner-cannot-be-demoted rule).
  */
 
 import type { FastifyInstance } from "fastify";
@@ -44,7 +44,7 @@ import { generateInviteToken, inviteExpiry } from "./tokens.js";
 
 /**
  * Roles an invite can grant. Excludes `owner` deliberately — owners
- * are minted at signup (auto-org) or promoted via PR 3.2's role-change
+ * are minted at signup (auto-org) or promoted via the role-change
  * endpoint, never via an invite link.
  */
 const InviteRole = z.enum(["admin", "member", "billing_only"]);
@@ -94,7 +94,7 @@ export async function registerMemberRoutes(
   // ── POST /api/orgs/:orgId/invites ────────────────────────────────────
   // Owner/admin creates an invite for an email + role. Server returns
   // the raw token so the inviter can paste the accept URL anywhere.
-  // Real email delivery lands when SMTP/WorkOS is wired (Sprint 3+).
+  // Real email delivery lands when SMTP / WorkOS is wired.
   app.post(
     "/api/orgs/:orgId/invites",
     { preHandler: [requireAuth, requireAdmin] },
@@ -183,8 +183,8 @@ export async function registerMemberRoutes(
 
   // ── DELETE /api/orgs/:orgId/invites/:inviteId ────────────────────────
   // Owner/admin revokes a pending invite. Already-accepted invites are
-  // immutable (the membership is what's revocable now — that lands in
-  // PR 3.2's DELETE /members/:userId).
+  // immutable here — the membership is the thing to revoke at that
+  // point, via the member-removal endpoint.
   app.delete(
     "/api/orgs/:orgId/invites/:inviteId",
     { preHandler: [requireAuth, requireAdmin] },
@@ -228,11 +228,7 @@ export async function registerMemberRoutes(
   // invite's email to the logged-in user's email — a leaked URL can
   // NOT auto-bind to whichever account happens to be signed in.
   app.post("/api/invites/:token/accept", { preHandler: [requireAuth] }, async (req, reply) => {
-    if (!req.user) {
-      // requireAuth already 401s, but keep TS happy and defensive.
-      reply.code(401);
-      return { error: "not_authenticated" };
-    }
+    const user = req.user!;
     const { token } = req.params as { token: string };
 
     const invite = await prisma.invite.findUnique({ where: { token } });
@@ -248,7 +244,7 @@ export async function registerMemberRoutes(
       reply.code(410);
       return { error: "invite_expired" };
     }
-    if (invite.email.toLowerCase() !== req.user.email.toLowerCase()) {
+    if (invite.email.toLowerCase() !== user.email.toLowerCase()) {
       // 403: the user is real, just not the right person for this link.
       // Don't echo the invite email back — that would let an attacker
       // probe membership of a target email by submitting their own
@@ -260,7 +256,7 @@ export async function registerMemberRoutes(
     // Idempotent insert: if a membership already exists (e.g. the user
     // was added another way), surface that as 409 instead of P2002.
     const existing = await prisma.membership.findUnique({
-      where: { orgId_userId: { orgId: invite.orgId, userId: req.user.id } },
+      where: { orgId_userId: { orgId: invite.orgId, userId: user.id } },
       select: { id: true },
     });
     if (existing) {
@@ -275,7 +271,7 @@ export async function registerMemberRoutes(
       prisma.membership.create({
         data: {
           orgId: invite.orgId,
-          userId: req.user.id,
+          userId: user.id,
           role: invite.role,
         },
       }),
@@ -287,7 +283,7 @@ export async function registerMemberRoutes(
 
     await writeAuditLog({
       orgId: invite.orgId,
-      actorUserId: req.user.id,
+      actorUserId: user.id,
       action: "member.add",
       target: membership.userId,
       ip: clientIp(req),
