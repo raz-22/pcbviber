@@ -88,11 +88,14 @@ const stubBilling: BillingProvider = {
     if (capture.shouldThrowPortal) throw capture.shouldThrowPortal;
     return capture.portalResult;
   },
-  // The checkout/portal routes don't call verifyWebhook; stubbing it
-  // keeps the BillingProvider interface satisfied without pulling
-  // webhook test fixtures into this file.
+  // The checkout/portal routes don't call verifyWebhook / recordUsage;
+  // stubbing them keeps the BillingProvider interface satisfied without
+  // pulling webhook / meter-push test fixtures into this file.
   verifyWebhook: () => {
     throw new Error("verifyWebhook not used by checkout/portal tests");
+  },
+  recordUsage: async () => {
+    throw new Error("recordUsage not used by checkout/portal tests");
   },
 };
 

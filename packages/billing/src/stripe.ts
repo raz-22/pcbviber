@@ -5,6 +5,8 @@ import type {
   CheckoutSessionResult,
   PortalSessionRequest,
   PortalSessionResult,
+  RecordUsageRequest,
+  RecordUsageResult,
   WebhookEvent,
 } from "./types.js";
 import { WebhookSignatureInvalid } from "./types.js";
@@ -120,5 +122,23 @@ export class StripeBillingProvider implements BillingProvider {
       const reason = err instanceof Error ? err.message : "unknown";
       throw new WebhookSignatureInvalid(reason);
     }
+  }
+
+  async recordUsage(input: RecordUsageRequest): Promise<RecordUsageResult> {
+    // Stripe's idempotency-key header takes effect server-side — a
+    // duplicate key returns the original record's id rather than
+    // creating a new one. The meter-push job's "mark these rows
+    // pushed" SQL update can therefore safely re-run after a
+    // partial-success retry without double-billing.
+    const record = await this.stripe.subscriptionItems.createUsageRecord(
+      input.subscriptionItemId,
+      {
+        quantity: input.quantity,
+        timestamp: input.timestamp,
+        action: "increment",
+      },
+      { idempotencyKey: input.idempotencyKey }
+    );
+    return { usageRecordId: record.id };
   }
 }

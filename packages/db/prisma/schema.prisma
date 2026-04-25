@@ -155,6 +155,13 @@ model Subscription {
   status               String        // trialing | active | past_due | canceled | suspended
   currentPeriodStart   DateTime?
   currentPeriodEnd     DateTime?
+  /// JSON map of metric → Stripe subscription_item id, e.g.
+  /// `{"bom_lookup":"si_abc","cost_analysis":"si_def","export":"si_ghi"}`.
+  /// Populated by the customer.subscription.updated webhook handler
+  /// when the subscription has metered Prices matching
+  /// STRIPE_PRICE_METER_BOM/COST/EXPORT env vars. The meter-push job
+  /// reads it to know which subscription_item to bill against.
+  meterItemIdsJson     String?
 
   org                  Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   plan                 Plan?         @relation(fields: [planId], references: [id])
@@ -164,20 +171,25 @@ model Subscription {
 }
 
 model UsageEvent {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   orgId           String
   userId          String?
-  tool            String   // e.g. "search_parts"
-  metric          String   // e.g. "bom_lookup", "cost_analysis", "export"
-  quantity        Int      @default(1)
-  timestamp       DateTime @default(now())
-  idempotencyKey  String   @unique
+  tool            String    // e.g. "search_parts"
+  metric          String    // e.g. "bom_lookup", "cost_analysis", "export"
+  quantity        Int       @default(1)
+  timestamp       DateTime  @default(now())
+  idempotencyKey  String    @unique
+  /// Set by the meter-push background job after a successful
+  /// `subscription_items.createUsageRecord` call. Rows with null
+  /// are pending; the job sweeps them in batches per (orgId, metric).
+  pushedToStripeAt DateTime?
 
   org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user            User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([orgId, timestamp])
   @@index([tool])
+  @@index([orgId, pushedToStripeAt])
 }
 
 // ─── Membership lifecycle ─────────────────────────────────────────────

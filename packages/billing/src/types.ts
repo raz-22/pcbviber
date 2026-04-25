@@ -118,6 +118,50 @@ export interface BillingProvider {
    * (the route 503s).
    */
   verifyWebhook(rawBody: Buffer, signature: string): WebhookEvent;
+  /**
+   * Pushes a metered-usage batch to Stripe. Called by the meter-push
+   * background job. Idempotent on `request.idempotencyKey` — Stripe
+   * preserves the original response on a duplicate key, so the job's
+   * "mark these UsageEvent rows pushed" SQL update is safe to re-run.
+   *
+   * NoopBillingProvider throws BillingNotConfigured (the worker logs
+   * + skips). Real implementations call
+   * `subscription_items.createUsageRecord`.
+   */
+  recordUsage(request: RecordUsageRequest): Promise<RecordUsageResult>;
+}
+
+/**
+ * Input to `recordUsage`. The meter-push background job builds one
+ * of these per (org, metric) per cycle: it sums pending UsageEvent
+ * rows by metric, looks up the matching `subscription_item` id from
+ * Subscription.meterItemIdsJson, and calls Stripe.
+ *
+ * `idempotencyKey` is sha256(orgId|metric|sortedUsageEventIds) — a
+ * partial-success retry sees the same key and Stripe returns the
+ * already-recorded value rather than double-billing.
+ */
+export interface RecordUsageRequest {
+  /** Stripe `subscription_item` id (e.g. `si_…`). */
+  subscriptionItemId: string;
+  /** Total billable units for this batch. > 0. */
+  quantity: number;
+  /**
+   * Stripe usage-record timestamp (Unix seconds). Should fall within
+   * the subscription's current billing period; the meter-push job
+   * uses the latest UsageEvent.timestamp in the batch.
+   */
+  timestamp: number;
+  /**
+   * Stripe-side idempotency key. ≤255 chars, hex. Same key on retry
+   * → Stripe returns the existing record.
+   */
+  idempotencyKey: string;
+}
+
+export interface RecordUsageResult {
+  /** Stripe usage record id (`mbur_…`). Useful for audit logs. */
+  usageRecordId: string;
 }
 
 /**
