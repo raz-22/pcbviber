@@ -16,9 +16,9 @@
  *   3. Convert PlanQuotas to JSON: `-1` (UNLIMITED) becomes
  *      `null` so the SPA renders "∞" without leaking the sentinel.
  *
- * The byTool map is restricted to KNOWN_METERED_TOOLS so a corrupt
- * UsageEvent row with a typo'd tool name doesn't show up as a
- * mystery line item. (UsageEvent.tool isn't a foreign key, so
+ * The byTool map is restricted to keys present in METERED_TOOLS so
+ * a corrupt UsageEvent row with a typo'd tool name doesn't show up
+ * as a mystery line item. (UsageEvent.tool isn't a foreign key, so
  * defense in depth.)
  */
 

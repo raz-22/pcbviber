@@ -16,7 +16,11 @@
  *   owner         — everything, including billing + delete-org
  *   admin         — invite/remove members, manage workspaces + API keys
  *   member        — use tools, read-only on settings
- *   billing_only  — see invoices, NOTHING ELSE (for finance teams)
+ *   billing_only  — read-only finance role; allowed only the actions
+ *                   in BILLING_ONLY_ACTIONS (see below). Today that's
+ *                   `usage.read` for budget visibility; future
+ *                   read-only finance actions (invoice.read, etc.)
+ *                   join the same allow-list.
  *
  * Transition gates beyond "actor.role ∈ allowed":
  *
@@ -30,9 +34,9 @@
  *     headless (no one can manage billing, no one can promote
  *     replacements). Routes load `isLastOwner` and pass it through.
  *
- *   - billing_only is locked out of every action currently defined.
- *     Sprint 4 adds billing-specific actions (invoice.read, etc.)
- *     and wires them through `BILLING_ONLY_ACTIONS` below.
+ *   - billing_only short-circuits at the top of `can()`: any action
+ *     not in BILLING_ONLY_ACTIONS returns false regardless of the
+ *     per-action switch below.
  */
 
 import type { Role } from "@altium-mcp/auth";

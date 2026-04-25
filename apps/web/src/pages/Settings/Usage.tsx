@@ -10,8 +10,9 @@
  * spec §3.4). The server returns 403 if the role can't read; the
  * page surfaces that via usageErrorMessage.
  *
- * "Manage billing" CTA reuses the existing /settings/billing flow
- * (Stripe Customer Portal) — no separate Stripe link.
+ * No "Manage billing" CTA on this page — the dedicated Settings →
+ * Billing page already offers the Stripe Customer Portal flow, and
+ * duplicating the entry point here would be redundant.
  */
 
 import { useAuth } from "../../lib/auth";
