@@ -145,6 +145,19 @@ export interface QuotaStore {
     period: Period
   ): Promise<number>;
   /**
+   * Reconciliation-only escape hatch: SET the absolute counter.
+   * Route code MUST use `increment` instead — accidentally calling
+   * this from a request path would clobber a customer's mid-period
+   * count. Reconciliation owns this method (it sums UsageEvent
+   * rows hourly and writes the result here).
+   */
+  setExact(
+    orgId: string,
+    metric: Metric,
+    value: number,
+    period: Period
+  ): Promise<void>;
+  /**
    * Test-only: clear all counters. Production code must never call
    * this — a Redis-backed store would throw here so any production
    * caller fails loudly.

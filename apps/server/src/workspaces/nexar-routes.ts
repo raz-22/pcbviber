@@ -27,8 +27,8 @@ import {
 } from "@altium-mcp/shared";
 import type { AuthProvider } from "@altium-mcp/auth";
 import {
-  InMemoryQuotaStore,
   meter,
+  selectQuotaStore,
   writeUsageEvent,
   type QuotaStore,
   type RecordUsage,
@@ -48,9 +48,10 @@ import type { NexarService } from "../services/nexar.js";
 export interface NexarRouteDeps {
   nexarFactory: NexarServiceFactory;
   /**
-   * Quota counter store. Defaults to a per-process InMemoryQuotaStore;
-   * production wiring can swap a Redis-backed store. Tests inject a
-   * fresh in-memory store + clamp it to small quotas via plan deps.
+   * Quota counter store. Defaults to env-gated `selectQuotaStore()`
+   * — RedisQuotaStore when REDIS_URL is set, InMemoryQuotaStore
+   * otherwise. Tests inject a fresh in-memory store + clamp to
+   * small quotas via plan deps.
    */
   quotaStore?: QuotaStore;
   /**
@@ -69,7 +70,7 @@ export async function registerNexarRoutes(
   const requireMember = makeRequireOrgRole([]);
   const requireWorkspace = makeRequireWorkspace();
   const { nexarFactory } = deps;
-  const quotaStore = deps.quotaStore ?? new InMemoryQuotaStore();
+  const quotaStore = deps.quotaStore ?? selectQuotaStore();
   const recordUsage = deps.recordUsage ?? writeUsageEvent;
 
   /**
