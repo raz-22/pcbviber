@@ -1,13 +1,15 @@
 /**
- * Members + invitations routes — Sprint 3 PR 3.1.
+ * Members + invitations routes.
  *
  * Endpoints (matched against the internal design spec §3.3):
  *
- *   GET    /api/orgs/:orgId/members            — list (any member)
- *   POST   /api/orgs/:orgId/invites            — create   (owner/admin)
- *   GET    /api/orgs/:orgId/invites            — list pending (owner/admin)
- *   DELETE /api/orgs/:orgId/invites/:inviteId  — revoke   (owner/admin)
- *   POST   /api/invites/:token/accept          — accept   (auth required)
+ *   GET    /api/orgs/:orgId/members              — list (any member)
+ *   PATCH  /api/orgs/:orgId/members/:userId      — role change (gated by can())
+ *   DELETE /api/orgs/:orgId/members/:userId      — remove (gated by can())
+ *   POST   /api/orgs/:orgId/invites              — create   (owner/admin)
+ *   GET    /api/orgs/:orgId/invites              — list pending (owner/admin)
+ *   DELETE /api/orgs/:orgId/invites/:inviteId    — revoke   (owner/admin)
+ *   POST   /api/invites/:token/accept            — accept   (auth required)
  *
  * Email delivery is deferred — WorkOS / SMTP isn't wired yet. The
  * create response carries the raw `token` so the inviter can copy the
@@ -15,9 +17,13 @@
  * client-facing API change is needed.
  *
  * Audit log:
- *   member.invite        — on create   (target = invite.id)
- *   member.invite.revoke — on delete   (target = invite.id)
- *   member.add           — on accept   (target = membership.userId)
+ *   member.invite        — on create        (target = invite.id)
+ *   member.invite.revoke — on delete invite (target = invite.id)
+ *   member.add           — on accept        (target = membership.userId)
+ *   member.role_change   — on PATCH         (target = membership.userId,
+ *                                            metadata = { from, to })
+ *   member.remove        — on DELETE        (target = membership.userId,
+ *                                            metadata = { role })
  *
  * Stable error codes (kept in sync with the SPA's mapper):
  *   not_authenticated  invalid_input  forbidden  not_found
@@ -25,6 +31,8 @@
  *   invite_email_mismatch        — accept by a user whose email != invite.email
  *   invite_expired               — accept after expiresAt
  *   invite_already_accepted      — token already consumed
+ *   cannot_demote_last_owner     — PATCH would leave the org with 0 owners
+ *   cannot_remove_last_owner     — DELETE would leave the org with 0 owners
  *
  * Owner promotions are NOT done via invite. Owners are minted at signup
  * and otherwise granted via the role-change endpoint (which carries the
@@ -34,10 +42,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "@altium-mcp/db";
-import type { AuthProvider } from "@altium-mcp/auth";
+import type { AuthProvider, Role } from "@altium-mcp/auth";
 import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
+import { can } from "../auth/can.js";
 import { generateInviteToken, inviteExpiry } from "./tokens.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
@@ -53,6 +62,27 @@ const CreateInviteBody = z.object({
   email: z.string().email().max(320),
   role: InviteRole,
 });
+
+/**
+ * Role payload accepted by PATCH /members/:userId. Includes `owner`
+ * (unlike invite) — owner promotions are gated inside `can()`.
+ */
+const ChangeRoleBody = z.object({
+  role: z.enum(["owner", "admin", "member", "billing_only"]),
+});
+
+/**
+ * Counts the owners of an org. Drives the last-owner protection in
+ * PATCH/DELETE — when this count is 1 and the action would
+ * demote/remove the only owner, the route 409s instead of touching
+ * the row. We count owners (not members) to avoid the obvious
+ * inefficiency of loading every membership.
+ */
+async function countOwners(orgId: string): Promise<number> {
+  return prisma.membership.count({
+    where: { orgId, role: "owner" },
+  });
+}
 
 // ─── Registration ─────────────────────────────────────────────────────
 
@@ -88,6 +118,173 @@ export async function registerMemberRoutes(
           joinedAt: m.createdAt.toISOString(),
         })),
       };
+    }
+  );
+
+  // ── PATCH /api/orgs/:orgId/members/:userId ───────────────────────────
+  // Change a member's role. Authorization is delegated to `can()` —
+  // the route's job is to load the resource snapshot (target's current
+  // role + last-owner status) and surface the right error code.
+  //
+  // Error code resolution order matters:
+  //   1. invalid_input (Zod) — bad body
+  //   2. not_found          — target isn't a member of this org
+  //   3. cannot_demote_last_owner (409) — state, not privilege
+  //   4. forbidden (403)    — actor lacks the role / owner-transition gate
+  //
+  // We check (3) BEFORE (4) so the SPA can show the more specific 409
+  // even when the actor would have been forbidden anyway. Owner trying
+  // to demote the last-owner gets 409, not 403 — the message "you
+  // can't demote yourself, you'd be the only owner" is more useful
+  // than "forbidden".
+  app.patch(
+    "/api/orgs/:orgId/members/:userId",
+    { preHandler: [requireAuth, requireMember] },
+    async (req, reply) => {
+      const parsed = ChangeRoleBody.safeParse(req.body);
+      if (!parsed.success) {
+        reply.code(400);
+        return { error: "invalid_input", detail: parsed.error.flatten() };
+      }
+      const ctx = req.ctx!;
+      const { userId: targetUserId } = req.params as { userId: string };
+      const newRole = parsed.data.role;
+
+      const target = await prisma.membership.findUnique({
+        where: { orgId_userId: { orgId: ctx.org.id, userId: targetUserId } },
+        include: { user: { select: { id: true, email: true } } },
+      });
+      if (!target) {
+        // Target isn't a member of this org. 404 (not 403) — same
+        // shape we'd return for an unknown id; cross-tenant probes
+        // can't distinguish "member of another org" from "doesn't exist".
+        reply.code(404);
+        return { error: "not_found" };
+      }
+
+      const currentRole = target.role as Role;
+      const isDemotion = currentRole === "owner" && newRole !== "owner";
+
+      // Last-owner state check first — surfaces 409 even when the
+      // actor would otherwise have privilege.
+      if (isDemotion) {
+        const owners = await countOwners(ctx.org.id);
+        if (owners <= 1) {
+          reply.code(409);
+          return { error: "cannot_demote_last_owner" };
+        }
+      }
+
+      // Pure role + transition check via can(). Pass isLastOwner:false
+      // because the state check above already handled that case; this
+      // call focuses can() on the role/transition rules.
+      const allowed = can(
+        { userId: ctx.user.id, role: ctx.role },
+        "member.role_change",
+        {
+          kind: "member",
+          userId: targetUserId,
+          currentRole,
+          newRole,
+          isLastOwner: false,
+        }
+      );
+      if (!allowed) {
+        reply.code(403);
+        return { error: "forbidden" };
+      }
+
+      const updated = await prisma.membership.update({
+        where: { orgId_userId: { orgId: ctx.org.id, userId: targetUserId } },
+        data: { role: newRole },
+      });
+
+      await writeAuditLog({
+        orgId: ctx.org.id,
+        actorUserId: ctx.user.id,
+        action: "member.role_change",
+        target: targetUserId,
+        ip: clientIp(req),
+        userAgent: req.headers["user-agent"],
+        metadata: { from: currentRole, to: newRole },
+      });
+
+      return {
+        membership: {
+          orgId: updated.orgId,
+          userId: updated.userId,
+          role: updated.role,
+          email: target.user.email,
+          joinedAt: updated.createdAt.toISOString(),
+        },
+      };
+    }
+  );
+
+  // ── DELETE /api/orgs/:orgId/members/:userId ──────────────────────────
+  // Remove a member from the org. Same error-code resolution order as
+  // PATCH (last-owner before forbidden). Self-removal is allowed if
+  // the actor isn't the last owner; the can() rule covers the
+  // privilege side, the count-owners check covers the state side.
+  //
+  // Note: deleting the Membership cascades NOTHING — the User row
+  // stays, their other org memberships stay, their auth session stays
+  // (next request just sees 0 memberships in this org and 403s).
+  app.delete(
+    "/api/orgs/:orgId/members/:userId",
+    { preHandler: [requireAuth, requireMember] },
+    async (req, reply) => {
+      const ctx = req.ctx!;
+      const { userId: targetUserId } = req.params as { userId: string };
+
+      const target = await prisma.membership.findUnique({
+        where: { orgId_userId: { orgId: ctx.org.id, userId: targetUserId } },
+      });
+      if (!target) {
+        reply.code(404);
+        return { error: "not_found" };
+      }
+
+      const currentRole = target.role as Role;
+
+      if (currentRole === "owner") {
+        const owners = await countOwners(ctx.org.id);
+        if (owners <= 1) {
+          reply.code(409);
+          return { error: "cannot_remove_last_owner" };
+        }
+      }
+
+      const allowed = can(
+        { userId: ctx.user.id, role: ctx.role },
+        "member.remove",
+        {
+          kind: "member",
+          userId: targetUserId,
+          currentRole,
+          isLastOwner: false,
+        }
+      );
+      if (!allowed) {
+        reply.code(403);
+        return { error: "forbidden" };
+      }
+
+      await prisma.membership.delete({
+        where: { orgId_userId: { orgId: ctx.org.id, userId: targetUserId } },
+      });
+
+      await writeAuditLog({
+        orgId: ctx.org.id,
+        actorUserId: ctx.user.id,
+        action: "member.remove",
+        target: targetUserId,
+        ip: clientIp(req),
+        userAgent: req.headers["user-agent"],
+        metadata: { role: currentRole },
+      });
+
+      return { ok: true };
     }
   );
 

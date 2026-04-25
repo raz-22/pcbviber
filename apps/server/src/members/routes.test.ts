@@ -657,7 +657,352 @@ test("POST /accept appears in GET /members afterward", async () => {
   assert.ok(emails.includes("post-accept-listed@members-test.example"));
 });
 
+// ═══ PATCH /api/orgs/:orgId/members/:userId ═════════════════════════════
+
+test("PATCH /members/:userId: owner promotes a member to admin (200)", async () => {
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "admin" },
+  });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.equal(body.membership.userId, target.userId);
+  assert.equal(body.membership.role, "admin");
+});
+
+test("PATCH /members/:userId: owner demotes admin to member (200)", async () => {
+  const target = await makeAliceMember("admin");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "member" },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().membership.role, "member");
+});
+
+test("PATCH /members/:userId: owner promotes a member to owner (200)", async () => {
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "owner" },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().membership.role, "owner");
+});
+
+test("PATCH /members/:userId: admin CANNOT promote a member to owner (403)", async () => {
+  const admin = await makeAliceMember("admin");
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: admin.cookie },
+    payload: { role: "owner" },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, "forbidden");
+});
+
+test("PATCH /members/:userId: admin CANNOT demote an owner (403)", async () => {
+  // Make sure Alice isn't the only owner — the route's last-owner
+  // state check fires before the privilege check, and we want THIS
+  // test to pin the privilege gate (403 forbidden) rather than the
+  // state gate (409 cannot_demote_last_owner). Adding an explicit
+  // co-owner makes the test self-contained instead of relying on
+  // earlier tests in this file having promoted someone.
+  await makeAliceMember("owner");
+  const admin = await makeAliceMember("admin");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${aliceUserId}`,
+    headers: { cookie: admin.cookie },
+    payload: { role: "admin" },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, "forbidden");
+});
+
+test("PATCH /members/:userId: a member cannot change roles (403)", async () => {
+  const member = await makeAliceMember("member");
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: member.cookie },
+    payload: { role: "admin" },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("PATCH /members/:userId: demoting the LAST owner is 409 cannot_demote_last_owner", async () => {
+  // We need an org with exactly ONE owner. Use a fresh signup so the
+  // user is alone in their auto-created org and try to self-demote.
+  const lonelyOwner = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `lonely-${randomBytes(3).toString("hex")}@members-test.example`,
+      password: STRONG,
+    },
+  });
+  const userId = lonelyOwner.json().user.id;
+  const orgId = lonelyOwner.json().org.id;
+  const cookie = extractCookie(lonelyOwner.headers["set-cookie"])!;
+
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${orgId}/members/${userId}`,
+    headers: { cookie },
+    payload: { role: "admin" },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, "cannot_demote_last_owner");
+});
+
+test("PATCH /members/:userId: owner CAN demote a co-owner (not last)", async () => {
+  // Promote a fresh user to owner of Alice's org first, then demote
+  // them — Alice is still owner, so this isn't last-owner.
+  const co = await makeAliceMember("owner");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${co.userId}`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "admin" },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().membership.role, "admin");
+});
+
+test("PATCH /members/:userId: 404 for an unknown user id", async () => {
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/cknotreal000000000000000xx`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "admin" },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, "not_found");
+});
+
+test("PATCH /members/:userId: cross-tenant returns 403 (Bob can't PATCH in Alice's org)", async () => {
+  // Bob isn't a member of Alice's org. Even targeting his own userId
+  // in Alice's URL must 403 from requireMember — never reaches the
+  // PATCH handler.
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${bobUserId}`,
+    headers: { cookie: bobCookie },
+    payload: { role: "member" },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("PATCH /members/:userId: invalid role returns 400 invalid_input", async () => {
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "superadmin" },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("PATCH /members/:userId writes member.role_change audit row with from + to", async () => {
+  const target = await makeAliceMember("member");
+  await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+    payload: { role: "admin" },
+  });
+  const { prisma } = await import("@altium-mcp/db");
+  const log = await prisma.auditLog.findFirst({
+    where: {
+      orgId: aliceOrgId,
+      action: "member.role_change",
+      target: target.userId,
+    },
+  });
+  assert.ok(log);
+  assert.match(log.metadata ?? "", /"from":"member"/);
+  assert.match(log.metadata ?? "", /"to":"admin"/);
+});
+
+// ═══ DELETE /api/orgs/:orgId/members/:userId ════════════════════════════
+
+test("DELETE /members/:userId: owner removes a member (200)", async () => {
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { ok: true });
+  // Membership row is gone.
+  const { prisma } = await import("@altium-mcp/db");
+  const m = await prisma.membership.findUnique({
+    where: { orgId_userId: { orgId: aliceOrgId, userId: target.userId } },
+  });
+  assert.equal(m, null);
+});
+
+test("DELETE /members/:userId: admin removes a member (200)", async () => {
+  const admin = await makeAliceMember("admin");
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: admin.cookie },
+  });
+  assert.equal(res.statusCode, 200);
+});
+
+test("DELETE /members/:userId: admin CANNOT remove an owner (403)", async () => {
+  const admin = await makeAliceMember("admin");
+  // Make a fresh co-owner to target. Alice as the existing owner
+  // means there'll be 2 owners — last-owner is NOT the issue here;
+  // only the privilege check should reject.
+  const ownerTarget = await makeAliceMember("owner");
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${ownerTarget.userId}`,
+    headers: { cookie: admin.cookie },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, "forbidden");
+});
+
+test("DELETE /members/:userId: a member cannot remove anyone (403)", async () => {
+  const member = await makeAliceMember("member");
+  const target = await makeAliceMember("member");
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: member.cookie },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("DELETE /members/:userId: removing the LAST owner is 409 cannot_remove_last_owner", async () => {
+  // Fresh org with one owner — try to remove themselves.
+  const lonely = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `lonely-rm-${randomBytes(3).toString("hex")}@members-test.example`,
+      password: STRONG,
+    },
+  });
+  const userId = lonely.json().user.id;
+  const orgId = lonely.json().org.id;
+  const cookie = extractCookie(lonely.headers["set-cookie"])!;
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${orgId}/members/${userId}`,
+    headers: { cookie },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, "cannot_remove_last_owner");
+});
+
+test("DELETE /members/:userId: owner CAN remove a co-owner (not last)", async () => {
+  const co = await makeAliceMember("owner");
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${co.userId}`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 200);
+});
+
+test("DELETE /members/:userId: 404 for an unknown user id", async () => {
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/cknotreal000000000000000xx`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, "not_found");
+});
+
+test("DELETE /members/:userId: cross-tenant 403 (Bob can't DELETE in Alice's org)", async () => {
+  const res = await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${aliceUserId}`,
+    headers: { cookie: bobCookie },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("DELETE /members/:userId: removed user can no longer access the org", async () => {
+  // Add a member, then DELETE them, then they try to GET /members
+  // — should be 403 because they're no longer in the membership.
+  const target = await makeAliceMember("member");
+  await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+  });
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/members`,
+    headers: { cookie: target.cookie },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("DELETE /members/:userId writes member.remove audit row with the role", async () => {
+  const target = await makeAliceMember("admin");
+  await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/members/${target.userId}`,
+    headers: { cookie: aliceCookie },
+  });
+  const { prisma } = await import("@altium-mcp/db");
+  const log = await prisma.auditLog.findFirst({
+    where: {
+      orgId: aliceOrgId,
+      action: "member.remove",
+      target: target.userId,
+    },
+  });
+  assert.ok(log);
+  assert.match(log.metadata ?? "", /"role":"admin"/);
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
+
+/**
+ * Create a fresh signed-up user and add them as a member of Alice's
+ * org with the given role. Returns the cookie + ids the test needs
+ * to act as them. The user's own auto-created org is unrelated to
+ * Alice's org and gets dropped by test cleanup.
+ */
+async function makeAliceMember(role: "owner" | "admin" | "member" | "billing_only") {
+  const { prisma } = await import("@altium-mcp/db");
+  const email = `m-${role}-${randomBytes(4).toString("hex")}@members-test.example`;
+  const u = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email, password: STRONG },
+  });
+  const userId = u.json().user.id;
+  const cookie = extractCookie(u.headers["set-cookie"])!;
+  await prisma.membership.create({
+    data: { orgId: aliceOrgId, userId, role },
+  });
+  return { userId, cookie, email };
+}
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {
   if (!setCookie) return null;
