@@ -19,6 +19,9 @@ importers:
       '@altium-mcp/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@altium-mcp/metering':
+        specifier: workspace:*
+        version: link:../../packages/metering
       '@altium-mcp/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -162,6 +165,25 @@ importers:
       prisma:
         specifier: ^5.22.0
         version: 5.22.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/metering:
+    dependencies:
+      '@altium-mcp/db':
+        specifier: workspace:*
+        version: link:../db
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      cross-env:
+        specifier: ^7.0.3
+        version: 7.0.3
+      dotenv-cli:
+        specifier: ^7.4.4
+        version: 7.4.4
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

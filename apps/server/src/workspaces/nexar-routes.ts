@@ -26,12 +26,20 @@ import {
   FindAlternativePartsInput,
 } from "@altium-mcp/shared";
 import type { AuthProvider } from "@altium-mcp/auth";
+import {
+  InMemoryQuotaStore,
+  meter,
+  writeUsageEvent,
+  type QuotaStore,
+  type RecordUsage,
+} from "@altium-mcp/metering";
 import { makeRequireAuth } from "../auth/middleware.js";
 import {
   makeRequireOrgRole,
   makeRequireWorkspace,
   requireActiveBilling,
 } from "../auth/tenant.js";
+import { buildMeterContext, handleQuotaError } from "../metering/context.js";
 import * as components from "../handlers/components.js";
 import * as projects from "../handlers/projects.js";
 import type { NexarServiceFactory } from "../services/nexar-factory.js";
@@ -39,6 +47,17 @@ import type { NexarService } from "../services/nexar.js";
 
 export interface NexarRouteDeps {
   nexarFactory: NexarServiceFactory;
+  /**
+   * Quota counter store. Defaults to a per-process InMemoryQuotaStore.
+   * PR 5.2 will inject a Redis-backed store here. Tests inject a
+   * fresh in-memory store + clamp it to small quotas via plan deps.
+   */
+  quotaStore?: QuotaStore;
+  /**
+   * UsageEvent persistence. Defaults to the Prisma-backed writer.
+   * Tests override to assert idempotency / spy on writes.
+   */
+  recordUsage?: RecordUsage;
 }
 
 export async function registerNexarRoutes(
@@ -50,6 +69,8 @@ export async function registerNexarRoutes(
   const requireMember = makeRequireOrgRole([]);
   const requireWorkspace = makeRequireWorkspace();
   const { nexarFactory } = deps;
+  const quotaStore = deps.quotaStore ?? new InMemoryQuotaStore();
+  const recordUsage = deps.recordUsage ?? writeUsageEvent;
 
   /**
    * Loads + returns the NexarService for the current request's workspace.
@@ -83,6 +104,12 @@ export async function registerNexarRoutes(
   }
 
   // ── Parts ────────────────────────────────────────────────────────────
+  // search_parts is the Sprint 5 PR 5.1 metering proof-of-concept: it
+  // counts 1 unit of `bom_lookup` per call, refuses to run when the
+  // org has exhausted its monthly bucket (and overage isn't allowed),
+  // and writes a UsageEvent row keyed on req.id so retries don't
+  // double-bill. The other parts/library/altium-365 routes will
+  // adopt the same pattern in PR 5.4.
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/search",
     { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
@@ -95,8 +122,15 @@ export async function registerNexarRoutes(
       const nexar = await loadNexarOr503(req, reply);
       if (!nexar) return;
       try {
-        return await components.searchParts(nexar, parsed.data);
+        const meterCtx = await buildMeterContext(req);
+        return await meter(
+          meterCtx,
+          { tool: "search_parts", metric: "bom_lookup", units: 1 },
+          () => components.searchParts(nexar, parsed.data),
+          { store: quotaStore, recordUsage }
+        );
       } catch (err) {
+        if (handleQuotaError(err, reply)) return;
         reply.code(502);
         return { error: "upstream_error", detail: (err as Error).message };
       }

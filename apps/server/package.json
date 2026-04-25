@@ -19,6 +19,7 @@
     "@altium-mcp/auth": "workspace:*",
     "@altium-mcp/billing": "workspace:^",
     "@altium-mcp/db": "workspace:*",
+    "@altium-mcp/metering": "workspace:*",
     "@altium-mcp/shared": "workspace:*",
     "@fastify/cookie": "^11.0.1",
     "@fastify/cors": "^10.0.0",
