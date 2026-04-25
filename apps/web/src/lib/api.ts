@@ -153,6 +153,103 @@ export interface TestConnectionOk {
   ok: true;
 }
 
+// ── Types returned by /api/orgs/:orgId/members + /api/orgs/:orgId/invites ──
+
+export type Role = "owner" | "admin" | "member" | "billing_only";
+
+/** Subset of Role accepted by the invite create endpoint. */
+export type InviteRole = "admin" | "member" | "billing_only";
+
+export interface Member {
+  userId: string;
+  email: string;
+  role: Role;
+  joinedAt: string;
+}
+
+export interface MemberListResponse {
+  members: Member[];
+}
+
+export interface MemberResponse {
+  membership: {
+    orgId: string;
+    userId: string;
+    role: Role;
+    email: string;
+    joinedAt: string;
+  };
+}
+
+export interface ChangeRoleInput {
+  role: Role;
+}
+
+export interface Invite {
+  id: string;
+  orgId: string;
+  email: string;
+  role: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+}
+
+export interface InviteListResponse {
+  invites: Invite[];
+}
+
+export interface CreateInviteInput {
+  email: string;
+  role: InviteRole;
+}
+
+export interface CreateInviteResponse {
+  invite: Invite;
+  /** Plaintext token — round-trip into the accept URL the inviter shares. */
+  token: string;
+}
+
+export interface AcceptInviteResponse {
+  membership: {
+    orgId: string;
+    userId: string;
+    role: Role;
+    joinedAt: string;
+  };
+  org: { id: string; slug: string; name: string };
+}
+
+// ── Types returned by /api/orgs/:orgId/api-keys ───────────────────────
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  scopes: string[];
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+  /** Populated only on the create response — never on listings. */
+  preview?: string;
+}
+
+export interface ApiKeyListResponse {
+  apiKeys: ApiKey[];
+}
+
+export interface CreateApiKeyInput {
+  name: string;
+  scopes?: string[];
+  /** ISO-8601 string. Server rejects past dates with invalid_input. */
+  expiresAt?: string;
+}
+
+export interface CreateApiKeyResponse {
+  apiKey: ApiKey;
+  /** Plaintext key — shown to the user EXACTLY ONCE. */
+  key: string;
+}
+
 export const api = {
   // ─── Auth ──────────────────────────────────────────────────────────
   signup: (input: {
@@ -271,6 +368,66 @@ export const api = {
       )}/altium-365/projects${qs}`
     );
   },
+
+  // ─── Members ───────────────────────────────────────────────────────
+  listMembers: (orgId: string) =>
+    call<MemberListResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/members`
+    ),
+
+  changeMemberRole: (orgId: string, userId: string, input: ChangeRoleInput) =>
+    call<MemberResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+      { method: "PATCH", body: input }
+    ),
+
+  removeMember: (orgId: string, userId: string) =>
+    call<{ ok: boolean }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+      { method: "DELETE" }
+    ),
+
+  // ─── Invites ───────────────────────────────────────────────────────
+  listInvites: (orgId: string) =>
+    call<InviteListResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/invites`
+    ),
+
+  createInvite: (orgId: string, input: CreateInviteInput) =>
+    call<CreateInviteResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/invites`,
+      { method: "POST", body: input }
+    ),
+
+  revokeInvite: (orgId: string, inviteId: string) =>
+    call<{ ok: boolean }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/invites/${encodeURIComponent(inviteId)}`,
+      { method: "DELETE" }
+    ),
+
+  acceptInvite: (token: string) =>
+    call<AcceptInviteResponse>(
+      `/api/invites/${encodeURIComponent(token)}/accept`,
+      { method: "POST" }
+    ),
+
+  // ─── API keys ──────────────────────────────────────────────────────
+  listApiKeys: (orgId: string) =>
+    call<ApiKeyListResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/api-keys`
+    ),
+
+  createApiKey: (orgId: string, input: CreateApiKeyInput) =>
+    call<CreateApiKeyResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/api-keys`,
+      { method: "POST", body: input }
+    ),
+
+  revokeApiKey: (orgId: string, keyId: string) =>
+    call<{ ok: boolean }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/api-keys/${encodeURIComponent(keyId)}`,
+      { method: "DELETE" }
+    ),
 
   health: () => call<{ ok: boolean; name: string; version: string }>("/api/health"),
 };

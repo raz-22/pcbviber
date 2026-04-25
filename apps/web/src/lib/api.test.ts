@@ -519,3 +519,261 @@ test("403 from a workspace path surfaces forbidden", async () => {
     assert.equal(err.code, "forbidden");
   }
 });
+
+// ─── Members + Invites URLs ──────────────────────────────────────────
+
+test("api.listMembers GETs /api/orgs/:orgId/members", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { members: [] });
+  });
+  await api.listMembers("org-1");
+  assert.equal(url, "/api/orgs/org-1/members");
+  assert.equal(method, "GET");
+});
+
+test("api.changeMemberRole PATCHes the member path with the role payload", async () => {
+  let url = "";
+  let method = "";
+  let body = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    body = String(init?.body);
+    return jsonResponse(200, {
+      membership: {
+        orgId: "org-1",
+        userId: "u-1",
+        role: "admin",
+        email: "x@y.test",
+        joinedAt: "2026-04-25T00:00:00Z",
+      },
+    });
+  });
+  await api.changeMemberRole("org-1", "u-1", { role: "admin" });
+  assert.equal(url, "/api/orgs/org-1/members/u-1");
+  assert.equal(method, "PATCH");
+  assert.match(body, /"role":"admin"/);
+});
+
+test("api.removeMember DELETEs the member path", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { ok: true });
+  });
+  await api.removeMember("org-1", "u-1");
+  assert.equal(url, "/api/orgs/org-1/members/u-1");
+  assert.equal(method, "DELETE");
+});
+
+test("api.listInvites GETs /api/orgs/:orgId/invites", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, { invites: [] });
+  });
+  await api.listInvites("org-1");
+  assert.equal(url, "/api/orgs/org-1/invites");
+});
+
+test("api.createInvite POSTs the email + role and returns token + invite", async () => {
+  let url = "";
+  let method = "";
+  let body = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    body = String(init?.body);
+    return jsonResponse(201, {
+      invite: {
+        id: "inv-1",
+        orgId: "org-1",
+        email: "newhire@test.example",
+        role: "member",
+        expiresAt: "2026-05-02T00:00:00Z",
+        acceptedAt: null,
+      },
+      token: "abc123token",
+    });
+  });
+  const out = await api.createInvite("org-1", {
+    email: "newhire@test.example",
+    role: "member",
+  });
+  assert.equal(url, "/api/orgs/org-1/invites");
+  assert.equal(method, "POST");
+  assert.match(body, /"email":"newhire@test.example"/);
+  assert.equal(out.token, "abc123token");
+  assert.equal(out.invite.email, "newhire@test.example");
+});
+
+test("api.revokeInvite DELETEs /api/orgs/:orgId/invites/:inviteId", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { ok: true });
+  });
+  await api.revokeInvite("org-1", "inv-1");
+  assert.equal(url, "/api/orgs/org-1/invites/inv-1");
+  assert.equal(method, "DELETE");
+});
+
+test("api.acceptInvite POSTs /api/invites/:token/accept and encodes the token", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, {
+      membership: {
+        orgId: "org-1",
+        userId: "u-1",
+        role: "member",
+        joinedAt: "2026-04-25T00:00:00Z",
+      },
+      org: { id: "org-1", slug: "org-one", name: "Org One" },
+    });
+  });
+  // base64url tokens have no chars that need encoding, but a hand-crafted
+  // token with a slash would — make sure encodeURIComponent runs.
+  await api.acceptInvite("ab/cd+ef==");
+  assert.equal(url, "/api/invites/ab%2Fcd%2Bef%3D%3D/accept");
+  assert.equal(method, "POST");
+});
+
+test("403 invite_email_mismatch from accept surfaces with the right code", async () => {
+  installFetch(async () =>
+    jsonResponse(403, { error: "invite_email_mismatch" })
+  );
+  try {
+    await api.acceptInvite("some-token");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 403);
+    assert.equal(err.code, "invite_email_mismatch");
+  }
+});
+
+test("410 invite_expired from accept surfaces", async () => {
+  installFetch(async () =>
+    jsonResponse(410, { error: "invite_expired" })
+  );
+  try {
+    await api.acceptInvite("some-token");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 410);
+    assert.equal(err.code, "invite_expired");
+  }
+});
+
+test("409 cannot_demote_last_owner from PATCH /members surfaces", async () => {
+  installFetch(async () =>
+    jsonResponse(409, { error: "cannot_demote_last_owner" })
+  );
+  try {
+    await api.changeMemberRole("org-1", "u-1", { role: "admin" });
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "cannot_demote_last_owner");
+  }
+});
+
+test("409 cannot_remove_last_owner from DELETE /members surfaces", async () => {
+  installFetch(async () =>
+    jsonResponse(409, { error: "cannot_remove_last_owner" })
+  );
+  try {
+    await api.removeMember("org-1", "u-1");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "cannot_remove_last_owner");
+  }
+});
+
+// ─── API keys URLs ───────────────────────────────────────────────────
+
+test("api.listApiKeys GETs /api/orgs/:orgId/api-keys", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, { apiKeys: [] });
+  });
+  await api.listApiKeys("org-1");
+  assert.equal(url, "/api/orgs/org-1/api-keys");
+});
+
+test("api.createApiKey POSTs name + scopes + expiresAt and returns plaintext", async () => {
+  let url = "";
+  let method = "";
+  let body = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    body = String(init?.body);
+    return jsonResponse(201, {
+      apiKey: {
+        id: "k-1",
+        name: "ci-runner",
+        scopes: ["mcp:tools"],
+        lastUsedAt: null,
+        expiresAt: null,
+        createdAt: "2026-04-25T00:00:00Z",
+        revokedAt: null,
+        preview: "pcb_aBcDeFgH",
+      },
+      key: "pcb_aBcDeFgH123full456token",
+    });
+  });
+  const out = await api.createApiKey("org-1", {
+    name: "ci-runner",
+    scopes: ["mcp:tools"],
+  });
+  assert.equal(url, "/api/orgs/org-1/api-keys");
+  assert.equal(method, "POST");
+  assert.match(body, /"name":"ci-runner"/);
+  assert.match(body, /"scopes":\["mcp:tools"\]/);
+  assert.equal(out.key, "pcb_aBcDeFgH123full456token");
+  assert.equal(out.apiKey.preview, "pcb_aBcDeFgH");
+});
+
+test("api.revokeApiKey DELETEs /api/orgs/:orgId/api-keys/:keyId", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { ok: true });
+  });
+  await api.revokeApiKey("org-1", "k-1");
+  assert.equal(url, "/api/orgs/org-1/api-keys/k-1");
+  assert.equal(method, "DELETE");
+});
+
+test("409 api_key_already_revoked from DELETE surfaces", async () => {
+  installFetch(async () =>
+    jsonResponse(409, { error: "api_key_already_revoked" })
+  );
+  try {
+    await api.revokeApiKey("org-1", "k-1");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "api_key_already_revoked");
+  }
+});
