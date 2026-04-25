@@ -23,6 +23,7 @@ import {
 import { createOrgForOwner } from "./org.js";
 import { writeAuditLog, clientIp } from "./audit.js";
 import { AUTH_RATE_LIMIT } from "../security/rate-limits.js";
+import { csrfOrPassthrough } from "../security/csrf.js";
 
 const SignupBody = z.object({
   email: z.string().email(),
@@ -155,7 +156,13 @@ export async function registerAuthRoutes(
   );
 
   // ── Logout ──────────────────────────────────────────────────────────
-  app.post("/api/auth/logout", async (req, reply) => {
+  // CSRF-protected: a malicious site triggering POST /logout from a
+  // signed-in user's browser would log them out. Annoying enough
+  // that a drive-by would cause real friction; the preHandler stops it.
+  app.post(
+    "/api/auth/logout",
+    { preHandler: csrfOrPassthrough(app) },
+    async (req, reply) => {
     const sealed = req.cookies?.[SESSION_COOKIE];
     if (sealed) {
       // Best-effort; never block the logout response.
@@ -180,7 +187,8 @@ export async function registerAuthRoutes(
     }
     clearSessionCookie(reply);
     return { ok: true };
-  });
+    }
+  );
 
   // ── Me ──────────────────────────────────────────────────────────────
   app.get(
