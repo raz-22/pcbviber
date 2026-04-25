@@ -1,14 +1,15 @@
 /**
  * Settings shell. Renders the sidebar + the active sub-page.
  *
- * In PR 2.4 the only tab is Workspaces; the navigation is built to
- * accept future tabs (Organization, Members, API keys, Billing) without
- * a structural rewrite. Each future tab becomes one entry in `tabs`
- * and one nested route in App.tsx.
+ * Each tab becomes one entry in `tabs` and one nested route under
+ * SettingsRoutes. Disabled tabs render as muted text with a tooltip
+ * about when they ship.
  */
 
 import { NavLink, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { WorkspacesSettingsPage } from "./Workspaces";
+import { MembersSettingsPage } from "./Members";
+import { ApiKeysSettingsPage } from "./ApiKeys";
 
 interface Tab {
   to: string;
@@ -19,9 +20,9 @@ interface Tab {
 
 const tabs: Tab[] = [
   { to: "/settings/workspaces", label: "Workspaces", available: true },
-  { to: "/settings/members", label: "Members", available: false, comingIn: "Sprint 3" },
-  { to: "/settings/api-keys", label: "API keys", available: false, comingIn: "Sprint 3" },
-  { to: "/settings/organization", label: "Organization", available: false, comingIn: "Sprint 3" },
+  { to: "/settings/members", label: "Members", available: true },
+  { to: "/settings/api-keys", label: "API keys", available: true },
+  { to: "/settings/organization", label: "Organization", available: false, comingIn: "later" },
   { to: "/settings/billing", label: "Billing", available: false, comingIn: "Sprint 4" },
 ];
 
@@ -78,6 +79,8 @@ export function SettingsRoutes() {
       <Route element={<SettingsShell />}>
         <Route index element={<Navigate to="/settings/workspaces" replace />} />
         <Route path="workspaces" element={<WorkspacesSettingsPage />} />
+        <Route path="members" element={<MembersSettingsPage />} />
+        <Route path="api-keys" element={<ApiKeysSettingsPage />} />
       </Route>
     </Routes>
   );

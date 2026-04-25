@@ -6,6 +6,7 @@ import { LoginPage } from "./pages/Login";
 import { SignupPage } from "./pages/Signup";
 import { PartsSearch } from "./pages/PartsSearch";
 import { SettingsRoutes } from "./pages/Settings";
+import { AcceptInvitePage } from "./pages/AcceptInvite";
 
 /**
  * Top-level router.
@@ -63,6 +64,14 @@ export function App() {
               element={
                 <RequireAuth>
                   <SettingsRoutes />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/invites/accept"
+              element={
+                <RequireAuth>
+                  <AcceptInvitePage />
                 </RequireAuth>
               }
             />
