@@ -31,12 +31,14 @@ import {
   makeBillingSigner,
   selectBillingProvider,
 } from "@altium-mcp/billing";
-import { selectQuotaStore } from "@altium-mcp/metering";
+import { selectQuotaStore, writeUsageEvent } from "@altium-mcp/metering";
 import { startWorker } from "./jobs/worker.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
 import { buildMcpServer } from "./index.js";
+import type { ToolContext } from "./mcp/dispatch.js";
+import { buildApiKeyMeterContext } from "./metering/context.js";
 import type { AdRelay } from "./ad-relay/relay.js";
 import { registerAdRelayRoutes } from "./ad-relay/routes.js";
 import * as altium from "./handlers/altium.js";
@@ -149,11 +151,57 @@ export async function startHttpServer(opts: {
   // ── MCP over HTTP (stateless) ──────────────────────────
   // Bearer-token auth gates every /mcp request: the middleware hashes
   // the token, looks up the ApiKey row, rejects revoked/expired, and
-  // populates req.apiKeyCtx. Tools currently still use the env-loaded
-  // singleton; the per-tenant cutover is a follow-up.
+  // populates req.apiKeyCtx. Each request resolves the API key's
+  // default workspace, loads a per-tenant NexarService via the
+  // factory, builds a metering context, and constructs a fresh MCP
+  // server bound to that ToolContext. Metered tool calls go through
+  // meter() in the dispatch layer; non-metered tools (ad_*) work as
+  // before.
   const requireApiKey = makeRequireApiKey();
+  const meteringStore = selectQuotaStore();
   app.post("/mcp", { preHandler: requireApiKey }, async (req, reply) => {
-    const server = buildMcpServer(nexar, relay);
+    const apiKeyCtx = req.apiKeyCtx;
+    if (!apiKeyCtx) {
+      // Programmer error: middleware should have populated this.
+      reply.code(500);
+      return reply.send({ error: "internal_error" });
+    }
+    const apiKey = await prisma.apiKey.findUnique({
+      where: { id: apiKeyCtx.apiKey.id },
+      select: { defaultWorkspaceId: true },
+    });
+    if (!apiKey?.defaultWorkspaceId) {
+      // Stable error code so the MCP client can surface a precise
+      // operator-facing message ("set a default workspace on your
+      // API key in Settings → API Keys"). Returns 400, not 401 —
+      // the key authenticated fine; it just isn't usable yet.
+      reply.code(400);
+      return reply.send({ error: "api_key_no_workspace" });
+    }
+    let perRequestNexar: NexarService;
+    try {
+      perRequestNexar = await nexarFactory.forWorkspace(
+        apiKey.defaultWorkspaceId
+      );
+    } catch (err) {
+      // Workspace exists but credentials missing / unloadable. Same
+      // 503 the REST routes return.
+      reply.code(503);
+      return reply.send({
+        error: "workspace_unavailable",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+    const meterCtx = await buildApiKeyMeterContext(req);
+    const toolCtx: ToolContext = {
+      nexar: perRequestNexar,
+      metering: {
+        meterCtx,
+        store: meteringStore,
+        recordUsage: writeUsageEvent,
+      },
+    };
+    const server = buildMcpServer(toolCtx, relay);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

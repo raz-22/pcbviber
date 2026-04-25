@@ -1,22 +1,22 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { NexarService } from "../services/nexar.js";
 import * as h from "../handlers/projects.js";
-import { toMcpResponse } from "../handlers/mcp-response.js";
+import { dispatchTool, type ToolContext } from "../mcp/dispatch.js";
 
-export function registerProjectTools(server: McpServer, nexar: NexarService) {
+export function registerProjectTools(server: McpServer, ctx: ToolContext) {
   server.tool(
     "list_workspaces",
     "List all Altium 365 workspaces the authenticated user has access to.",
     {},
-    async () => toMcpResponse(() => h.listWorkspaces(nexar))
+    async () => dispatchTool("list_workspaces", ctx, () => h.listWorkspaces(ctx.nexar))
   );
 
   server.tool(
     "list_projects",
     "List all projects in an Altium 365 workspace.",
     { workspaceUrl: z.string().url().describe("Altium 365 workspace URL") },
-    async (args) => toMcpResponse(() => h.listProjects(nexar, args))
+    async (args) =>
+      dispatchTool("list_projects", ctx, () => h.listProjects(ctx.nexar, args))
   );
 
   server.tool(
@@ -26,7 +26,10 @@ export function registerProjectTools(server: McpServer, nexar: NexarService) {
       workspaceUrl: z.string().url().describe("Altium 365 workspace URL"),
       projectId: z.string().describe("Project ID from list_projects"),
     },
-    async (args) => toMcpResponse(() => h.getProjectDetails(nexar, args))
+    async (args) =>
+      dispatchTool("get_project_details", ctx, () =>
+        h.getProjectDetails(ctx.nexar, args)
+      )
   );
 
   server.tool(
@@ -40,6 +43,7 @@ export function registerProjectTools(server: McpServer, nexar: NexarService) {
         .enum(["blank", "arduino_shield", "raspberry_pi_hat", "custom"])
         .default("blank"),
     },
-    async (args) => toMcpResponse(() => h.createProject(nexar, args))
+    async (args) =>
+      dispatchTool("create_project", ctx, () => h.createProject(ctx.nexar, args))
   );
 }

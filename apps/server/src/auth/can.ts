@@ -55,6 +55,7 @@ export type CanAction =
   | "workspace.read"
   | "api_key.create"
   | "api_key.list"
+  | "api_key.update"
   | "api_key.revoke"
   | "billing.checkout"
   | "billing.portal_manage"
@@ -147,6 +148,7 @@ export function can(
     case "workspace.delete":
     case "api_key.create":
     case "api_key.list":
+    case "api_key.update":
     case "api_key.revoke":
       // API key management is owner/admin only — keys grant MCP
       // tool access at the org level, so handing out (or revoking)

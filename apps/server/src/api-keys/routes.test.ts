@@ -495,6 +495,199 @@ test("DELETE /api-keys: a member (not owner/admin) returns 403", async () => {
   assert.equal(res.statusCode, 403);
 });
 
+// ─── defaultWorkspaceId ───────────────────────────────────────────────
+
+test("POST /api-keys: rejects defaultWorkspaceId from another org with 404 workspace_not_in_org", async () => {
+  // Bob owns a workspace; Alice tries to bind it to her API key.
+  // The cross-tenant check collapses to 404 + a stable code so an
+  // attacker can't probe workspace ids across orgs.
+  const { prisma } = await import("@altium-mcp/db");
+  const bobWs = await prisma.workspace.create({
+    data: {
+      orgId: bobOrgId,
+      altiumWorkspaceUrl: "https://bob.altium365.com",
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "cross-tenant-key", defaultWorkspaceId: bobWs.id },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, "workspace_not_in_org");
+});
+
+test("POST /api-keys: stores defaultWorkspaceId when set + valid", async () => {
+  const { prisma } = await import("@altium-mcp/db");
+  const aliceWs = await prisma.workspace.create({
+    data: {
+      orgId: aliceOrgId,
+      altiumWorkspaceUrl: "https://alice-default.altium365.com",
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "with-default", defaultWorkspaceId: aliceWs.id },
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json().apiKey.defaultWorkspaceId, aliceWs.id);
+  // Round-trip via list — the column persisted.
+  const list = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+  });
+  const found = list.json().apiKeys.find((k: { name: string }) => k.name === "with-default");
+  assert.equal(found.defaultWorkspaceId, aliceWs.id);
+});
+
+test("PATCH /api-keys/:id: sets, changes, and clears defaultWorkspaceId", async () => {
+  const { prisma } = await import("@altium-mcp/db");
+  const ws1 = await prisma.workspace.create({
+    data: { orgId: aliceOrgId, altiumWorkspaceUrl: "https://patch1.altium365.com" },
+  });
+  const ws2 = await prisma.workspace.create({
+    data: { orgId: aliceOrgId, altiumWorkspaceUrl: "https://patch2.altium365.com" },
+  });
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "patchable" },
+  });
+  const keyId = created.json().apiKey.id;
+
+  // Set
+  const setRes = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: { defaultWorkspaceId: ws1.id },
+  });
+  assert.equal(setRes.statusCode, 200);
+  assert.equal(setRes.json().apiKey.defaultWorkspaceId, ws1.id);
+
+  // Change
+  const changeRes = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: { defaultWorkspaceId: ws2.id },
+  });
+  assert.equal(changeRes.statusCode, 200);
+  assert.equal(changeRes.json().apiKey.defaultWorkspaceId, ws2.id);
+
+  // Clear (null)
+  const clearRes = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: { defaultWorkspaceId: null },
+  });
+  assert.equal(clearRes.statusCode, 200);
+  assert.equal(clearRes.json().apiKey.defaultWorkspaceId, null);
+});
+
+test("PATCH /api-keys: rejects another org's workspace with 404 workspace_not_in_org", async () => {
+  const { prisma } = await import("@altium-mcp/db");
+  const bobWs = await prisma.workspace.create({
+    data: { orgId: bobOrgId, altiumWorkspaceUrl: "https://bob-patch.altium365.com" },
+  });
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "alice-patch-cross" },
+  });
+  const keyId = created.json().apiKey.id;
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: { defaultWorkspaceId: bobWs.id },
+  });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, "workspace_not_in_org");
+});
+
+test("PATCH /api-keys: cross-tenant — Bob can't patch Alice's key", async () => {
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "alice-only-key" },
+  });
+  const keyId = created.json().apiKey.id;
+  // Bob targets Alice's orgId — requireOrgRole rejects at 403.
+  const aliceFromBob = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: bobCookie },
+    payload: { defaultWorkspaceId: null },
+  });
+  assert.equal(aliceFromBob.statusCode, 403);
+  // Bob targets his own orgId with Alice's keyId — 404 (no leak).
+  const bobOrgAliceKey = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${bobOrgId}/api-keys/${keyId}`,
+    headers: { cookie: bobCookie },
+    payload: { defaultWorkspaceId: null },
+  });
+  assert.equal(bobOrgAliceKey.statusCode, 404);
+});
+
+test("PATCH /api-keys: rejects revoked key with 409 api_key_already_revoked", async () => {
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "revoke-then-patch" },
+  });
+  const keyId = created.json().apiKey.id;
+  await app.inject({
+    method: "DELETE",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+  });
+  const res = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: { defaultWorkspaceId: null },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, "api_key_already_revoked");
+});
+
+test("PATCH /api-keys: missing body or extra props → 400 invalid_input", async () => {
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "invalid-body" },
+  });
+  const keyId = created.json().apiKey.id;
+  // Empty body — Zod requires defaultWorkspaceId.
+  const empty = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: {},
+  });
+  assert.equal(empty.statusCode, 400);
+  // Unknown key — strict() rejects.
+  const extra = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/api-keys/${keyId}`,
+    headers: { cookie: aliceCookie },
+    payload: { defaultWorkspaceId: null, name: "rename" },
+  });
+  assert.equal(extra.statusCode, 400);
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {

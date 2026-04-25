@@ -40,6 +40,7 @@ import {
   requireActiveBilling,
 } from "../auth/tenant.js";
 import { buildMeterContext, handleQuotaError } from "../metering/context.js";
+import { meteredToolConfig } from "../jobs/metered-tools.js";
 import * as components from "../handlers/components.js";
 import * as projects from "../handlers/projects.js";
 import type { NexarServiceFactory } from "../services/nexar-factory.js";
@@ -105,12 +106,32 @@ export async function registerNexarRoutes(
   }
 
   // ── Parts ────────────────────────────────────────────────────────────
-  // search_parts is the metering proof-of-concept: it counts 1 unit
-  // of `bom_lookup` per call, refuses to run when the org has
-  // exhausted its monthly bucket (and overage isn't allowed), and
-  // writes a UsageEvent row keyed on req.id so retries don't
-  // double-bill. The other parts / library / altium-365 routes
-  // will adopt the same pattern as Sprint 5 progresses.
+  // All three /parts routes are spec §4.4 metered tools (bom_lookup,
+  // 1 unit each). Each handler wraps the upstream call in meter(),
+  // which gates on quota first, runs fn(), and writes an idempotency-
+  // keyed UsageEvent so retries don't double-bill. Tool→metric
+  // mapping comes from the central METERED_TOOLS registry so REST
+  // and MCP stay aligned.
+  async function runMetered<T>(
+    req: import("fastify").FastifyRequest,
+    toolName: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const config = meteredToolConfig(toolName);
+    if (!config) {
+      // Programmer error: route declared a metered tool not in the
+      // registry. Fail loud rather than silently bypassing meter().
+      throw new Error(`runMetered: tool "${toolName}" missing from METERED_TOOLS`);
+    }
+    const meterCtx = await buildMeterContext(req);
+    return await meter(
+      meterCtx,
+      { tool: toolName, metric: config.metric, units: config.units },
+      fn,
+      { store: quotaStore, recordUsage }
+    );
+  }
+
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/search",
     { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
@@ -123,12 +144,8 @@ export async function registerNexarRoutes(
       const nexar = await loadNexarOr503(req, reply);
       if (!nexar) return;
       try {
-        const meterCtx = await buildMeterContext(req);
-        return await meter(
-          meterCtx,
-          { tool: "search_parts", metric: "bom_lookup", units: 1 },
-          () => components.searchParts(nexar, parsed.data),
-          { store: quotaStore, recordUsage }
+        return await runMetered(req, "search_parts", () =>
+          components.searchParts(nexar, parsed.data)
         );
       } catch (err) {
         if (handleQuotaError(err, reply)) return;
@@ -150,8 +167,11 @@ export async function registerNexarRoutes(
       const nexar = await loadNexarOr503(req, reply);
       if (!nexar) return;
       try {
-        return await components.checkPartAvailability(nexar, parsed.data);
+        return await runMetered(req, "check_part_availability", () =>
+          components.checkPartAvailability(nexar, parsed.data)
+        );
       } catch (err) {
+        if (handleQuotaError(err, reply)) return;
         reply.code(502);
         return { error: "upstream_error", detail: (err as Error).message };
       }
@@ -170,8 +190,11 @@ export async function registerNexarRoutes(
       const nexar = await loadNexarOr503(req, reply);
       if (!nexar) return;
       try {
-        return await components.findAlternativeParts(nexar, parsed.data);
+        return await runMetered(req, "find_alternative_parts", () =>
+          components.findAlternativeParts(nexar, parsed.data)
+        );
       } catch (err) {
+        if (handleQuotaError(err, reply)) return;
         reply.code(502);
         return { error: "upstream_error", detail: (err as Error).message };
       }

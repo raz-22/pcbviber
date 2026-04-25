@@ -22,6 +22,7 @@ import { registerAltiumTools } from "./tools/altium.js";
 import { registerPcbFlowPrompts } from "./prompts/pcb-flow.js";
 import { startHttpServer } from "./http.js";
 import { AdRelay } from "./ad-relay/relay.js";
+import type { ToolContext } from "./mcp/dispatch.js";
 import type { AltiumConfig } from "@altium-mcp/shared";
 
 function loadConfig(): AltiumConfig {
@@ -64,16 +65,16 @@ function parseTransport(): "stdio" | "http" {
   return value;
 }
 
-export function buildMcpServer(nexar: NexarService, relay: AdRelay): McpServer {
+export function buildMcpServer(toolCtx: ToolContext, relay: AdRelay): McpServer {
   const server = new McpServer({
     name: "pcbviber",
     version: "0.3.0",
     description:
       "PCBviber — an MCP server for Altium Designer + Altium 365 + Octopart. Tools for component search, project management, BOM analysis, manufacturing output generation, and live command & control of Altium Designer (including visual feedback via screenshots).",
   });
-  registerComponentTools(server, nexar);
-  registerProjectTools(server, nexar);
-  registerManufacturingTools(server, nexar);
+  registerComponentTools(server, toolCtx);
+  registerProjectTools(server, toolCtx);
+  registerManufacturingTools(server, toolCtx);
   registerAltiumTools(server, relay);
   registerPcbFlowPrompts(server);
   return server;
@@ -86,7 +87,12 @@ async function main() {
   const transport = parseTransport();
 
   if (transport === "stdio") {
-    const server = buildMcpServer(nexar, relay);
+    // Stdio has no per-tenant context — env-loaded singleton nexar,
+    // metering bypassed (the dispatch layer treats `metering: null`
+    // as "run handler directly"). Operators on a local machine using
+    // stdio aren't billed; this matches existing behavior pre-5.4.
+    const toolCtx: ToolContext = { nexar, metering: null };
+    const server = buildMcpServer(toolCtx, relay);
     const stdio = new StdioServerTransport();
     await server.connect(stdio);
     console.error(

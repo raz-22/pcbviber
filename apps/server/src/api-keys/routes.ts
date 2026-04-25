@@ -3,6 +3,7 @@
  *
  *   POST   /api/orgs/:orgId/api-keys           — generate (owner/admin)
  *   GET    /api/orgs/:orgId/api-keys           — list (owner/admin)
+ *   PATCH  /api/orgs/:orgId/api-keys/:keyId    — update default workspace
  *   DELETE /api/orgs/:orgId/api-keys/:keyId    — revoke (owner/admin)
  *
  * The plaintext key is returned exactly once on POST; the server stores
@@ -21,9 +22,11 @@
  * Stable error codes:
  *   not_authenticated  forbidden  not_found  invalid_input
  *   api_key_already_revoked      — DELETE on a key whose revokedAt is set
+ *   workspace_not_in_org         — PATCH/POST defaultWorkspaceId belongs to another org
  *
  * Audit log:
  *   api_key.create   — target = apiKey.id, metadata = { name, scopes, hasExpiry }
+ *   api_key.update   — target = apiKey.id, metadata = { defaultWorkspaceId }
  *   api_key.revoke   — target = apiKey.id, metadata = { name }
  *
  * NEVER write the plaintext or hash to the audit log.
@@ -75,7 +78,25 @@ const CreateApiKeyBody = z.object({
       message: "expiresAt must be in the future",
     })
     .optional(),
+  /**
+   * Workspace this API key binds MCP tool calls to when the call
+   * doesn't carry its own workspaceId. Optional at create time;
+   * settable later via PATCH. Validated against orgId — a key in
+   * org A can't be bound to a workspace in org B.
+   */
+  defaultWorkspaceId: z.string().min(1).optional(),
 });
+
+const PatchApiKeyBody = z
+  .object({
+    /**
+     * `null` clears the binding; a string sets/changes it. The body
+     * MUST include defaultWorkspaceId — `{}` is rejected (use the
+     * existing route to be a no-op).
+     */
+    defaultWorkspaceId: z.union([z.string().min(1), z.null()]),
+  })
+  .strict();
 
 // ─── Registration ─────────────────────────────────────────────────────
 
@@ -102,6 +123,20 @@ export async function registerApiKeyRoutes(
         return { error: "forbidden" };
       }
 
+      // If the caller asked to bind a default workspace, validate
+      // it belongs to this org. Cross-tenant collapse to 404 keeps
+      // the behavior consistent with the workspace routes.
+      if (parsed.data.defaultWorkspaceId) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: parsed.data.defaultWorkspaceId },
+          select: { orgId: true },
+        });
+        if (!ws || ws.orgId !== ctx.org.id) {
+          reply.code(404);
+          return { error: "workspace_not_in_org" };
+        }
+      }
+
       const generated = generateApiKey();
       const created = await prisma.apiKey.create({
         data: {
@@ -110,6 +145,7 @@ export async function registerApiKeyRoutes(
           hashedKey: generated.hash,
           scopes: parsed.data.scopes.join(" "),
           expiresAt: parsed.data.expiresAt ?? null,
+          defaultWorkspaceId: parsed.data.defaultWorkspaceId ?? null,
         },
       });
 
@@ -124,6 +160,7 @@ export async function registerApiKeyRoutes(
           name: created.name,
           scopes: parsed.data.scopes,
           hasExpiry: parsed.data.expiresAt !== undefined,
+          hasDefaultWorkspace: parsed.data.defaultWorkspaceId !== undefined,
         },
       });
 
@@ -134,6 +171,75 @@ export async function registerApiKeyRoutes(
         // it back — the server can't reconstruct it from the hash.
         key: generated.plaintext,
       };
+    }
+  );
+
+  // ── PATCH /api/orgs/:orgId/api-keys/:keyId ───────────────────────────
+  // Sole settable field today: defaultWorkspaceId. Lets an operator
+  // bind / rebind / clear the workspace an MCP tool call gets routed
+  // to without rotating the key plaintext.
+  app.patch(
+    "/api/orgs/:orgId/api-keys/:keyId",
+    { preHandler: [requireAuth, requireMember] },
+    async (req, reply) => {
+      const parsed = PatchApiKeyBody.safeParse(req.body);
+      if (!parsed.success) {
+        reply.code(400);
+        return { error: "invalid_input", detail: parsed.error.flatten() };
+      }
+      const ctx = req.ctx!;
+      const { keyId } = req.params as { keyId: string };
+      if (!can({ userId: ctx.user.id, role: ctx.role }, "api_key.update")) {
+        reply.code(403);
+        return { error: "forbidden" };
+      }
+      const existing = await prisma.apiKey.findUnique({
+        where: { id: keyId },
+        select: { id: true, orgId: true, name: true, revokedAt: true },
+      });
+      if (!existing || existing.orgId !== ctx.org.id) {
+        reply.code(404);
+        return { error: "not_found" };
+      }
+      // Don't let an operator silently re-arm a revoked key by
+      // patching it. Revoke → rotate is the documented flow; PATCH
+      // on revoked rows stays an explicit 409.
+      if (existing.revokedAt) {
+        reply.code(409);
+        return { error: "api_key_already_revoked" };
+      }
+
+      // Validate the new workspace (when set) belongs to this org.
+      if (parsed.data.defaultWorkspaceId !== null) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: parsed.data.defaultWorkspaceId },
+          select: { orgId: true },
+        });
+        if (!ws || ws.orgId !== ctx.org.id) {
+          reply.code(404);
+          return { error: "workspace_not_in_org" };
+        }
+      }
+
+      const updated = await prisma.apiKey.update({
+        where: { id: keyId },
+        data: { defaultWorkspaceId: parsed.data.defaultWorkspaceId },
+      });
+
+      await writeAuditLog({
+        orgId: ctx.org.id,
+        actorUserId: ctx.user.id,
+        action: "api_key.update",
+        target: keyId,
+        ip: clientIp(req),
+        userAgent: req.headers["user-agent"],
+        metadata: {
+          name: existing.name,
+          defaultWorkspaceId: parsed.data.defaultWorkspaceId,
+        },
+      });
+
+      return { apiKey: serializeApiKey(updated) };
     }
   );
 
@@ -207,6 +313,7 @@ interface ApiKeyRow {
   orgId: string;
   name: string;
   scopes: string;
+  defaultWorkspaceId: string | null;
   lastUsedAt: Date | null;
   expiresAt: Date | null;
   createdAt: Date;
@@ -224,6 +331,7 @@ function serializeApiKey(row: ApiKeyRow, opts?: { preview?: string }) {
     id: row.id,
     name: row.name,
     scopes: row.scopes ? row.scopes.split(" ").filter(Boolean) : [],
+    defaultWorkspaceId: row.defaultWorkspaceId,
     lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
     expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
