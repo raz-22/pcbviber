@@ -516,6 +516,149 @@ test("PATCH invalidates the per-workspace NexarService cache", async () => {
   assert.notEqual(before, after);
 });
 
+// ─── PR #8 review additions ─────────────────────────────────────────
+
+test("POST with testBeforeStore:false skips the credential test", async () => {
+  // Flip the stub to "always reject", then send testBeforeStore:false.
+  // The route must not consult testCredentials, so the create succeeds.
+  testCredsResult = { ok: false, status: 401, error: "would reject" };
+  let testCalled = false;
+  const origTest = factory.testCredentials.bind(factory);
+  factory.testCredentials = async (...args) => {
+    testCalled = true;
+    return origTest(...args);
+  };
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      nexarClientId: "skip-id",
+      nexarClientSecret: "skip-secret",
+      testBeforeStore: false,
+    },
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(
+    testCalled,
+    false,
+    "testCredentials must not be invoked when testBeforeStore is false"
+  );
+
+  // Restore for downstream tests in this file.
+  factory.testCredentials = origTest;
+  testCredsResult = { ok: true };
+});
+
+test("PATCH with altiumWorkspaceUrl:null clears the URL field", async () => {
+  testCredsResult = { ok: true };
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      altiumWorkspaceUrl: "https://to-clear.altium365.com",
+      nexarClientId: "x",
+      nexarClientSecret: "x",
+    },
+  });
+  const wsId = created.json().workspace.id;
+
+  const patch = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/workspaces/${wsId}`,
+    headers: { cookie: aliceCookie },
+    payload: { altiumWorkspaceUrl: null },
+  });
+  assert.equal(patch.statusCode, 200);
+  assert.equal(patch.json().workspace.altiumWorkspaceUrl, null);
+
+  const { prisma } = await import("@altium-mcp/db");
+  const ws = await prisma.workspace.findUnique({ where: { id: wsId } });
+  assert.equal(ws!.altiumWorkspaceUrl, null);
+});
+
+test("altiumRestToken round-trips through encryption and is exposed only as a boolean", async () => {
+  testCredsResult = { ok: true };
+  const TOKEN = "secret-rest-token-value-99";
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      nexarClientId: "rest-id",
+      nexarClientSecret: "rest-secret",
+      altiumRestToken: TOKEN,
+    },
+  });
+  assert.equal(created.statusCode, 201);
+  const body = created.json();
+  // Public response: only the boolean indicator, not the token itself.
+  assert.equal(body.workspace.hasAltiumRestToken, true);
+  assert.doesNotMatch(
+    JSON.stringify(body),
+    new RegExp(TOKEN),
+    "API response must not echo the rest token"
+  );
+
+  // DB row holds ciphertext that decrypts back to the original.
+  const wsId = body.workspace.id;
+  const { prisma, decryptCredential } = await import("@altium-mcp/db");
+  const ws = await prisma.workspace.findUnique({ where: { id: wsId } });
+  assert.match(ws!.altiumRestTokenEnc!, /^v1\./);
+  assert.equal(decryptCredential(ws!.altiumRestTokenEnc!), TOKEN);
+
+  // PATCH altiumRestToken: null clears the field on disk + in response.
+  const cleared = await app.inject({
+    method: "PATCH",
+    url: `/api/orgs/${aliceOrgId}/workspaces/${wsId}`,
+    headers: { cookie: aliceCookie },
+    payload: { altiumRestToken: null },
+  });
+  assert.equal(cleared.statusCode, 200);
+  assert.equal(cleared.json().workspace.hasAltiumRestToken, false);
+  const after = await prisma.workspace.findUnique({ where: { id: wsId } });
+  assert.equal(after!.altiumRestTokenEnc, null);
+});
+
+test("an org can hold multiple workspaces simultaneously", async () => {
+  testCredsResult = { ok: true };
+  // Other tests in the suite have created workspaces in alice's org —
+  // count them, then add three more, confirm the count grew by 3.
+  const before = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+  });
+  const beforeCount = before.json().workspaces.length;
+
+  for (let i = 0; i < 3; i++) {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orgs/${aliceOrgId}/workspaces`,
+      headers: { cookie: aliceCookie },
+      payload: {
+        altiumWorkspaceUrl: `https://multi-${i}.altium365.com`,
+        nexarClientId: `multi-${i}`,
+        nexarClientSecret: `multi-${i}`,
+      },
+    });
+    assert.equal(res.statusCode, 201);
+  }
+
+  const after = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(after.json().workspaces.length, beforeCount + 3);
+
+  // Each row has its own id (basic sanity, no accidental row reuse).
+  const ids = new Set(after.json().workspaces.map((w: { id: string }) => w.id));
+  assert.equal(ids.size, after.json().workspaces.length);
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {

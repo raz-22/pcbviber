@@ -237,3 +237,93 @@ test("expired entries are reloaded on next forWorkspace call", async () => {
   const b = await factory.forWorkspace(ws.id);
   assert.notEqual(a, b, "expired cache entry should not be reused");
 });
+
+// ─── PR #8 review additions ─────────────────────────────────────────
+
+test("invalidateAll() clears every cached service in one call", async () => {
+  const factory = new NexarServiceFactory();
+  const org = await prisma.organization.create({
+    data: { name: "InvAll", slug: "invall-org" },
+  });
+  const w1 = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      nexarClientIdEnc: encryptCredential("c1"),
+      nexarClientSecretEnc: encryptCredential("s1"),
+    },
+  });
+  const w2 = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      nexarClientIdEnc: encryptCredential("c2"),
+      nexarClientSecretEnc: encryptCredential("s2"),
+    },
+  });
+  await factory.forWorkspace(w1.id);
+  await factory.forWorkspace(w2.id);
+  assert.equal(factory.__sizeForTests(), 2);
+
+  factory.invalidateAll();
+  assert.equal(factory.__sizeForTests(), 0);
+});
+
+test("LRU bumps recently-used entries so the OLDEST gets evicted", async () => {
+  // PR 2.2's eviction test only confirmed "size capped at max"; this
+  // pins the bump-on-hit behavior — without it, recently-used entries
+  // could be evicted while stale ones survive.
+  const factory = new NexarServiceFactory({ maxEntries: 2, ttlMs: 60_000 });
+  const org = await prisma.organization.create({
+    data: { name: "FIFO", slug: "fifo-bump-org" },
+  });
+  const a = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      nexarClientIdEnc: encryptCredential("a"),
+      nexarClientSecretEnc: encryptCredential("a"),
+    },
+  });
+  const b = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      nexarClientIdEnc: encryptCredential("b"),
+      nexarClientSecretEnc: encryptCredential("b"),
+    },
+  });
+  const c = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      nexarClientIdEnc: encryptCredential("c"),
+      nexarClientSecretEnc: encryptCredential("c"),
+    },
+  });
+
+  // Seed: cache holds [a, b] (a oldest).
+  const aSvc1 = await factory.forWorkspace(a.id);
+  await factory.forWorkspace(b.id);
+  // Touch a → cache should now hold [b, a] (a most-recent).
+  const aSvc2 = await factory.forWorkspace(a.id);
+  assert.equal(aSvc1, aSvc2, "touching a should hit the cache, not reload");
+  // Load c → b is now oldest and should be evicted, NOT a.
+  await factory.forWorkspace(c.id);
+  // Reloading a still hits the cache (proves it wasn't the one evicted).
+  const aSvc3 = await factory.forWorkspace(a.id);
+  assert.equal(aSvc1, aSvc3, "a was bumped on touch, must survive eviction");
+});
+
+test("forWorkspace surfaces a clear error when ciphertext is corrupt", async () => {
+  const org = await prisma.organization.create({
+    data: { name: "Corrupt", slug: "corrupt-cipher-org" },
+  });
+  const ws = await prisma.workspace.create({
+    data: {
+      orgId: org.id,
+      // Hand-crafted "valid wire format prefix, garbage body" — passes
+      // the parser shape check but fails GCM auth at decrypt.
+      nexarClientIdEnc: "v1.bm9wZQ.bm9wZQ.bm9wZW5vcGVub3Bl",
+      nexarClientSecretEnc: "v1.bm9wZQ.bm9wZQ.bm9wZW5vcGVub3Bl",
+    },
+  });
+
+  const factory = new NexarServiceFactory();
+  await assert.rejects(() => factory.forWorkspace(ws.id), /failed to decrypt/i);
+});
