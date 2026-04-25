@@ -14,7 +14,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { deriveSlug, slugFromEmail, createOrgForOwner, findAvailableSlug } from "./org.js";
+import {
+  deriveSlug,
+  slugFromEmail,
+  createOrgForOwner,
+  findAvailableSlug,
+  TRIAL_DAYS,
+} from "./org.js";
 
 let workdir: string;
 let prisma: import("@altium-mcp/db").PrismaClient;
@@ -182,9 +188,12 @@ test("createOrgForOwner default name uses email local-part", async () => {
 
 // ─── Trial on signup ─────────────────────────────────────────────────
 
-test("createOrgForOwner sets billingStatus=trialing + trialEndsAt = now+14d", async () => {
-  // Per spec §3.1 every new org enters a 14-day trial without a card.
-  // Pin both the field shape (return value) and the persisted row.
+test("createOrgForOwner sets billingStatus=trialing + trialEndsAt = now+TRIAL_DAYS", async () => {
+  // Per spec §3.1 every new org enters a trial without a card. Pin
+  // both the field shape (return value) and the persisted row.
+  // Importing TRIAL_DAYS rather than re-deriving 14*24*60*60*1000
+  // anchors the assertion to the same constant the implementation
+  // uses — change it to 7 or 30 and the test follows.
   const before = Date.now();
   const u = await prisma.user.create({ data: { email: "trial@example.com" } });
   const out = await createOrgForOwner({
@@ -196,11 +205,11 @@ test("createOrgForOwner sets billingStatus=trialing + trialEndsAt = now+14d", as
   assert.equal(out.billingStatus, "trialing");
   assert.ok(typeof out.trialEndsAt === "string");
   const trialMs = new Date(out.trialEndsAt).getTime();
-  // Allow a generous window because the assertion runs across multiple
-  // wall-clock ticks; the bound is 14d ± a few ms in either direction.
-  const fourteenDays = 14 * 24 * 60 * 60 * 1000;
+  // Allow a 1-second window on each side for clock-tick noise across
+  // the user.create + createOrgForOwner span.
+  const trialMsOffset = TRIAL_DAYS * 24 * 60 * 60 * 1000;
   assert.ok(
-    trialMs >= before + fourteenDays - 1000 && trialMs <= after + fourteenDays + 1000,
+    trialMs >= before + trialMsOffset - 1000 && trialMs <= after + trialMsOffset + 1000,
     `trialEndsAt out of expected window: ${out.trialEndsAt}`
   );
 
