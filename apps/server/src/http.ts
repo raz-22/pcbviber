@@ -17,6 +17,7 @@ import { selectAuthProvider } from "@altium-mcp/auth";
 import { registerAuthRoutes } from "./auth/routes.js";
 import { registerOrgRoutes } from "./auth/org-routes.js";
 import { registerWorkspaceRoutes } from "./workspaces/routes.js";
+import { registerNexarRoutes } from "./workspaces/nexar-routes.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -73,6 +74,10 @@ export async function startHttpServer(opts: {
   await registerAuthRoutes(app, authProvider);
   await registerOrgRoutes(app, authProvider);
   await registerWorkspaceRoutes(app, authProvider, { nexarFactory });
+  // Tenant-scoped Nexar routes (Sprint 2 PR 2.3): every Parts /
+  // Library / Altium-365 query goes through factory.forWorkspace(...)
+  // and is gated by org-membership + workspace-belongs-to-org.
+  await registerNexarRoutes(app, authProvider, { nexarFactory });
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
@@ -91,7 +96,19 @@ export async function startHttpServer(opts: {
     await transport.handleRequest(req.raw, reply.raw, req.body);
   });
 
-  // ── REST BFF — Parts Search page ──────────────────────
+  // ── REST BFF — Parts Search page (DEPRECATED Sprint 2 PR 2.3) ────
+  //
+  // These pre-multitenant routes use the env-loaded NexarService
+  // singleton (no orgId / workspaceId required). They're kept so the
+  // Sprint-1 SPA's PartsSearch page keeps working until PR 2.4 cuts it
+  // over to the tenant-scoped equivalents:
+  //   /api/orgs/:orgId/workspaces/:workspaceId/parts/search
+  //   /api/orgs/:orgId/workspaces/:workspaceId/parts/availability
+  //   /api/orgs/:orgId/workspaces/:workspaceId/parts/alternatives
+  //   /api/orgs/:orgId/workspaces/:workspaceId/library/components
+  //   /api/orgs/:orgId/workspaces/:workspaceId/altium-365/workspaces
+  //   /api/orgs/:orgId/workspaces/:workspaceId/altium-365/projects
+  // PR 2.5 (follow-up) deletes the routes below.
   app.get("/api/parts/search", async (req, reply) => {
     const parsed = SearchPartsInput.safeParse(req.query);
     if (!parsed.success) {

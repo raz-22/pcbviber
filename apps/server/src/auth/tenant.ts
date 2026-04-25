@@ -41,7 +41,22 @@ export interface RequestContext {
 declare module "fastify" {
   interface FastifyRequest {
     ctx?: RequestContext;
+    workspace?: WorkspaceContext;
   }
+}
+
+/**
+ * Per-request workspace context. Attached by makeRequireWorkspace
+ * after the workspace has been verified to belong to the current
+ * org (req.ctx must already be populated; route chains:
+ *   [requireAuth, requireOrgMember, makeRequireWorkspace()]
+ * ).
+ */
+export interface WorkspaceContext {
+  id: string;
+  orgId: string;
+  altiumWorkspaceUrl: string | null;
+  hasNexarCredentials: boolean;
 }
 
 /**
@@ -124,6 +139,60 @@ export function makeRequireOrgRole(
 /** Shorthand: any member (owner / admin / member / billing_only) is OK. */
 export const requireOrgMember = makeRequireOrgRole([]);
 
+/**
+ * Factory: returns a Fastify preHandler that loads the `:workspaceId`
+ * URL param and asserts it belongs to the current `req.ctx.org`.
+ *
+ * Must run AFTER makeRequireOrgRole — it relies on `req.ctx`. Order
+ * inside the route's preHandler array:
+ *   [requireAuth, requireOrgMember, makeRequireWorkspace()]
+ *
+ * On success: attaches `req.workspace` (id, orgId, public metadata).
+ * On failure: 404 — never 403 — so the response shape is identical
+ * between "doesn't exist" and "exists but belongs to another org",
+ * preventing workspace-id enumeration just like the cross-org check
+ * in makeRequireOrgRole.
+ */
+export function makeRequireWorkspace(): preHandlerAsyncHookHandler {
+  // We import prisma at call time so we don't pay the cost on every
+  // module load and so factory tests can swap globals.
+  return async function requireWorkspace(req: FastifyRequest, reply: FastifyReply) {
+    if (!req.ctx) {
+      // Programmer error: the chain is wrong. Fail loudly.
+      reply.code(500);
+      throw new Error("makeRequireWorkspace called without req.ctx");
+    }
+    const params = req.params as { workspaceId?: string };
+    const workspaceId = params?.workspaceId;
+    if (!workspaceId || typeof workspaceId !== "string") {
+      reply.code(400);
+      throw new Error("missing :workspaceId in route");
+    }
+
+    const ws = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: {
+        id: true,
+        orgId: true,
+        altiumWorkspaceUrl: true,
+        nexarClientIdEnc: true,
+        nexarClientSecretEnc: true,
+      },
+    });
+    if (!ws || ws.orgId !== req.ctx.org.id) {
+      reply.code(404);
+      throw new Error("workspace not found");
+    }
+
+    req.workspace = {
+      id: ws.id,
+      orgId: ws.orgId,
+      altiumWorkspaceUrl: ws.altiumWorkspaceUrl,
+      hasNexarCredentials: !!(ws.nexarClientIdEnc && ws.nexarClientSecretEnc),
+    };
+  };
+}
+
 /** Shorthand: only owner. */
 export const requireOrgOwner = makeRequireOrgRole(["owner"]);
 
@@ -151,6 +220,14 @@ export function installTenantErrorHandler(app: FastifyInstance): void {
     const message = err instanceof Error ? err.message : "";
     if (status === 400 && /missing :orgId/i.test(message)) {
       reply.code(400).send({ error: "missing_org_id" });
+      return;
+    }
+    if (status === 400 && /missing :workspaceId/i.test(message)) {
+      reply.code(400).send({ error: "missing_workspace_id" });
+      return;
+    }
+    if (status === 404 && /workspace not found/i.test(message)) {
+      reply.code(404).send({ error: "not_found" });
       return;
     }
     // Unknown error — keep Fastify's default behavior.
