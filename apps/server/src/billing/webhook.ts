@@ -227,11 +227,15 @@ async function onCheckoutCompleted(
     });
   }
 
-  // No audit-log write here. SQLite serializes writes; calling
-  // writeAuditLog (which uses the global prisma client, not the
-  // transaction) inside an open transaction deadlocks the DB.
-  // The WebhookEvent row above + the org/sub mutations themselves
-  // give us the same observability through `git log`-style queries.
+  // No audit-log write here despite spec §3.5 listing "subscription
+  // change" as audit-loggable. SQLite serializes writes; calling
+  // writeAuditLog (which uses the global prisma client) inside an
+  // open transaction deadlocks. The clean fix is to return audit
+  // metadata from each handler and write it AFTER the transaction
+  // commits — small process-crash window where state changes but
+  // no audit row, acceptable trade-off. Deferred to a focused
+  // audit-billing-events PR. The WebhookEvent row + the org/sub
+  // mutations are queryable in the meantime.
 }
 
 interface StripeSubscription {
