@@ -10,13 +10,17 @@
  *     Nexar creds                 → inline warning, query disabled
  */
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import type { PartSearchResult } from "@altium-mcp/shared";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { useWorkspaces, workspaceErrorMessage } from "../lib/workspaces";
+import {
+  pickDefaultWorkspace,
+  useWorkspaces,
+  workspaceErrorMessage,
+} from "../lib/workspaces";
 
 export function PartsSearch() {
   const { me } = useAuth();
@@ -25,16 +29,13 @@ export function PartsSearch() {
 
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
 
-  // Auto-select the first configured workspace once the list loads.
-  // Prefer one with Nexar creds — otherwise the user lands on a 503 by
-  // default. Falls back to the first if none are configured (so the
-  // selector still shows something to switch from).
+  // Pick a workspace once the list arrives, AND re-pick if the current
+  // selection has gone stale (e.g. another tab deleted the workspace).
+  // pickDefaultWorkspace handles all four cases — see its tests.
   useEffect(() => {
-    if (workspaceId) return;
-    const list = wsQ.data;
-    if (!list || list.length === 0) return;
-    const configured = list.find((w) => w.hasNexarCredentials);
-    setWorkspaceId(configured?.id ?? list[0].id);
+    if (!wsQ.data) return;
+    const next = pickDefaultWorkspace(wsQ.data, workspaceId);
+    if (next !== workspaceId) setWorkspaceId(next);
   }, [wsQ.data, workspaceId]);
 
   const selected = wsQ.data?.find((w) => w.id === workspaceId) ?? null;
@@ -287,9 +288,8 @@ function ResultsTable({
             const best = bestOffer(part);
             const isOpen = expandedMpn === part.mpn;
             return (
-              <>
+              <Fragment key={part.mpn}>
                 <tr
-                  key={part.mpn}
                   onClick={() => onToggle(part.mpn)}
                   className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
                 >
@@ -319,13 +319,13 @@ function ResultsTable({
                   </td>
                 </tr>
                 {isOpen && (
-                  <tr key={part.mpn + "-expanded"} className="bg-slate-50">
+                  <tr className="bg-slate-50">
                     <td colSpan={6} className="px-4 py-3">
                       <OffersTable offers={part.offers} />
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             );
           })}
         </tbody>

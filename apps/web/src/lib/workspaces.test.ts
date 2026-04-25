@@ -11,11 +11,23 @@ import assert from "node:assert/strict";
 import { QueryClient } from "@tanstack/react-query";
 import {
   invalidateWorkspaces,
+  pickDefaultWorkspace,
   workspaceErrorMessage,
   workspaceKey,
   workspacesKey,
 } from "./workspaces";
-import { ApiError } from "./api";
+import { ApiError, type Workspace } from "./api";
+
+function ws(id: string, hasNexarCredentials = true): Workspace {
+  return {
+    id,
+    orgId: "org-a",
+    altiumWorkspaceUrl: null,
+    hasNexarCredentials,
+    hasAltiumRestToken: false,
+    createdAt: "2026-04-25T00:00:00Z",
+  };
+}
 
 // ─── error mapping ───────────────────────────────────────────────────
 
@@ -147,6 +159,64 @@ test("invalidateWorkspaces also invalidates per-workspace cache cells (prefix ma
   // a separate single-workspace invalidator after a delete.
   assert.equal(qc.getQueryState(workspaceKey("org-a", "ws-1"))?.isInvalidated, true);
   assert.equal(qc.getQueryState(workspaceKey("org-a", "ws-2"))?.isInvalidated, true);
+});
+
+// ─── pickDefaultWorkspace — auto-select state machine ────────────────
+//
+// This is the function PartsSearch's useEffect drives. The previous
+// in-effect logic early-returned whenever a workspaceId was set, which
+// meant a deleted workspace stranded the page (no re-pick, dropdown
+// stuck on a dead id). Each test here pins one branch of the recovery.
+
+test("pickDefaultWorkspace returns null on an empty list", () => {
+  assert.equal(pickDefaultWorkspace([], null), null);
+  // Even when something is currently selected, an empty list can't
+  // satisfy it — the result must collapse to null so callers know to
+  // clear their state.
+  assert.equal(pickDefaultWorkspace([], "ws-stale"), null);
+});
+
+test("pickDefaultWorkspace keeps a still-valid current selection", () => {
+  // The user explicitly chose ws-2; a refetch should NOT yank them
+  // back to the auto-pick. ws-1 is configured but ws-2 isn't — the
+  // function trusts the user's choice over the heuristic.
+  const list = [ws("ws-1", true), ws("ws-2", false)];
+  assert.equal(pickDefaultWorkspace(list, "ws-2"), "ws-2");
+});
+
+test("pickDefaultWorkspace re-picks when the current id is stale", () => {
+  // The selected workspace was deleted (or another tab created+deleted).
+  // ws-stale isn't in the list, so the function falls through to the
+  // auto-pick (configured first). This is the regression-test for the
+  // "page is stuck" bug where the effect early-returned on truthy id.
+  const list = [ws("ws-1", false), ws("ws-2", true)];
+  assert.equal(pickDefaultWorkspace(list, "ws-stale"), "ws-2");
+});
+
+test("pickDefaultWorkspace prefers a configured workspace over an unconfigured one", () => {
+  // Without this preference, a freshly-created (no-creds) workspace
+  // would auto-select and leave the user staring at a 503 instead of
+  // the working sibling.
+  const list = [ws("ws-empty", false), ws("ws-ready", true)];
+  assert.equal(pickDefaultWorkspace(list, null), "ws-ready");
+});
+
+test("pickDefaultWorkspace falls back to the first row when none is configured", () => {
+  // Useful so the dropdown still has a value to render — the page
+  // shows the "not configured" warning, not a blank selector.
+  const list = [ws("ws-a", false), ws("ws-b", false)];
+  assert.equal(pickDefaultWorkspace(list, null), "ws-a");
+});
+
+test("pickDefaultWorkspace is order-stable: no jitter from refetches reordering equals", () => {
+  // Two refetches of an unchanged list must return the same id, even
+  // when nothing is selected. Otherwise the page would oscillate
+  // between cards on every poll.
+  const list = [ws("ws-a", true), ws("ws-b", true)];
+  const first = pickDefaultWorkspace(list, null);
+  const second = pickDefaultWorkspace(list, null);
+  assert.equal(first, second);
+  assert.equal(first, "ws-a");
 });
 
 test("invalidateWorkspaces leaves OTHER orgs' caches alone", () => {

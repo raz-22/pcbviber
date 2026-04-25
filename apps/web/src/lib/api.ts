@@ -153,12 +153,6 @@ export interface TestConnectionOk {
   ok: true;
 }
 
-/** 422 from POST /test-connection — typed so the form can show details. */
-export interface TestConnectionFailDetail {
-  error: string;
-  status?: number;
-}
-
 export const api = {
   // ─── Auth ──────────────────────────────────────────────────────────
   signup: (input: {

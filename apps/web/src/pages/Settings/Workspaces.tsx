@@ -232,6 +232,14 @@ function WorkspaceCard({
   onDeleted: () => void;
 }) {
   const del = useDeleteWorkspace(orgId);
+
+  // Discard the previous attempt's error when the user dismisses the
+  // confirm panel — otherwise re-opening it shows a stale red message
+  // from a delete that no longer matters.
+  function cancel() {
+    del.reset();
+    onCancelDelete();
+  }
   return (
     <li className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-4">
@@ -295,7 +303,7 @@ function WorkspaceCard({
               {del.isPending ? "Deleting…" : "Confirm delete"}
             </button>
             <button
-              onClick={onCancelDelete}
+              onClick={cancel}
               disabled={del.isPending}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >

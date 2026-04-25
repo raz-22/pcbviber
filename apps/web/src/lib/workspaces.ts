@@ -99,6 +99,28 @@ export function useTestWorkspaceConnection(orgId: string) {
 }
 
 /**
+ * Pick the workspace id PartsSearch (and any future workspace-scoped
+ * page) should default to.
+ *
+ *   - empty list                 → null
+ *   - currentId still in list    → keep it (no auto-jump under user)
+ *   - currentId stale or unset   → first configured, else first row
+ *
+ * Pulled out of PartsSearch so the "selected workspace was deleted"
+ * recovery path is a pure function with a unit test, not a useEffect
+ * branch we can only catch by clicking around.
+ */
+export function pickDefaultWorkspace(
+  list: readonly Workspace[],
+  currentId: string | null
+): string | null {
+  if (list.length === 0) return null;
+  if (currentId && list.some((w) => w.id === currentId)) return currentId;
+  const configured = list.find((w) => w.hasNexarCredentials);
+  return configured?.id ?? list[0].id;
+}
+
+/**
  * Map a workspace-flow ApiError to a user-facing string. Mirrors the
  * stable codes in the internal design spec §3 + the ones the server
  * actually emits today (workspace.routes.ts, nexar-routes.ts). Anything
