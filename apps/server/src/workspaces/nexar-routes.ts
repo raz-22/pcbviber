@@ -48,8 +48,8 @@ import type { NexarService } from "../services/nexar.js";
 export interface NexarRouteDeps {
   nexarFactory: NexarServiceFactory;
   /**
-   * Quota counter store. Defaults to a per-process InMemoryQuotaStore.
-   * PR 5.2 will inject a Redis-backed store here. Tests inject a
+   * Quota counter store. Defaults to a per-process InMemoryQuotaStore;
+   * production wiring can swap a Redis-backed store. Tests inject a
    * fresh in-memory store + clamp it to small quotas via plan deps.
    */
   quotaStore?: QuotaStore;
@@ -104,12 +104,12 @@ export async function registerNexarRoutes(
   }
 
   // ── Parts ────────────────────────────────────────────────────────────
-  // search_parts is the Sprint 5 PR 5.1 metering proof-of-concept: it
-  // counts 1 unit of `bom_lookup` per call, refuses to run when the
-  // org has exhausted its monthly bucket (and overage isn't allowed),
-  // and writes a UsageEvent row keyed on req.id so retries don't
-  // double-bill. The other parts/library/altium-365 routes will
-  // adopt the same pattern in PR 5.4.
+  // search_parts is the metering proof-of-concept: it counts 1 unit
+  // of `bom_lookup` per call, refuses to run when the org has
+  // exhausted its monthly bucket (and overage isn't allowed), and
+  // writes a UsageEvent row keyed on req.id so retries don't
+  // double-bill. The other parts / library / altium-365 routes
+  // will adopt the same pattern as Sprint 5 progresses.
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/search",
     { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },

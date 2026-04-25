@@ -203,7 +203,7 @@ test("different requestIds for the same tool produce different idempotency keys"
 
 test("overageAllowed plans bypass the cap and still record + increment", async () => {
   // Team / Starter: requests beyond the included allowance succeed
-  // and the UsageEvent rows feed the Stripe overage push (PR 5.3).
+  // and the UsageEvent rows feed the Stripe overage push downstream.
   const store = new InMemoryQuotaStore();
   const rec = makeRecorder();
   const ctx = ctxWith({
@@ -251,8 +251,8 @@ test("unlimited (-1) sentinel bypasses the cap regardless of overageAllowed", as
 });
 
 test("units > 1: quota is checked against used + units, increment matches", async () => {
-  // analyze_bom_cost will pass units=N per quantity tier in PR 5.4.
-  // Here we simulate units=3 against a 5-cap.
+  // Tools that bill per quantity tier (e.g. analyze_bom_cost) pass
+  // units=N. Here we simulate units=3 against a 5-cap.
   const store = new InMemoryQuotaStore();
   const rec = makeRecorder();
   const ctx = ctxWith();

@@ -1,7 +1,7 @@
 /**
  * In-memory QuotaStore. Powers tests + dev environments without Redis.
  *
- * PR 5.2 will add a RedisQuotaStore behind the same interface; this
+ * A Redis-backed store can slot in behind the same interface; this
  * implementation deliberately does not pretend to be process-shared
  * — a single Node process is the only correctness boundary. Routes
  * select between stores via env (REDIS_URL set → Redis; unset →

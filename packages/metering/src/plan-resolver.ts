@@ -1,7 +1,7 @@
 /**
  * Resolves the active plan + billing period for an org.
  *
- * The chain (per the Sprint 5 PR 5.1 design):
+ * The chain:
  *   1. Latest non-terminal Subscription row → load its Plan.
  *   2. If Plan link missing but Subscription.stripePriceId is set,
  *      map via env (STRIPE_PRICE_STARTER_SEAT / STRIPE_PRICE_TEAM_SEAT)
@@ -29,7 +29,7 @@ export const UNLIMITED = -1;
  * Hardcoded baseline used as both the seed for Plan rows and the
  * fallback when no Plan row exists. Numbers come from spec §1.
  *
- * Each value is monthly. Stripe meter pushes (PR 5.3) bill the same
+ * Each value is monthly. Stripe meter pushes will bill the same
  * unit count to the metered Stripe price — these are kept in sync.
  */
 export const PLAN_DEFAULTS: Record<string, PlanSnapshot> = {

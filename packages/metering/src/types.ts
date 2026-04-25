@@ -12,10 +12,10 @@
  *     return result;
  *   }
  *
- * The interfaces here keep that wrapper provider-agnostic: PR 5.1
- * ships an in-memory QuotaStore, PR 5.2 will swap in Redis (Upstash)
- * behind the same interface, PR 5.3 will add Stripe meter pushes via
- * a separate background job that drains UsageEvent rows.
+ * The interfaces here keep that wrapper provider-agnostic: this
+ * package ships an in-memory QuotaStore; a Redis-backed store can
+ * slot in behind the same interface, and Stripe meter pushes can
+ * drain UsageEvent rows from a separate background job.
  */
 
 /**
@@ -91,8 +91,8 @@ export interface MeterContext {
 }
 
 /**
- * Per-call options. `units` defaults to 1; `analyze_bom_cost` will
- * override per spec §4.4 ("1 unit per quantity tier") in PR 5.4.
+ * Per-call options. `units` defaults to 1; tools that bill per
+ * quantity tier (e.g. `analyze_bom_cost`, per spec §4.4) override.
  */
 export interface MeterOptions {
   tool: string;
@@ -123,8 +123,8 @@ export class QuotaExceeded extends Error {
 /**
  * Storage abstraction for "units consumed by orgId|metric in the
  * current period". The in-memory implementation in this package
- * powers tests and dev; PR 5.2 will add a Redis-backed implementation
- * + hourly DB reconciliation behind the same interface.
+ * powers tests and dev; a Redis-backed implementation + hourly DB
+ * reconciliation can slot in behind the same interface.
  */
 export interface QuotaStore {
   /**
@@ -146,8 +146,8 @@ export interface QuotaStore {
   ): Promise<number>;
   /**
    * Test-only: clear all counters. Production code must never call
-   * this — Sprint 5 PR 5.2's RedisQuotaStore will not implement it
-   * (it'll throw, so any production caller fails loudly).
+   * this — a Redis-backed store would throw here so any production
+   * caller fails loudly.
    */
   reset(): void;
 }
