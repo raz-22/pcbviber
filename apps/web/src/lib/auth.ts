@@ -43,6 +43,8 @@ export function authMeFromSignup(res: SignupResponse): AuthMe {
         slug: res.org.slug,
         name: res.org.name,
         role: "owner",
+        billingStatus: res.org.billingStatus,
+        trialEndsAt: res.org.trialEndsAt,
       },
     ],
   };

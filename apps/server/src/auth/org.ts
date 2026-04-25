@@ -6,11 +6,17 @@
  *   → org with slug), make the user its owner, start a 14-day Team-plan
  *   trial (no card required)."
  *
- * Sprint 1 covers the org + owner Membership. The trial Subscription
- * row is left for Sprint 4 — Plan / Stripe seed lands there.
+ * Trial state lives on Organization (billingStatus + trialEndsAt). The
+ * Subscription row is created when checkout completes — until then the
+ * trial is "untethered" (no Stripe sub yet, just a deadline). When the
+ * trial expires without a payment method the Organization is moved to
+ * `suspended` (degradation handled elsewhere).
  */
 
 import { prisma } from "@altium-mcp/db";
+
+/** Trial length on signup. Per spec §3.1, no card required. */
+export const TRIAL_DAYS = 14;
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
@@ -68,6 +74,10 @@ export async function createOrgForOwner(opts: CreateOrgForOwnerOpts): Promise<{
   orgId: string;
   orgSlug: string;
   orgName: string;
+  /** "trialing" — set inline below; expressed in the return so the
+   *  signup handler can echo it to the SPA without a re-query. */
+  billingStatus: string;
+  trialEndsAt: string;
   membershipId: string;
 }> {
   const baseSlug = opts.orgName
@@ -85,9 +95,15 @@ export async function createOrgForOwner(opts: CreateOrgForOwnerOpts): Promise<{
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const slug = await findAvailableSlug(baseSlug);
+      const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
       const result = await prisma.$transaction(async (tx) => {
         const org = await tx.organization.create({
-          data: { name: displayName, slug },
+          data: {
+            name: displayName,
+            slug,
+            billingStatus: "trialing",
+            trialEndsAt,
+          },
         });
         const membership = await tx.membership.create({
           data: { orgId: org.id, userId: opts.userId, role: "owner" },
@@ -98,6 +114,8 @@ export async function createOrgForOwner(opts: CreateOrgForOwnerOpts): Promise<{
         orgId: result.org.id,
         orgSlug: result.org.slug,
         orgName: result.org.name,
+        billingStatus: result.org.billingStatus,
+        trialEndsAt: trialEndsAt.toISOString(),
         membershipId: result.membership.id,
       };
     } catch (err) {

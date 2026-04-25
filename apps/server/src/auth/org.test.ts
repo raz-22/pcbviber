@@ -179,3 +179,55 @@ test("createOrgForOwner default name uses email local-part", async () => {
   });
   assert.equal(out.orgName, "carol's Organization");
 });
+
+// ─── Trial on signup ─────────────────────────────────────────────────
+
+test("createOrgForOwner sets billingStatus=trialing + trialEndsAt = now+14d", async () => {
+  // Per spec §3.1 every new org enters a 14-day trial without a card.
+  // Pin both the field shape (return value) and the persisted row.
+  const before = Date.now();
+  const u = await prisma.user.create({ data: { email: "trial@example.com" } });
+  const out = await createOrgForOwner({
+    userId: u.id,
+    email: "trial@example.com",
+  });
+  const after = Date.now();
+
+  assert.equal(out.billingStatus, "trialing");
+  assert.ok(typeof out.trialEndsAt === "string");
+  const trialMs = new Date(out.trialEndsAt).getTime();
+  // Allow a generous window because the assertion runs across multiple
+  // wall-clock ticks; the bound is 14d ± a few ms in either direction.
+  const fourteenDays = 14 * 24 * 60 * 60 * 1000;
+  assert.ok(
+    trialMs >= before + fourteenDays - 1000 && trialMs <= after + fourteenDays + 1000,
+    `trialEndsAt out of expected window: ${out.trialEndsAt}`
+  );
+
+  // The persisted row matches the return.
+  const row = await prisma.organization.findUnique({ where: { id: out.orgId } });
+  assert.ok(row);
+  assert.equal(row.billingStatus, "trialing");
+  assert.ok(row.trialEndsAt);
+  assert.equal(row.trialEndsAt!.toISOString(), out.trialEndsAt);
+  // billingMode default — checkout (vs invoicing for Enterprise NET-30).
+  assert.equal(row.billingMode, "checkout");
+});
+
+test("createOrgForOwner does NOT set a billingCustomerId or planId on signup", async () => {
+  // The Stripe customer is created on first checkout, not at signup.
+  // Trial is "untethered" — just a deadline. Pinning this ensures
+  // future callers don't accidentally assume a sub exists pre-checkout.
+  const u = await prisma.user.create({ data: { email: "untethered@example.com" } });
+  const out = await createOrgForOwner({
+    userId: u.id,
+    email: "untethered@example.com",
+  });
+  const row = await prisma.organization.findUnique({ where: { id: out.orgId } });
+  assert.ok(row);
+  assert.equal(row.billingCustomerId, null);
+  assert.equal(row.planId, null);
+  // No Subscription row either.
+  const subs = await prisma.subscription.findMany({ where: { orgId: out.orgId } });
+  assert.equal(subs.length, 0);
+});

@@ -26,9 +26,19 @@ model Organization {
   id                 String         @id @default(cuid())
   name               String
   slug               String         @unique
-  billingCustomerId  String?        // Stripe customer id; set in Sprint 4
+  billingCustomerId  String?        // Stripe customer id; set when checkout completes
   planId             String?
   plan               Plan?          @relation(fields: [planId], references: [id])
+  /// Source of truth for "what state is this org in for billing purposes".
+  /// Distinct from Subscription.status (which is a Stripe-side mirror) so
+  /// pre-checkout orgs (no Subscription row yet) still have a state.
+  /// Vocab: free | trialing | active | past_due | suspended | canceled
+  billingStatus      String         @default("free")
+  /// Set on signup when an org enters trial. null otherwise.
+  trialEndsAt        DateTime?
+  /// "checkout" — uses Stripe Checkout + Customer Portal.
+  /// "invoicing" — Enterprise NET-30 via Stripe Invoicing (set manually).
+  billingMode        String         @default("checkout")
   createdAt          DateTime       @default(now())
   deletedAt          DateTime?
 
