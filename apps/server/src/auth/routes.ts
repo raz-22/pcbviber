@@ -49,11 +49,28 @@ export async function registerAuthRoutes(
     }
     try {
       const { user, session } = await auth.signup(parsed.data);
-      const org = await createOrgForOwner({
-        userId: user.id,
-        orgName: parsed.data.orgName,
-        email: user.email,
-      });
+      // If org-create fails after a successful provider.signup we'd
+      // otherwise leave a User row with no Membership — every future
+      // signup attempt with that email would 409. Roll back the User
+      // so the email becomes available again. Memberships cascade
+      // from User, so this is a single clean delete.
+      let org: Awaited<ReturnType<typeof createOrgForOwner>>;
+      try {
+        org = await createOrgForOwner({
+          userId: user.id,
+          orgName: parsed.data.orgName,
+          email: user.email,
+        });
+      } catch (orgErr) {
+        try {
+          await prisma.user.delete({ where: { id: user.id } });
+        } catch {
+          // Best-effort. If even the rollback fails, the user is in a
+          // wedged state but at least we surface the original error.
+        }
+        throw orgErr;
+      }
+
       await writeAuditLog({
         orgId: org.orgId,
         actorUserId: user.id,

@@ -286,6 +286,180 @@ test("signup writes an AuditLog entry", async () => {
   assert.ok(logs[0].actorUserId);
 });
 
+// ─── PR #4 review additions ─────────────────────────────────────────
+
+test("login writes an AuditLog entry tied to the user's anchor org", async () => {
+  // Fresh user so we get a clean audit log.
+  const email = `login-audit-${randomBytes(4).toString("hex")}@example.com`;
+  const signup = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email, password: STRONG },
+  });
+  const orgId = signup.json().org.id;
+
+  await app.inject({
+    method: "POST",
+    url: "/api/auth/login",
+    payload: { email, password: STRONG },
+  });
+
+  const { prisma } = await import("@altium-mcp/db");
+  const logs = await prisma.auditLog.findMany({
+    where: { orgId, action: "login" },
+  });
+  assert.ok(logs.length >= 1, "expected at least one login audit row");
+  assert.ok(logs[0].actorUserId);
+});
+
+test("logout writes an AuditLog entry", async () => {
+  const email = `logout-audit-${randomBytes(4).toString("hex")}@example.com`;
+  const signup = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email, password: STRONG },
+  });
+  const orgId = signup.json().org.id;
+  const sessionCookie = extractSessionCookie(signup.headers["set-cookie"]);
+  assert.ok(sessionCookie);
+
+  await app.inject({
+    method: "POST",
+    url: "/api/auth/logout",
+    headers: { cookie: sessionCookie },
+  });
+
+  const { prisma } = await import("@altium-mcp/db");
+  const logs = await prisma.auditLog.findMany({
+    where: { orgId, action: "logout" },
+  });
+  assert.equal(logs.length, 1);
+});
+
+test("/me response shape: never leaks workosUserId or any password field", async () => {
+  // Use the existing alice account.
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/auth/login",
+    payload: { email: "alice@example.com", password: STRONG },
+  });
+  const sessionCookie = extractSessionCookie(login.headers["set-cookie"]);
+  assert.ok(sessionCookie);
+
+  const me = await app.inject({
+    method: "GET",
+    url: "/api/auth/me",
+    headers: { cookie: sessionCookie },
+  });
+  assert.equal(me.statusCode, 200);
+  const body = me.json();
+  // Surface check: only the known-safe keys appear on user.
+  const userKeys = Object.keys(body.user).sort();
+  assert.deepEqual(userKeys, ["createdAt", "email", "emailVerifiedAt", "id"]);
+  // Defense in depth: no password-ish field anywhere in the body.
+  const json = JSON.stringify(body);
+  assert.doesNotMatch(json, /password/i);
+  assert.doesNotMatch(json, /workos/i);
+  assert.doesNotMatch(json, /scrypt/i);
+});
+
+test("signup body without email is rejected with invalid_input (Zod)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { password: STRONG },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("signup body without password is rejected with invalid_input", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "no-pw@example.com" },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("login body without password is rejected with invalid_input", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/login",
+    payload: { email: "alice@example.com" },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("signup body with non-JSON returns 400 (not 500)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    headers: { "content-type": "text/plain" },
+    payload: "garbage",
+  });
+  // Fastify rejects unsupported media type with 415; either way it's
+  // NOT a 500. Both 400 and 415 are acceptable client-error responses.
+  assert.ok(
+    res.statusCode === 400 || res.statusCode === 415,
+    `expected 4xx, got ${res.statusCode}`
+  );
+});
+
+test("orgName with extreme length is rejected by Zod (max 120)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `long-org-${randomBytes(3).toString("hex")}@example.com`,
+      password: STRONG,
+      orgName: "A".repeat(200),
+    },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("name with extreme length is rejected by Zod (max 120)", async () => {
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `long-name-${randomBytes(3).toString("hex")}@example.com`,
+      password: STRONG,
+      name: "A".repeat(200),
+    },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("signup persists audit ip + userAgent when client provides them", async () => {
+  const email = `ip-audit-${randomBytes(4).toString("hex")}@example.com`;
+  const signup = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email, password: STRONG },
+    headers: {
+      "x-forwarded-for": "203.0.113.7, 10.0.0.1",
+      "user-agent": "TestAgent/1.0",
+    },
+  });
+  assert.equal(signup.statusCode, 200);
+  const orgId = signup.json().org.id;
+
+  const { prisma } = await import("@altium-mcp/db");
+  const log = await prisma.auditLog.findFirst({
+    where: { orgId, action: "signup" },
+  });
+  assert.ok(log);
+  // First IP from X-Forwarded-For is what we want to record.
+  assert.equal(log.ip, "203.0.113.7");
+  assert.equal(log.userAgent, "TestAgent/1.0");
+});
+
 // ─── helpers ────────────────────────────────────────────────────────
 
 function extractSessionCookie(
