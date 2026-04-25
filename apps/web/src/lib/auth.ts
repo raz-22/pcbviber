@@ -2,14 +2,56 @@
  * Auth state — backed entirely by /api/auth/me through TanStack Query.
  *
  * Survives page refresh because the session cookie does, so nothing is
- * stored client-side. login/signup/logout mutations invalidate the
- * `["auth", "me"]` query so components subscribed to it re-render.
+ * stored client-side. login/signup mutations SEED the `["auth", "me"]`
+ * cache from their response (avoids a redirect-flicker between
+ * "logged in by server" and "the SPA's /me has caught up"). Logout
+ * clears every query so a different user signing in next can't see
+ * leftover data from the previous session.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type AuthMe } from "./api";
+import {
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  api,
+  ApiError,
+  type AuthMe,
+  type LoginResponse,
+  type SignupResponse,
+} from "./api";
 
 const ME_KEY = ["auth", "me"] as const;
+
+/**
+ * Build the AuthMe-shaped object the cache expects from the
+ * /api/auth/signup response. Signup returns a single org (the one
+ * just auto-created); /me returns an orgs[] array. The new user is
+ * always `owner` of their auto-created org.
+ *
+ * Exported so the unit test can pin the shape without driving the
+ * mutation through React.
+ */
+export function authMeFromSignup(res: SignupResponse): AuthMe {
+  return {
+    user: res.user,
+    orgs: [
+      {
+        id: res.org.id,
+        slug: res.org.slug,
+        name: res.org.name,
+        role: "owner",
+      },
+    ],
+  };
+}
+
+/** Seed the `["auth", "me"]` cache. Used by signup and login. */
+export function seedAuthMeCache(qc: QueryClient, me: AuthMe): void {
+  qc.setQueryData(ME_KEY, me);
+}
 
 /**
  * Returns the current auth state. `isAuthenticated` is true once /me
@@ -48,9 +90,11 @@ export function useSignup() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.signup,
-    onSuccess: () => {
-      // After signup the server set the cookie; trigger /me to populate.
-      qc.invalidateQueries({ queryKey: ME_KEY });
+    onSuccess: (res: SignupResponse) => {
+      // Seed the cache so the post-signup navigate("/") finds the user
+      // already authenticated — avoids a flicker through /login during
+      // the refetch window.
+      seedAuthMeCache(qc, authMeFromSignup(res));
     },
   });
 }
@@ -59,8 +103,9 @@ export function useLogin() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.login,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ME_KEY });
+    onSuccess: (res: LoginResponse) => {
+      // Login response is already AuthMe-shaped; pass it straight through.
+      seedAuthMeCache(qc, res);
     },
   });
 }
@@ -70,9 +115,12 @@ export function useLogout() {
   return useMutation({
     mutationFn: api.logout,
     onSuccess: () => {
-      // Force /me to re-fetch and discover the session is gone.
+      // Mark the user as logged-out for any subscribers that read /me
+      // before the queries below get cleared.
       qc.setQueryData(ME_KEY, null);
-      qc.invalidateQueries({ queryKey: ME_KEY });
+      // Drop every cached query — prevents the next user signing in
+      // from seeing this user's parts-search results, BOMs, etc.
+      qc.clear();
     },
   });
 }

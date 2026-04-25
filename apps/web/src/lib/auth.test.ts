@@ -7,8 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { authErrorMessage } from "./auth";
-import { ApiError } from "./api";
+import { QueryClient } from "@tanstack/react-query";
+import { authErrorMessage, authMeFromSignup, seedAuthMeCache } from "./auth";
+import { ApiError, type SignupResponse } from "./api";
 
 test("maps email_taken to a friendly account-exists message", () => {
   const err = new ApiError(409, "email_taken", null, "email_taken");
@@ -49,4 +50,70 @@ test("non-Error inputs still yield a friendly message", () => {
   assert.match(authErrorMessage("just a string"), /network error/i);
   assert.match(authErrorMessage(null), /network error/i);
   assert.match(authErrorMessage(undefined), /network error/i);
+});
+
+// ─── PR #5 review: cache-shape transformation + seeding ─────────────
+
+const SIGNUP_FIXTURE: SignupResponse = {
+  user: {
+    id: "user_1",
+    email: "alice@example.com",
+    emailVerifiedAt: null,
+    createdAt: "2026-04-24T00:00:00Z",
+  },
+  org: {
+    id: "org_1",
+    slug: "alice",
+    name: "alice's Organization",
+  },
+};
+
+test("authMeFromSignup wraps the single org as orgs[] with role owner", () => {
+  const me = authMeFromSignup(SIGNUP_FIXTURE);
+  assert.deepEqual(me.user, SIGNUP_FIXTURE.user);
+  assert.equal(me.orgs.length, 1);
+  assert.equal(me.orgs[0].id, "org_1");
+  assert.equal(me.orgs[0].slug, "alice");
+  assert.equal(me.orgs[0].name, "alice's Organization");
+  assert.equal(me.orgs[0].role, "owner");
+});
+
+test("seedAuthMeCache populates the ['auth','me'] key — what useAuth would read", () => {
+  const qc = new QueryClient();
+  // Pre-condition: cache is empty.
+  assert.equal(qc.getQueryData(["auth", "me"]), undefined);
+
+  const me = authMeFromSignup(SIGNUP_FIXTURE);
+  seedAuthMeCache(qc, me);
+
+  // useAuth() reads exactly this key — confirms the no-flicker fix
+  // populates the same cell the hook consumes.
+  const stored = qc.getQueryData(["auth", "me"]);
+  assert.deepEqual(stored, me);
+});
+
+test("seedAuthMeCache overwrites a prior null value (logged-out → logged-in)", () => {
+  const qc = new QueryClient();
+  // Simulate the post-logout state.
+  qc.setQueryData(["auth", "me"], null);
+  assert.equal(qc.getQueryData(["auth", "me"]), null);
+
+  const me = authMeFromSignup(SIGNUP_FIXTURE);
+  seedAuthMeCache(qc, me);
+
+  assert.deepEqual(qc.getQueryData(["auth", "me"]), me);
+});
+
+test("QueryClient.clear() drops all keys (logout cross-user-leak fix)", () => {
+  // Mirrors what useLogout does after the API call resolves.
+  const qc = new QueryClient();
+  qc.setQueryData(["auth", "me"], { user: { email: "alice" } });
+  qc.setQueryData(["parts", "search", "STM32"], [{ mpn: "STM32F407" }]);
+  qc.setQueryData(["bom", "project_xyz"], { items: [] });
+
+  qc.clear();
+
+  assert.equal(qc.getQueryData(["auth", "me"]), undefined);
+  assert.equal(qc.getQueryData(["parts", "search", "STM32"]), undefined);
+  assert.equal(qc.getQueryData(["bom", "project_xyz"]), undefined);
 });

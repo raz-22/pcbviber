@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useLogin, authErrorMessage } from "../lib/auth";
+import { validateRedirectUrl } from "../lib/redirect";
 
 /**
  * Login page. Submits to /api/auth/login; on success the server sets
@@ -12,8 +13,9 @@ export function LoginPage() {
   const login = useLogin();
   const navigate = useNavigate();
   const location = useLocation();
-  const cameFrom =
-    (location.state as { from?: string } | null)?.from ?? "/";
+  const cameFrom = validateRedirectUrl(
+    (location.state as { from?: string } | null)?.from
+  );
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();

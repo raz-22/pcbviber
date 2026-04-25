@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { validateRedirectUrl } from "../lib/redirect";
 
 /**
  * Wraps protected routes: while /me is loading, render nothing (avoids
@@ -34,7 +35,8 @@ export function RedirectIfAuthed({ children }: { children: ReactNode }) {
   const location = useLocation();
   if (isLoading) return null;
   if (isAuthenticated) {
-    const from = (location.state as { from?: string } | null)?.from ?? "/";
+    const rawFrom = (location.state as { from?: string } | null)?.from;
+    const from = validateRedirectUrl(rawFrom);
     return <Navigate to={from} replace />;
   }
   return <>{children}</>;
