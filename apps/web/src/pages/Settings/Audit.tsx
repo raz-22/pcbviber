@@ -115,7 +115,9 @@ export function AuditSettingsPage() {
 
       {rows.length === 0 ? (
         <p className="text-sm text-slate-500">
-          No audit events match this filter.
+          {actionFilter
+            ? "No audit events match this filter."
+            : "No audit events yet."}
         </p>
       ) : (
         <table className="w-full text-sm">

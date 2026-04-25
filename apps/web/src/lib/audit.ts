@@ -41,27 +41,17 @@ export function useAuditLog(
 // ─── Action label ───────────────────────────────────────────────────
 
 /**
- * Auto-format an action verb into a readable label without a fixed
- * lookup table. Examples:
+ * Auto-format an action verb into a readable label. Examples:
  *   "signup"               → "Signup"
  *   "workspace.add"        → "Workspace · Add"
  *   "member.role_change"   → "Member · Role change"
  *   "billing.checkout_session.create"
  *                          → "Billing · Checkout session · Create"
  *
- * No code change needed when a new action verb appears in the audit
- * log — the formatting is mechanical. If a specific verb deserves a
- * customized label later, add it to the labels map below; otherwise
- * the auto-formatter is the fallback.
+ * Mechanical: split on `.`, replace `_` with space, capitalize each
+ * segment. New actions appear correctly without a code change.
  */
-const ACTION_LABEL_OVERRIDES: Record<string, string> = {
-  // Reserved — empty for now. Add only when the auto-format is
-  // genuinely confusing for end users.
-};
-
 export function formatAuditAction(action: string): string {
-  const override = ACTION_LABEL_OVERRIDES[action];
-  if (override) return override;
   return action
     .split(".")
     .map((segment) => {
