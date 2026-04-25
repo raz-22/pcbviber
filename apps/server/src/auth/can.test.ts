@@ -29,10 +29,13 @@ function memberResource(opts: Partial<MemberResource> = {}): MemberResource {
   };
 }
 
-// ─── billing_only is locked out of every currently-defined action ────
+// ─── billing_only allow/deny enumeration ─────────────────────────────
 
-test("billing_only cannot do ANY currently-defined action", () => {
-  const actions: CanAction[] = [
+test("billing_only is denied every action that isn't on the allow-list", () => {
+  // Enumerate every CanAction the role IS denied. New actions get
+  // a deliberate decision: add them here OR add them to the allow
+  // list below — leaving them off both arrays leaves the test gap.
+  const denied: CanAction[] = [
     "member.invite",
     "member.role_change",
     "member.remove",
@@ -48,9 +51,7 @@ test("billing_only cannot do ANY currently-defined action", () => {
     "billing.portal_manage",
     "tools.use",
   ];
-  for (const action of actions) {
-    // Resource hint included where applicable so a different rule
-    // path inside the switch can't accidentally short-circuit to true.
+  for (const action of denied) {
     const result = can(
       actor("billing_only"),
       action,
@@ -60,6 +61,20 @@ test("billing_only cannot do ANY currently-defined action", () => {
       result,
       false,
       `billing_only should NOT be allowed to ${action}`
+    );
+  }
+});
+
+test("billing_only is allowed read-only actions on the allow-list", () => {
+  // Finance teams need consumption visibility to budget — they get
+  // usage.read explicitly. No other actions are on the allow-list
+  // today; future read-only actions (invoice.read, etc.) join here.
+  const allowed: CanAction[] = ["usage.read"];
+  for (const action of allowed) {
+    assert.equal(
+      can(actor("billing_only"), action),
+      true,
+      `billing_only should be allowed to ${action}`
     );
   }
 });

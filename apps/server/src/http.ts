@@ -27,6 +27,7 @@ import {
 } from "./api-keys/middleware.js";
 import { registerBillingRoutes } from "./billing/routes.js";
 import { registerBillingWebhookRoute } from "./billing/webhook.js";
+import { registerUsageRoutes } from "./usage/routes.js";
 import {
   makeBillingSigner,
   selectBillingProvider,
@@ -115,6 +116,8 @@ export async function startHttpServer(opts: {
     billing,
     signer: billingSigner,
   });
+  // Usage dashboard read-only endpoint — drives Settings → Usage.
+  await registerUsageRoutes(app, authProvider);
 
   // Metering background worker — boots only when REDIS_URL is set
   // (BullMQ requires Redis). In dev without Redis the meter wrapper
