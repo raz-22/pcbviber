@@ -50,6 +50,23 @@ export function selectQuotaStore(): QuotaStore {
 }
 
 /**
+ * Returns the process-wide ioredis client when REDIS_URL is set, or
+ * null otherwise. Lets other server features (rate limiting,
+ * BullMQ) reuse the same Redis connection rather than each opening
+ * their own — saves connection slots and keeps Redis-vs-no-Redis
+ * gating consistent across the codebase.
+ *
+ * Calling this BEFORE `selectQuotaStore()` returns null even when
+ * REDIS_URL is set; production wiring should call
+ * `selectQuotaStore()` first (the metering route does anyway).
+ * Returns the cached instance after that — never spins up a second
+ * connection.
+ */
+export function getRedisClient(): Redis | null {
+  return cachedRedis;
+}
+
+/**
  * Test-only: drop the cached store + close any open Redis client so
  * the next `selectQuotaStore()` re-reads env. Tests that toggle
  * REDIS_URL in their `before()` MUST call this.

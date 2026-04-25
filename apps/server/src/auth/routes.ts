@@ -22,6 +22,7 @@ import {
 } from "./middleware.js";
 import { createOrgForOwner } from "./org.js";
 import { writeAuditLog, clientIp } from "./audit.js";
+import { AUTH_RATE_LIMIT } from "../security/rate-limits.js";
 
 const SignupBody = z.object({
   email: z.string().email(),
@@ -42,7 +43,13 @@ export async function registerAuthRoutes(
   const requireAuth = makeRequireAuth(auth);
 
   // ── Signup ──────────────────────────────────────────────────────────
-  app.post("/api/auth/signup", async (req, reply) => {
+  // Rate-limited 5/min/IP — brute-force defense for credential
+  // stuffing against the signup probe (an attacker enumerating
+  // email-existence via signup error codes).
+  app.post(
+    "/api/auth/signup",
+    { config: { rateLimit: AUTH_RATE_LIMIT } },
+    async (req, reply) => {
     const parsed = SignupBody.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -95,10 +102,15 @@ export async function registerAuthRoutes(
     } catch (err) {
       return mapAuthError(reply, err);
     }
-  });
+    }
+  );
 
   // ── Login ───────────────────────────────────────────────────────────
-  app.post("/api/auth/login", async (req, reply) => {
+  // Rate-limited 5/min/IP — the high-value brute-force target.
+  app.post(
+    "/api/auth/login",
+    { config: { rateLimit: AUTH_RATE_LIMIT } },
+    async (req, reply) => {
     const parsed = LoginBody.safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -139,7 +151,8 @@ export async function registerAuthRoutes(
     } catch (err) {
       return mapAuthError(reply, err);
     }
-  });
+    }
+  );
 
   // ── Logout ──────────────────────────────────────────────────────────
   app.post("/api/auth/logout", async (req, reply) => {
