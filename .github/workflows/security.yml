@@ -1,0 +1,123 @@
+# Security checks per spec §3.6 launch checklist.
+#
+# Three jobs run in parallel on every PR + every push to main:
+#
+#   gitleaks   — scans git history + working tree for committed secrets
+#   audit      — `pnpm audit --audit-level=high` (low/moderate ignored)
+#   trivy      — filesystem CVE scan on CRITICAL + HIGH severity
+#
+# On a green PR the merge is allowed; a red job blocks merge via the
+# branch protection rule on `main`. Adding the rule is a one-time
+# repo-settings step (Settings → Branches → Require status checks).
+#
+# Failure semantics: every job is fatal — no `continue-on-error`.
+# If a transient flake red-shifts a job, re-run it from the PR's
+# checks tab; if a real finding lands, it's a blocker.
+
+name: security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same branch — saves CI minutes when
+# a PR gets a quick follow-up push.
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Workflow-level permissions. The default GITHUB_TOKEN is restrictive;
+# we grant only what each job needs:
+#   contents: read         — checkout
+#   pull-requests: write   — gitleaks-action posts a comment on PRs
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  gitleaks:
+    name: gitleaks (committed-secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan every commit, not just
+          # the tip. Without this it'd miss secrets that landed on
+          # an older commit and were never explicitly removed.
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # GITHUB_TOKEN is auto-provided; gitleaks-action uses it
+          # to post a PR comment summarizing findings.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  audit:
+    name: pnpm audit (high+ CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # pnpm must be on PATH BEFORE actions/setup-node runs with
+      # `cache: pnpm` — otherwise the cache step blows up with
+      # "Unable to locate executable file: pnpm". `pnpm/action-setup`
+      # installs the version pinned in package.json's
+      # `packageManager` field.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node + pnpm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        # frozen-lockfile is the right CI behavior — fails when
+        # pnpm-lock.yaml drifts from package.json. Saves us from
+        # accidentally auditing a different tree than what would
+        # ship.
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm audit --audit-level=high
+        # Spec §3.6 names this exact threshold. Moderate / low get
+        # surfaced in the job log but don't block the merge —
+        # there's a long tail of those across the dev tooling that
+        # we'd rather not cycle on weekly.
+        run: pnpm audit --audit-level=high
+
+  trivy:
+    name: trivy (filesystem CVE scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        # Pinned to a specific tag (NOT `master`) so an upstream
+        # change can't silently alter our CI behavior. Bump
+        # deliberately when the action ships a meaningful release.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          # Don't fail on CVEs that have no patch yet — those need
+          # a workaround / accepted-risk decision, not an automatic
+          # red status. We'll still see them in the job log.
+          ignore-unfixed: true
+          # Fail the job (exit 1) when a CRITICAL/HIGH finding
+          # lands. Branch-protection turns this into a merge block.
+          exit-code: '1'
+          # Disable trivy's secret detector — gitleaks owns that
+          # surface and is configured for our specific
+          # false-positive allowlist (.gitleaks.toml). Trivy's
+          # detector double-flags every entry in that allowlist
+          # as a real key. Stick to vuln scanning here.
+          scanners: vuln
+          format: table

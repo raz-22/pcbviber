@@ -1,0 +1,43 @@
+# gitleaks configuration.
+#
+# We extend the default ruleset rather than replacing it, then add
+# scoped allowlists for the few false-positive patterns our test
+# fixtures emit. Keeping this file lean is intentional — every entry
+# is a place a real secret could hide, so they're scrutinized at
+# review time.
+
+# Inherit gitleaks' built-in detectors (stripe, AWS, etc.).
+[extend]
+useDefault = true
+
+# ── Global allowlist ─────────────────────────────────────────────────
+#
+# gitleaks v8's top-level allowlist is `[allowlist]` (singular). The
+# `[[rules.allowlists]]` form is for per-rule scopes — wrong shape
+# for our use here. Only one global block is allowed; multiple
+# fixture patterns share a single regexes array.
+#
+# Production code is NOT allowlisted. The `paths` filter restricts
+# every entry to test files; a real Stripe key landing in
+# apps/server/src/* would still trip the scanner.
+
+[allowlist]
+description = "Test-fixture placeholders that gitleaks' default detectors flag"
+paths = [
+  '''.*\.test\.ts$''',
+]
+regexes = [
+  # Stripe test-mode placeholder strings used in unit tests.
+  # Substrings like "dummy", "placeholder", "after_noop" make these
+  # clearly-not-real to a human reader; gitleaks' stripe-access-token
+  # rule otherwise matches them based on length.
+  '''sk_test_dummy_value_not_real''',
+  '''sk_test_dummy''',
+  '''sk_test_direct''',
+  '''sk_test_placeholder_for_factory_test''',
+  '''sk_test_after_noop''',
+  # API-key plaintext fixture used in apps/web/src/lib/api.test.ts.
+  # The unit test for the create-key response uses a deliberately-
+  # fake fixture so the test doesn't depend on randomness.
+  '''pcb_aBcDeFgH123full456token''',
+]
