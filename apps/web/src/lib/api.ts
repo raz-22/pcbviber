@@ -1,4 +1,10 @@
-import type { PartSearchResult, PartAvailabilitySummary } from "@altium-mcp/shared";
+import type {
+  PartSearchResult,
+  PartAvailabilitySummary,
+  AltiumComponent,
+  AltiumWorkspace,
+  AltiumProject,
+} from "@altium-mcp/shared";
 
 /**
  * Typed error so UI components can pattern-match on the server's
@@ -20,7 +26,7 @@ export class ApiError extends Error {
 }
 
 interface ApiOpts {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
 }
 
@@ -98,6 +104,55 @@ export interface SignupResponse {
 
 export interface LoginResponse extends AuthMe {}
 
+// ── Types returned by /api/orgs/:orgId/workspaces/* ───────────────────
+
+/**
+ * Workspace shape returned by the server. Mirrors `serializeWorkspace`
+ * in apps/server/src/workspaces/routes.ts — never includes ciphertext,
+ * only metadata + booleans for "is configured" UI hints.
+ */
+export interface Workspace {
+  id: string;
+  orgId: string;
+  altiumWorkspaceUrl: string | null;
+  hasNexarCredentials: boolean;
+  hasAltiumRestToken: boolean;
+  createdAt: string;
+}
+
+export interface WorkspaceListResponse {
+  workspaces: Workspace[];
+}
+
+export interface WorkspaceResponse {
+  workspace: Workspace;
+}
+
+export interface CreateWorkspaceInput {
+  altiumWorkspaceUrl?: string;
+  nexarClientId: string;
+  nexarClientSecret: string;
+  altiumRestToken?: string;
+  testBeforeStore?: boolean;
+}
+
+export interface UpdateWorkspaceInput {
+  altiumWorkspaceUrl?: string | null;
+  nexarClientId?: string;
+  nexarClientSecret?: string;
+  altiumRestToken?: string | null;
+  testBeforeStore?: boolean;
+}
+
+export interface TestConnectionInput {
+  nexarClientId: string;
+  nexarClientSecret: string;
+}
+
+export interface TestConnectionOk {
+  ok: true;
+}
+
 export const api = {
   // ─── Auth ──────────────────────────────────────────────────────────
   signup: (input: {
@@ -115,16 +170,107 @@ export const api = {
 
   me: () => call<AuthMe>("/api/auth/me"),
 
-  // ─── Parts (existing) ──────────────────────────────────────────────
-  searchParts: (query: string, limit = 10) =>
-    call<PartSearchResult[]>(
-      `/api/parts/search?query=${encodeURIComponent(query)}&limit=${limit}`
+  // ─── Workspace CRUD ────────────────────────────────────────────────
+  listWorkspaces: (orgId: string) =>
+    call<WorkspaceListResponse>(`/api/orgs/${encodeURIComponent(orgId)}/workspaces`),
+
+  getWorkspace: (orgId: string, workspaceId: string) =>
+    call<WorkspaceResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}`
     ),
 
-  checkAvailability: (mpn: string) =>
-    call<PartAvailabilitySummary | { notFound: true; mpn: string }>(
-      `/api/parts/availability?mpn=${encodeURIComponent(mpn)}`
+  createWorkspace: (orgId: string, input: CreateWorkspaceInput) =>
+    call<WorkspaceResponse>(`/api/orgs/${encodeURIComponent(orgId)}/workspaces`, {
+      method: "POST",
+      body: input,
+    }),
+
+  updateWorkspace: (orgId: string, workspaceId: string, input: UpdateWorkspaceInput) =>
+    call<WorkspaceResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}`,
+      { method: "PATCH", body: input }
     ),
+
+  deleteWorkspace: (orgId: string, workspaceId: string) =>
+    call<{ ok: boolean }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}`,
+      { method: "DELETE" }
+    ),
+
+  testWorkspaceConnection: (orgId: string, input: TestConnectionInput) =>
+    call<TestConnectionOk>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/test-connection`,
+      { method: "POST", body: input }
+    ),
+
+  // ─── Tenant-scoped Nexar (PR 2.3 routes) ───────────────────────────
+  searchParts: (orgId: string, workspaceId: string, query: string, limit = 10) =>
+    call<PartSearchResult[]>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/parts/search?query=${encodeURIComponent(query)}&limit=${limit}`
+    ),
+
+  checkAvailability: (orgId: string, workspaceId: string, mpn: string) =>
+    call<PartAvailabilitySummary | { notFound: true; mpn: string }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/parts/availability?mpn=${encodeURIComponent(mpn)}`
+    ),
+
+  findAlternatives: (orgId: string, workspaceId: string, mpn: string, criteria: string) =>
+    call<
+      | {
+          originalPart: string;
+          criteria: string;
+          alternatives: PartSearchResult[];
+          note: string;
+        }
+      | { notFound: true; mpn: string }
+    >(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/parts/alternatives?mpn=${encodeURIComponent(mpn)}&criteria=${encodeURIComponent(
+        criteria
+      )}`
+    ),
+
+  listLibraryComponents: (
+    orgId: string,
+    workspaceId: string,
+    altiumWorkspaceUrl?: string
+  ) => {
+    const qs = altiumWorkspaceUrl
+      ? `?altiumWorkspaceUrl=${encodeURIComponent(altiumWorkspaceUrl)}`
+      : "";
+    return call<AltiumComponent[]>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/library/components${qs}`
+    );
+  },
+
+  listAltium365Workspaces: (orgId: string, workspaceId: string) =>
+    call<{ workspaces: AltiumWorkspace[] }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/altium-365/workspaces`
+    ),
+
+  listAltium365Projects: (
+    orgId: string,
+    workspaceId: string,
+    altiumWorkspaceUrl?: string
+  ) => {
+    const qs = altiumWorkspaceUrl
+      ? `?altiumWorkspaceUrl=${encodeURIComponent(altiumWorkspaceUrl)}`
+      : "";
+    return call<{ projects: AltiumProject[] }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(
+        workspaceId
+      )}/altium-365/projects${qs}`
+    );
+  },
 
   health: () => call<{ ok: boolean; name: string; version: string }>("/api/health"),
 };

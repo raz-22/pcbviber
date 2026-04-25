@@ -222,24 +222,300 @@ test("network error (fetch throws) propagates as a regular Error, not ApiError",
   }
 });
 
-// ─── parts URLs (regression) ─────────────────────────────────────────
+// ─── tenant-scoped Nexar URLs (PR 2.3 routes) ────────────────────────
 
-test("api.searchParts encodes query + limit in the URL", async () => {
+test("api.searchParts hits the tenant-scoped path with encoded query + limit", async () => {
   let url = "";
   installFetch(async (u) => {
     url = String(u);
     return jsonResponse(200, []);
   });
-  await api.searchParts("100uF 25V", 5);
-  assert.equal(url, "/api/parts/search?query=100uF%2025V&limit=5");
+  await api.searchParts("o1", "w1", "100uF 25V", 5);
+  assert.equal(
+    url,
+    "/api/orgs/o1/workspaces/w1/parts/search?query=100uF%2025V&limit=5"
+  );
 });
 
-test("api.checkAvailability encodes the MPN in the URL", async () => {
+test("api.searchParts encodes orgId and workspaceId path components", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, []);
+  });
+  // Slash and space in IDs would corrupt the URL if not encoded.
+  await api.searchParts("org/with slash", "ws id", "x", 10);
+  assert.equal(
+    url,
+    "/api/orgs/org%2Fwith%20slash/workspaces/ws%20id/parts/search?query=x&limit=10"
+  );
+});
+
+test("api.checkAvailability hits tenant path with encoded MPN", async () => {
   let url = "";
   installFetch(async (u) => {
     url = String(u);
     return jsonResponse(200, { notFound: true, mpn: "X" });
   });
-  await api.checkAvailability("STM32F407");
-  assert.equal(url, "/api/parts/availability?mpn=STM32F407");
+  await api.checkAvailability("o1", "w1", "STM32F407");
+  assert.equal(url, "/api/orgs/o1/workspaces/w1/parts/availability?mpn=STM32F407");
+});
+
+test("api.findAlternatives encodes both mpn and criteria", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, { notFound: true, mpn: "X" });
+  });
+  await api.findAlternatives("o1", "w1", "LM358", "pin compatible");
+  assert.equal(
+    url,
+    "/api/orgs/o1/workspaces/w1/parts/alternatives?mpn=LM358&criteria=pin%20compatible"
+  );
+});
+
+test("api.listLibraryComponents omits ?altiumWorkspaceUrl when not provided", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, []);
+  });
+  await api.listLibraryComponents("o1", "w1");
+  assert.equal(url, "/api/orgs/o1/workspaces/w1/library/components");
+});
+
+test("api.listLibraryComponents encodes the altium url when provided", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, []);
+  });
+  await api.listLibraryComponents("o1", "w1", "https://acme.altium365.com/workspaces/x");
+  assert.equal(
+    url,
+    "/api/orgs/o1/workspaces/w1/library/components?altiumWorkspaceUrl=https%3A%2F%2Facme.altium365.com%2Fworkspaces%2Fx"
+  );
+});
+
+test("api.listAltium365Workspaces hits the altium-365/workspaces path", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, { workspaces: [] });
+  });
+  await api.listAltium365Workspaces("o1", "w1");
+  assert.equal(url, "/api/orgs/o1/workspaces/w1/altium-365/workspaces");
+});
+
+test("api.listAltium365Projects passes altiumWorkspaceUrl in query when provided", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, { projects: [] });
+  });
+  await api.listAltium365Projects("o1", "w1", "https://acme.altium365.com/workspaces/x");
+  assert.equal(
+    url,
+    "/api/orgs/o1/workspaces/w1/altium-365/projects?altiumWorkspaceUrl=https%3A%2F%2Facme.altium365.com%2Fworkspaces%2Fx"
+  );
+});
+
+// ─── Workspace CRUD URLs ─────────────────────────────────────────────
+
+test("api.listWorkspaces GETs /api/orgs/:orgId/workspaces", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { workspaces: [] });
+  });
+  await api.listWorkspaces("org-1");
+  assert.equal(url, "/api/orgs/org-1/workspaces");
+  assert.equal(method, "GET");
+});
+
+test("api.getWorkspace GETs /api/orgs/:orgId/workspaces/:id", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, {
+      workspace: {
+        id: "ws-1",
+        orgId: "org-1",
+        altiumWorkspaceUrl: null,
+        hasNexarCredentials: true,
+        hasAltiumRestToken: false,
+        createdAt: "2026-04-25T00:00:00Z",
+      },
+    });
+  });
+  const out = await api.getWorkspace("org-1", "ws-1");
+  assert.equal(url, "/api/orgs/org-1/workspaces/ws-1");
+  assert.equal(out.workspace.id, "ws-1");
+  assert.equal(out.workspace.hasNexarCredentials, true);
+});
+
+test("api.createWorkspace POSTs to /api/orgs/:orgId/workspaces with the input as JSON", async () => {
+  let url = "";
+  let method = "";
+  let body = "";
+  let contentType: string | undefined;
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    body = String(init?.body);
+    contentType = (init?.headers as Record<string, string> | undefined)?.[
+      "Content-Type"
+    ];
+    return jsonResponse(201, {
+      workspace: {
+        id: "ws-new",
+        orgId: "org-1",
+        altiumWorkspaceUrl: null,
+        hasNexarCredentials: true,
+        hasAltiumRestToken: false,
+        createdAt: "2026-04-25T00:00:00Z",
+      },
+    });
+  });
+  const out = await api.createWorkspace("org-1", {
+    nexarClientId: "id",
+    nexarClientSecret: "secret",
+  });
+  assert.equal(url, "/api/orgs/org-1/workspaces");
+  assert.equal(method, "POST");
+  assert.equal(contentType, "application/json");
+  assert.match(body, /"nexarClientId":"id"/);
+  assert.equal(out.workspace.id, "ws-new");
+});
+
+test("api.updateWorkspace PATCHes the workspace path", async () => {
+  let url = "";
+  let method = "";
+  let body = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    body = String(init?.body);
+    return jsonResponse(200, {
+      workspace: {
+        id: "ws-1",
+        orgId: "org-1",
+        altiumWorkspaceUrl: "https://acme.altium365.com/x",
+        hasNexarCredentials: true,
+        hasAltiumRestToken: false,
+        createdAt: "2026-04-25T00:00:00Z",
+      },
+    });
+  });
+  await api.updateWorkspace("org-1", "ws-1", {
+    altiumWorkspaceUrl: "https://acme.altium365.com/x",
+  });
+  assert.equal(url, "/api/orgs/org-1/workspaces/ws-1");
+  assert.equal(method, "PATCH");
+  assert.match(body, /altiumWorkspaceUrl/);
+});
+
+test("api.deleteWorkspace DELETEs the workspace path and returns the ok envelope", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { ok: true });
+  });
+  const out = await api.deleteWorkspace("org-1", "ws-1");
+  assert.equal(url, "/api/orgs/org-1/workspaces/ws-1");
+  assert.equal(method, "DELETE");
+  assert.deepEqual(out, { ok: true });
+});
+
+test("api.testWorkspaceConnection POSTs to .../workspaces/test-connection", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, { ok: true });
+  });
+  const out = await api.testWorkspaceConnection("org-1", {
+    nexarClientId: "id",
+    nexarClientSecret: "secret",
+  });
+  assert.equal(url, "/api/orgs/org-1/workspaces/test-connection");
+  assert.equal(method, "POST");
+  assert.deepEqual(out, { ok: true });
+});
+
+test("422 from test-connection surfaces credentials_rejected as ApiError", async () => {
+  installFetch(async () =>
+    jsonResponse(422, { error: "credentials_rejected", detail: "401", status: 401 })
+  );
+  try {
+    await api.testWorkspaceConnection("org-1", {
+      nexarClientId: "bad",
+      nexarClientSecret: "bad",
+    });
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 422);
+    assert.equal(err.code, "credentials_rejected");
+  }
+});
+
+test("503 from a parts call surfaces workspace_not_configured", async () => {
+  installFetch(async () =>
+    jsonResponse(503, {
+      error: "workspace_not_configured",
+      detail: "Add credentials in Settings.",
+    })
+  );
+  try {
+    await api.searchParts("org-1", "ws-1", "x", 5);
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 503);
+    assert.equal(err.code, "workspace_not_configured");
+  }
+});
+
+test("503 with workspace_unavailable propagates the code", async () => {
+  installFetch(async () =>
+    jsonResponse(503, { error: "workspace_unavailable", detail: "decrypt failed" })
+  );
+  try {
+    await api.searchParts("org-1", "ws-1", "x", 5);
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 503);
+    assert.equal(err.code, "workspace_unavailable");
+  }
+});
+
+test("404 from a workspace path surfaces not_found", async () => {
+  installFetch(async () => jsonResponse(404, { error: "not_found" }));
+  try {
+    await api.getWorkspace("org-1", "missing");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 404);
+    assert.equal(err.code, "not_found");
+  }
+});
+
+test("403 from a workspace path surfaces forbidden", async () => {
+  installFetch(async () => jsonResponse(403, { error: "forbidden" }));
+  try {
+    await api.deleteWorkspace("org-1", "ws-1");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 403);
+    assert.equal(err.code, "forbidden");
+  }
 });
