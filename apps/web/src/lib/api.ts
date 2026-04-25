@@ -289,6 +289,29 @@ export interface PortalSessionResponse {
   url: string;
 }
 
+// ── Types returned by /api/orgs/:orgId/usage ──────────────────────────
+
+export interface UsageMetric {
+  used: number;
+  /** `null` means unlimited (Enterprise). UI renders "∞". */
+  limit: number | null;
+}
+
+export interface UsageReport {
+  period: { start: string; end: string };
+  plan: { name: string; overageAllowed: boolean };
+  /**
+   * Keyed by metric name (`bom_lookup` / `cost_analysis` / `export`).
+   * Every known metric appears with `used: 0` when there are no rows.
+   */
+  metrics: Record<string, UsageMetric>;
+  /**
+   * Keyed by tool name (`search_parts`, `analyze_bom_cost`, …).
+   * Only spec §4.4 metered tools appear; missing tools default to 0.
+   */
+  byTool: Record<string, number>;
+}
+
 export const api = {
   // ─── Auth ──────────────────────────────────────────────────────────
   signup: (input: {
@@ -483,6 +506,10 @@ export const api = {
       `/api/orgs/${encodeURIComponent(orgId)}/billing/portal-session`,
       { method: "POST" }
     ),
+
+  // ─── Usage ─────────────────────────────────────────────────────────
+  getUsage: (orgId: string) =>
+    call<UsageReport>(`/api/orgs/${encodeURIComponent(orgId)}/usage`),
 
   health: () => call<{ ok: boolean; name: string; version: string }>("/api/health"),
 };

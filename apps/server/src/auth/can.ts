@@ -59,7 +59,8 @@ export type CanAction =
   | "api_key.revoke"
   | "billing.checkout"
   | "billing.portal_manage"
-  | "tools.use";
+  | "tools.use"
+  | "usage.read";
 
 export interface Actor {
   userId: string;
@@ -89,10 +90,13 @@ export interface MemberResource {
 export type Resource = MemberResource;
 
 /**
- * Sprint 4 will add `invoice.read`, `subscription.update`, etc. and
- * include them here so billing_only users can see their bills.
+ * Actions that the billing_only role IS allowed to perform.
+ * Everything not in this set is denied for billing_only — see the
+ * top-of-`can()` short-circuit. Read-only actions that finance teams
+ * legitimately need land here as they're added (e.g. usage.read so
+ * they can see consumption to budget).
  */
-const BILLING_ONLY_ACTIONS = new Set<CanAction>();
+const BILLING_ONLY_ACTIONS = new Set<CanAction>(["usage.read"]);
 
 export function can(
   actor: Actor,
@@ -167,6 +171,13 @@ export function can(
     case "tools.use":
       // billing_only is filtered above; the remaining roles
       // (owner / admin / member) all get read + tool access.
+      return true;
+
+    case "usage.read":
+      // Every role gets to see consumption — billing_only is
+      // explicitly let through via BILLING_ONLY_ACTIONS so finance
+      // teams can budget without granting them tool / billing
+      // privileges.
       return true;
 
     default: {
