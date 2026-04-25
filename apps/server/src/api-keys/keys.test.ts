@@ -36,9 +36,10 @@ test("hash output is 64 hex chars (sha256)", () => {
 });
 
 test("generated key's hash equals hashApiKey(plaintext) — round-trip contract", () => {
-  // PR 3.4's verification path will receive a plaintext and call
-  // hashApiKey(); the DB lookup compares to ApiKey.hashedKey. This
-  // test pins that the create-time and verify-time hashes match.
+  // The verification path receives a plaintext and calls hashApiKey();
+  // the DB lookup compares to ApiKey.hashedKey. This test pins that
+  // the create-time and verify-time hashes match — break it and the
+  // entire bearer-token flow stops resolving.
   const k = generateApiKey();
   assert.equal(k.hash, hashApiKey(k.plaintext));
 });

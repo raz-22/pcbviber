@@ -132,9 +132,10 @@ test("POST /api-keys returns plaintext exactly once + metadata; stores only the 
 });
 
 test("POST /api-keys: same plaintext hashes deterministically (matches stored)", async () => {
-  // PR 3.4 will hash the incoming bearer token and look up by
-  // hashedKey. Pin that the create-time hash matches what
-  // hashApiKey() would produce on the same plaintext.
+  // The bearer-token verification path will hash the incoming token
+  // and look up by hashedKey. Pin that the create-time hash matches
+  // what hashApiKey() would produce on the same plaintext — break
+  // this and authentication stops resolving.
   const { hashApiKey } = await import("./keys.js");
   const res = await app.inject({
     method: "POST",
@@ -175,6 +176,21 @@ test("POST /api-keys writes audit row WITHOUT the plaintext or hash", async () =
   // Non-secret metadata IS expected.
   assert.match(meta, /"name":"audited-key"/);
   assert.match(meta, /"scopes":\["mcp:tools","mcp:read"\]/);
+});
+
+test("POST /api-keys with whitespace inside a scope → 400 (round-trip safety)", async () => {
+  // Scopes are stored space-joined. A scope containing a space would
+  // split apart on read (`["foo bar"]` round-trips as `["foo","bar"]`),
+  // silently corrupting the key's grant. Reject it at the boundary
+  // so the corruption can't reach the DB.
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/api-keys`,
+    headers: { cookie: aliceCookie },
+    payload: { name: "ws-scope", scopes: ["mcp:tools", "foo bar"] },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
 });
 
 test("POST /api-keys with empty name → 400 invalid_input", async () => {

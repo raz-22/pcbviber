@@ -10,10 +10,10 @@
  * + unique). The plaintext is shown to the inviter exactly once at
  * creation and never thereafter; the server cannot recover it.
  *
- * Verification (PR 3.4): incoming `Authorization: Bearer <plaintext>`
- * → sha256 → DB lookup by hashedKey. Constant-time compare isn't
- * needed because the lookup is by indexed unique column; the DB
- * returns the row or null without timing-leak on the comparison.
+ * Verification path: incoming `Authorization: Bearer <plaintext>` →
+ * sha256 → DB lookup by hashedKey. Constant-time compare isn't needed
+ * because the lookup is by indexed unique column; the DB returns the
+ * row or null without timing-leak on the comparison.
  *
  * Why not bcrypt/scrypt: those are slow ON PURPOSE for low-entropy
  * passwords. API keys are 256 bits of CSPRNG output — there's nothing
@@ -47,8 +47,8 @@ export function generateApiKey(): GeneratedApiKey {
 }
 
 /**
- * sha256 of the plaintext. Exported so PR 3.4's MCP-transport auth
- * middleware can hash the incoming bearer token before the DB lookup.
+ * sha256 of the plaintext. Exported so the MCP-transport auth
+ * middleware can hash an incoming bearer token before the DB lookup.
  */
 export function hashApiKey(plaintext: string): string {
   return createHash("sha256").update(plaintext).digest("hex");

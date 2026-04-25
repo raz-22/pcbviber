@@ -74,8 +74,9 @@ export async function startHttpServer(opts: {
   await registerNexarRoutes(app, authProvider, { nexarFactory });
   // Members + invitations (Sprint 3 PR 3.1).
   await registerMemberRoutes(app, authProvider);
-  // API keys CRUD (Sprint 3 PR 3.3); MCP transport verifies the keys
-  // in PR 3.4.
+  // API keys CRUD (Sprint 3 PR 3.3). The MCP transport's bearer-token
+  // verification lives in a separate route; the keys themselves are
+  // managed here.
   await registerApiKeyRoutes(app, authProvider);
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──

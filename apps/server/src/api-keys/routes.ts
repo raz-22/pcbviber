@@ -44,13 +44,23 @@ import { generateApiKey } from "./keys.js";
 const CreateApiKeyBody = z.object({
   name: z.string().min(1).max(100),
   /**
-   * Free-form scope strings — the vocabulary isn't fixed yet (the
-   * MCP transport auth in PR 3.4 is what consumes them). Capped to
-   * keep an attacker who reaches this endpoint from blowing up the
-   * row. Empty array == no scopes claimed.
+   * Free-form scope strings — the vocabulary isn't fixed yet; the
+   * MCP transport-auth path that consumes them lands later. Capped
+   * so an attacker reaching this endpoint can't blow up the row.
+   *
+   * Whitespace is rejected: scopes are persisted space-joined in the
+   * `scopes` column, so a scope containing a space would split apart
+   * on read (`["foo bar"]` round-trips as `["foo","bar"]`). Pinning
+   * "no whitespace" keeps the round-trip lossless.
    */
   scopes: z
-    .array(z.string().min(1).max(64))
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^\S+$/, "scope must not contain whitespace")
+    )
     .max(32)
     .optional()
     .default([]),
