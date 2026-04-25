@@ -56,6 +56,7 @@ export type CanAction =
   | "api_key.create"
   | "api_key.list"
   | "api_key.revoke"
+  | "billing.checkout"
   | "tools.use";
 
 export interface Actor {
@@ -150,6 +151,13 @@ export function can(
       // tool access at the org level, so handing out (or revoking)
       // them is a privileged action. Members never see the list.
       return actor.role === "owner" || actor.role === "admin";
+
+    case "billing.checkout":
+      // Owner only. Picking a plan or seat count is an owner decision
+      // per spec §3.4 ("admin — no billing"). billing_only sees
+      // invoices once that's wired but doesn't initiate billing
+      // changes — view-only by definition.
+      return actor.role === "owner";
 
     case "workspace.read":
     case "tools.use":

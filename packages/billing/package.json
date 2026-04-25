@@ -1,0 +1,26 @@
+{
+  "name": "@altium-mcp/billing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "default": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "cross-env NODE_ENV=test node --test --experimental-test-coverage --test-reporter=spec \"build/**/*.test.js\""
+  },
+  "dependencies": {
+    "stripe": "^17.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.7.0"
+  }
+}

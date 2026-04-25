@@ -24,6 +24,11 @@ import {
   installApiKeyErrorHandler,
   makeRequireApiKey,
 } from "./api-keys/middleware.js";
+import { registerBillingRoutes } from "./billing/routes.js";
+import {
+  makeBillingSigner,
+  selectBillingProvider,
+} from "@altium-mcp/billing";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
@@ -82,6 +87,21 @@ export async function startHttpServer(opts: {
   // verification lives in a separate route; the keys themselves are
   // managed here.
   await registerApiKeyRoutes(app, authProvider);
+
+  // Billing — Stripe-backed when STRIPE_SECRET_KEY is set; Noop in
+  // dev otherwise. The signer derives its secret from the existing
+  // CREDENTIAL_ENCRYPTION_KEY (already-required env). Routes signal
+  // 503 billing_not_configured when the provider is the no-op.
+  const billing = selectBillingProvider();
+  const billingSigner = makeBillingSigner(
+    Buffer.from(process.env.CREDENTIAL_ENCRYPTION_KEY ?? "", "base64")
+  );
+  const appBaseUrl = process.env.APP_BASE_URL ?? "http://localhost:5173";
+  await registerBillingRoutes(app, authProvider, {
+    billing,
+    signer: billingSigner,
+    appBaseUrl,
+  });
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
