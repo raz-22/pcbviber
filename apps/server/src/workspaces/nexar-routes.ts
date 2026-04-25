@@ -15,9 +15,7 @@
  * `(nexar, args) => result` so the MCP tool registrations in
  * tools/components.ts and tools/projects.ts keep working with the
  * env-loaded singleton until Sprint 3 cuts MCP transport over to
- * API-key-bound workspaces. Old `/api/parts/*` routes remain on the
- * server during the cutover; PR 2.4's SPA targets the new tenant-
- * scoped paths.
+ * API-key-bound workspaces.
  */
 
 import type { FastifyInstance } from "fastify";
