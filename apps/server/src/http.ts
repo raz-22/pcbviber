@@ -20,16 +20,8 @@ import { registerWorkspaceRoutes } from "./workspaces/routes.js";
 import { registerNexarRoutes } from "./workspaces/nexar-routes.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  SearchPartsInput,
-  CheckAvailabilityInput,
-  ListLibraryComponentsInput,
-  FindAlternativePartsInput,
-} from "@altium-mcp/shared";
 import type { NexarService } from "./services/nexar.js";
 import { buildMcpServer } from "./index.js";
-import * as components from "./handlers/components.js";
-import * as projects from "./handlers/projects.js";
 import type { AdRelay } from "./ad-relay/relay.js";
 import { registerAdRelayRoutes } from "./ad-relay/routes.js";
 import * as altium from "./handlers/altium.js";
@@ -94,98 +86,6 @@ export async function startHttpServer(opts: {
     });
     await server.connect(transport);
     await transport.handleRequest(req.raw, reply.raw, req.body);
-  });
-
-  // ── REST BFF — Parts Search page (DEPRECATED Sprint 2 PR 2.3) ────
-  //
-  // These pre-multitenant routes use the env-loaded NexarService
-  // singleton (no orgId / workspaceId required). They're kept so the
-  // Sprint-1 SPA's PartsSearch page keeps working until PR 2.4 cuts it
-  // over to the tenant-scoped equivalents:
-  //   /api/orgs/:orgId/workspaces/:workspaceId/parts/search
-  //   /api/orgs/:orgId/workspaces/:workspaceId/parts/availability
-  //   /api/orgs/:orgId/workspaces/:workspaceId/parts/alternatives
-  //   /api/orgs/:orgId/workspaces/:workspaceId/library/components
-  //   /api/orgs/:orgId/workspaces/:workspaceId/altium-365/workspaces
-  //   /api/orgs/:orgId/workspaces/:workspaceId/altium-365/projects
-  // PR 2.5 (follow-up) deletes the routes below.
-  app.get("/api/parts/search", async (req, reply) => {
-    const parsed = SearchPartsInput.safeParse(req.query);
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: "invalid query", detail: parsed.error.flatten() };
-    }
-    try {
-      return await components.searchParts(nexar, parsed.data);
-    } catch (err) {
-      reply.code(502);
-      return { error: "upstream error", detail: (err as Error).message };
-    }
-  });
-
-  app.get("/api/parts/availability", async (req, reply) => {
-    const parsed = CheckAvailabilityInput.safeParse(req.query);
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: "invalid query", detail: parsed.error.flatten() };
-    }
-    try {
-      return await components.checkPartAvailability(nexar, parsed.data);
-    } catch (err) {
-      reply.code(502);
-      return { error: "upstream error", detail: (err as Error).message };
-    }
-  });
-
-  app.get("/api/library/components", async (req, reply) => {
-    const parsed = ListLibraryComponentsInput.safeParse(req.query);
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: "invalid query", detail: parsed.error.flatten() };
-    }
-    try {
-      return await components.listLibraryComponents(nexar, parsed.data);
-    } catch (err) {
-      reply.code(502);
-      return { error: "upstream error", detail: (err as Error).message };
-    }
-  });
-
-  app.get("/api/parts/alternatives", async (req, reply) => {
-    const parsed = FindAlternativePartsInput.safeParse(req.query);
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: "invalid query", detail: parsed.error.flatten() };
-    }
-    try {
-      return await components.findAlternativeParts(nexar, parsed.data);
-    } catch (err) {
-      reply.code(502);
-      return { error: "upstream error", detail: (err as Error).message };
-    }
-  });
-
-  app.get("/api/workspaces", async (_req, reply) => {
-    try {
-      return await projects.listWorkspaces(nexar);
-    } catch (err) {
-      reply.code(502);
-      return { error: "upstream error", detail: (err as Error).message };
-    }
-  });
-
-  app.get("/api/workspaces/projects", async (req, reply) => {
-    const q = req.query as { workspaceUrl?: string };
-    if (!q.workspaceUrl) {
-      reply.code(400);
-      return { error: "workspaceUrl required" };
-    }
-    try {
-      return await projects.listProjects(nexar, { workspaceUrl: q.workspaceUrl });
-    } catch (err) {
-      reply.code(502);
-      return { error: "upstream error", detail: (err as Error).message };
-    }
   });
 
   app.get("/api/health", async () => ({
