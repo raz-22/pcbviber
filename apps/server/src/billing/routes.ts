@@ -2,21 +2,25 @@
  * Billing routes.
  *
  *   POST /api/orgs/:orgId/billing/checkout-session  — owner only
+ *   POST /api/orgs/:orgId/billing/portal-session    — owner only
  *
- * The route validates the priceId against an env-derived allow-list
- * (STRIPE_PRICE_STARTER_SEAT, STRIPE_PRICE_TEAM_SEAT) so an attacker
- * with an authenticated session can't construct a Checkout for an
- * arbitrary Stripe price they discovered out-of-band.
+ * checkout-session: validates priceId against an env-derived allow-list
+ * and signs the Stripe `client_reference_id` so the webhook can verify
+ * tenant attribution.
  *
- * The Stripe Checkout session's `client_reference_id` is signed
- * (HMAC-SHA256 over `domain|orgId|priceId|seats`). The webhook
- * handler verifies it before binding the resulting Subscription to
- * an org — no other input is trusted for tenant attribution.
+ * portal-session: hands the user a Stripe-hosted Customer Portal URL
+ * for plan switches, seat changes, payment-method updates, and
+ * cancellation. Cancellations come back through the webhook handler
+ * (`customer.subscription.deleted`) — the loop closes itself.
  *
  * Stable error codes:
  *   not_authenticated  forbidden  invalid_input
  *   billing_not_configured  — STRIPE_SECRET_KEY isn't set
  *   invalid_price           — body.priceId isn't on the env allow-list
+ *   not_yet_subscribed      — portal-session called on an org with no
+ *                              billingCustomerId (never completed a
+ *                              checkout). The SPA should route the
+ *                              user to checkout-session instead.
  *   billing_upstream_error  — Stripe's API errored (network, declined,
  *                              rate-limited, etc). Detail is logged
  *                              server-side; not included in the body
@@ -187,6 +191,73 @@ export async function registerBillingRoutes(
         req.log.error(
           { err: err instanceof Error ? err.message : String(err) },
           "billing checkout-session upstream error"
+        );
+        reply.code(502);
+        return { error: "billing_upstream_error" };
+      }
+    }
+  );
+
+  // ── POST /api/orgs/:orgId/billing/portal-session ─────────────────────
+  app.post(
+    "/api/orgs/:orgId/billing/portal-session",
+    { preHandler: [requireAuth, requireMember] },
+    async (req, reply) => {
+      const ctx = req.ctx!;
+
+      if (!can({ userId: ctx.user.id, role: ctx.role }, "billing.portal_manage")) {
+        reply.code(403);
+        return { error: "forbidden" };
+      }
+
+      if (!deps.billing.isConfigured()) {
+        reply.code(503);
+        return { error: "billing_not_configured" };
+      }
+
+      // The Customer Portal is for an existing customer — the org's
+      // billingCustomerId gets set by the webhook handler when their
+      // first Checkout completes. Pre-checkout orgs have no customer
+      // record on Stripe's side, so the portal call would fail; we
+      // return a distinct 409 the SPA can map to "Subscribe first".
+      const org = await prisma.organization.findUnique({
+        where: { id: ctx.org.id },
+        select: { billingCustomerId: true },
+      });
+      if (!org?.billingCustomerId) {
+        reply.code(409);
+        return { error: "not_yet_subscribed" };
+      }
+
+      try {
+        const session = await deps.billing.createPortalSession({
+          customerId: org.billingCustomerId,
+          // Where the user lands when they click "Return to <site>".
+          // Settings → Billing is the natural home; the SPA refetches
+          // /me on mount, picking up any status changes the user made
+          // in the portal (cancellation surfaces via the webhook a
+          // moment later, but the page render is independent).
+          returnUrl: `${deps.appBaseUrl}/settings/billing`,
+        });
+
+        await writeAuditLog({
+          orgId: ctx.org.id,
+          actorUserId: ctx.user.id,
+          action: "billing.portal_session.create",
+          ip: clientIp(req),
+          userAgent: req.headers["user-agent"],
+          metadata: { customerId: org.billingCustomerId },
+        });
+
+        return { url: session.url };
+      } catch (err) {
+        if (err instanceof BillingNotConfigured) {
+          reply.code(503);
+          return { error: "billing_not_configured" };
+        }
+        req.log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "billing portal-session upstream error"
         );
         reply.code(502);
         return { error: "billing_upstream_error" };

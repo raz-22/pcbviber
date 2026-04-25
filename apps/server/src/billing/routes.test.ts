@@ -30,6 +30,8 @@ import {
   type BillingProvider,
   type CheckoutSessionRequest,
   type CheckoutSessionResult,
+  type PortalSessionRequest,
+  type PortalSessionResult,
 } from "@altium-mcp/billing";
 
 const STRONG = "correct-horse-battery-staple-3";
@@ -60,11 +62,18 @@ const capture: {
   isConfigured: boolean;
   shouldThrow: Error | null;
   result: CheckoutSessionResult;
+  // Portal-session capture (parallel surface to checkout-session).
+  lastPortalInput: PortalSessionRequest | null;
+  shouldThrowPortal: Error | null;
+  portalResult: PortalSessionResult;
 } = {
   lastInput: null,
   isConfigured: true,
   shouldThrow: null,
   result: { url: "https://checkout.stripe.com/c/pay/cs_test_123", sessionId: "cs_test_123" },
+  lastPortalInput: null,
+  shouldThrowPortal: null,
+  portalResult: { url: "https://billing.stripe.com/p/session/test_portal" },
 };
 
 const stubBilling: BillingProvider = {
@@ -74,11 +83,16 @@ const stubBilling: BillingProvider = {
     if (capture.shouldThrow) throw capture.shouldThrow;
     return capture.result;
   },
-  // The checkout-session route doesn't call verifyWebhook; stubbing
-  // it here keeps the BillingProvider interface satisfied without
-  // pulling webhook test fixtures into this file.
+  createPortalSession: async (input) => {
+    capture.lastPortalInput = input;
+    if (capture.shouldThrowPortal) throw capture.shouldThrowPortal;
+    return capture.portalResult;
+  },
+  // The checkout/portal routes don't call verifyWebhook; stubbing it
+  // keeps the BillingProvider interface satisfied without pulling
+  // webhook test fixtures into this file.
   verifyWebhook: () => {
-    throw new Error("verifyWebhook not used by checkout-session tests");
+    throw new Error("verifyWebhook not used by checkout/portal tests");
   },
 };
 
@@ -397,6 +411,206 @@ test("POST /checkout-session: 400 invalid_price for a priceId NOT on the env all
   assert.equal(res.json().error, "invalid_price");
   // Provider not called.
   assert.equal(capture.lastInput, null);
+});
+
+// ═══ POST /portal-session ═══════════════════════════════════════════════
+
+function resetPortalCapture() {
+  capture.lastPortalInput = null;
+  capture.isConfigured = true;
+  capture.shouldThrowPortal = null;
+  capture.portalResult = {
+    url: "https://billing.stripe.com/p/session/test_portal",
+  };
+}
+
+test("POST /portal-session: 200 with url; provider called with stored customerId + return URL", async () => {
+  resetPortalCapture();
+  const { prisma } = await import("@altium-mcp/db");
+  // Set Alice's billingCustomerId — pre-condition for portal-session.
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: "cus_alice_portal" },
+  });
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(
+    res.json().url,
+    "https://billing.stripe.com/p/session/test_portal"
+  );
+
+  // Provider received the right input — customer id from the org row,
+  // return URL targets Settings → Billing.
+  assert.ok(capture.lastPortalInput);
+  assert.equal(capture.lastPortalInput.customerId, "cus_alice_portal");
+  assert.equal(
+    capture.lastPortalInput.returnUrl,
+    "http://localhost:5173/settings/billing"
+  );
+
+  // Cleanup so subsequent tests see Alice as a fresh customer.
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: null },
+  });
+});
+
+test("POST /portal-session: writes billing.portal_session.create audit row", async () => {
+  resetPortalCapture();
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: "cus_audit_portal" },
+  });
+  capture.portalResult = {
+    url: "https://billing.stripe.com/p/session/audit_pin",
+  };
+  await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: aliceCookie },
+  });
+  const log = await prisma.auditLog.findFirst({
+    where: {
+      orgId: aliceOrgId,
+      action: "billing.portal_session.create",
+    },
+    orderBy: { timestamp: "desc" },
+  });
+  assert.ok(log);
+  assert.equal(log.actorUserId, aliceUserId);
+  assert.match(log.metadata ?? "", /"customerId":"cus_audit_portal"/);
+
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: null },
+  });
+});
+
+test("POST /portal-session: 409 not_yet_subscribed when org has no billingCustomerId", async () => {
+  // Alice is back to billingCustomerId=null. Without a Stripe customer
+  // record, there's nothing for the portal to manage. Distinct from
+  // 503 (server-misconfig) — this one tells the SPA to send the user
+  // through checkout-session first.
+  resetPortalCapture();
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, "not_yet_subscribed");
+  // Provider was NOT called — fail fast before constructing a
+  // portal session for a customer that doesn't exist.
+  assert.equal(capture.lastPortalInput, null);
+});
+
+test("POST /portal-session: 401 without a session", async () => {
+  resetPortalCapture();
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+  });
+  assert.equal(res.statusCode, 401);
+});
+
+test("POST /portal-session: 403 forbidden for an admin (owner-only action)", async () => {
+  resetPortalCapture();
+  const { prisma } = await import("@altium-mcp/db");
+  // Set up a customer id so we'd reach the can() check (the 409
+  // branch would catch us first if billingCustomerId stayed null).
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: "cus_admin_blocked" },
+  });
+  // Make a fresh user, add as admin.
+  const m = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `admin-portal-${randomBytes(3).toString("hex")}@billing-test.example`,
+      password: STRONG,
+    },
+  });
+  const adminUserId = m.json().user.id;
+  const adminCookie = extractCookie(m.headers["set-cookie"])!;
+  await prisma.membership.create({
+    data: { orgId: aliceOrgId, userId: adminUserId, role: "admin" },
+  });
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: adminCookie },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, "forbidden");
+  // Provider was never called — 403 fires before we even read the
+  // org row.
+  assert.equal(capture.lastPortalInput, null);
+
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: null },
+  });
+});
+
+test("POST /portal-session: cross-tenant — Bob can't open portal for Alice's org", async () => {
+  resetPortalCapture();
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: bobCookie },
+  });
+  // Bob isn't a member of Alice's org → 403 from requireMember.
+  assert.equal(res.statusCode, 403);
+});
+
+test("POST /portal-session: 503 when provider isConfigured() is false", async () => {
+  resetPortalCapture();
+  capture.isConfigured = false;
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.json().error, "billing_not_configured");
+});
+
+test("POST /portal-session: 502 billing_upstream_error when Stripe throws (no message leak)", async () => {
+  resetPortalCapture();
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: "cus_will_fail" },
+  });
+  capture.shouldThrowPortal = new Error(
+    "stripe error mentioning cus_secret_internal_999"
+  );
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/portal-session`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.json().error, "billing_upstream_error");
+  // Defense in depth: same secret-leak protection as the
+  // checkout-session 502 path.
+  assert.doesNotMatch(
+    JSON.stringify(res.json()),
+    /cus_secret_internal_999/
+  );
+
+  await prisma.organization.update({
+    where: { id: aliceOrgId },
+    data: { billingCustomerId: null },
+  });
 });
 
 // ─── helper ──────────────────────────────────────────────────────────

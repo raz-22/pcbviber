@@ -3,6 +3,8 @@ import {
   type BillingProvider,
   type CheckoutSessionRequest,
   type CheckoutSessionResult,
+  type PortalSessionRequest,
+  type PortalSessionResult,
   type WebhookEvent,
 } from "./types.js";
 
@@ -20,6 +22,12 @@ export class NoopBillingProvider implements BillingProvider {
   async createCheckoutSession(
     _input: CheckoutSessionRequest
   ): Promise<CheckoutSessionResult> {
+    throw new BillingNotConfigured();
+  }
+
+  async createPortalSession(
+    _input: PortalSessionRequest
+  ): Promise<PortalSessionResult> {
     throw new BillingNotConfigured();
   }
 
