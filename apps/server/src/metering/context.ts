@@ -46,20 +46,63 @@ export async function buildMeterContext(
   if (!req.ctx) {
     throw new Error("buildMeterContext: req.ctx not set (require chain wrong)");
   }
-  const orgId = req.ctx.org.id;
+  return buildMeterContextForOrg(
+    {
+      orgId: req.ctx.org.id,
+      userId: req.ctx.user.id,
+      requestId: String(req.id),
+    },
+    deps
+  );
+}
 
-  // We need: createdAt + billingStatus from Organization (status is
-  // already in req.ctx but createdAt is not), plus the latest
-  // non-terminal Subscription with its Plan. Two queries; the org
-  // load is cheap enough that we don't bother JOINing.
+/**
+ * MCP transport variant: builds a MeterContext from an API-key-
+ * authenticated request. The API-key middleware populates
+ * `req.apiKeyCtx.org.id` but there's no `userId` (API keys
+ * authenticate at org level, not user level), so we record null
+ * on the UsageEvent. Otherwise identical to buildMeterContext.
+ */
+export async function buildApiKeyMeterContext(
+  req: FastifyRequest,
+  deps: BuildMeterContextDeps = {}
+): Promise<MeterContext> {
+  if (!req.apiKeyCtx) {
+    throw new Error(
+      "buildApiKeyMeterContext: req.apiKeyCtx not set (require chain wrong)"
+    );
+  }
+  return buildMeterContextForOrg(
+    {
+      orgId: req.apiKeyCtx.org.id,
+      userId: null,
+      requestId: String(req.id),
+    },
+    deps
+  );
+}
+
+/**
+ * Shared core: looks up the org's createdAt/billingStatus and
+ * latest non-terminal Subscription, then runs them through the
+ * @altium-mcp/metering plan resolver. Both web-session and
+ * API-key callers wrap this.
+ */
+async function buildMeterContextForOrg(
+  args: { orgId: string; userId: string | null; requestId: string },
+  deps: BuildMeterContextDeps
+): Promise<MeterContext> {
+  // We need: createdAt + billingStatus from Organization, plus the
+  // latest non-terminal Subscription with its Plan. Two queries;
+  // the org load is cheap enough that we don't bother JOINing.
   const [org, subscription] = await Promise.all([
     prisma.organization.findUnique({
-      where: { id: orgId },
+      where: { id: args.orgId },
       select: { id: true, createdAt: true, billingStatus: true },
     }),
     prisma.subscription.findFirst({
       where: {
-        orgId,
+        orgId: args.orgId,
         status: { in: ["trialing", "active", "past_due"] },
       },
       orderBy: { currentPeriodStart: "desc" },
@@ -75,9 +118,9 @@ export async function buildMeterContext(
   ]);
 
   if (!org) {
-    // requireOrgRole already verified Membership against this org —
-    // its disappearance between that query and now would be a race
-    // we can't recover from. Surface as 404 → SPA shows "org gone".
+    // The auth/api-key middleware verified the org against
+    // Membership / ApiKey before we got here. Disappearance
+    // between that query and now is a race we can't recover from.
     throw new Error("buildMeterContext: organization vanished");
   }
 
@@ -109,8 +152,8 @@ export async function buildMeterContext(
 
   return {
     orgId: org.id,
-    userId: req.ctx.user.id,
-    requestId: String(req.id),
+    userId: args.userId,
+    requestId: args.requestId,
     plan,
     period,
   };

@@ -98,6 +98,7 @@ model Workspace {
   createdAt             DateTime @default(now())
 
   org                   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  defaultForApiKeys     ApiKey[]
 
   @@index([orgId])
 }
@@ -110,12 +111,20 @@ model ApiKey {
   name       String
   hashedKey  String    @unique  // sha256 of the plaintext; plaintext shown once at creation
   scopes     String    // space-separated scope names; normalize later if needed
+  /// Default workspace the MCP transport binds tool calls to when
+  /// the call doesn't carry its own workspaceId arg. Optional —
+  /// unset means workspace-scoped MCP tools fail with
+  /// `api_key_no_workspace` until configured. Validated to belong
+  /// to the same orgId at write time. SetNull on workspace delete
+  /// so a cascade doesn't take the API key with it.
+  defaultWorkspaceId String?
   lastUsedAt DateTime?
   expiresAt  DateTime?
   createdAt  DateTime  @default(now())
   revokedAt  DateTime?
 
-  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  defaultWorkspace Workspace?   @relation(fields: [defaultWorkspaceId], references: [id], onDelete: SetNull)
 
   @@index([orgId])
   @@index([hashedKey])

@@ -145,6 +145,13 @@ before(async () => {
         searchPartsCalls += 1;
         return await searchPartsImpl();
       },
+      checkPartAvailability: async () => ({
+        mpn: "STM32F407",
+        offers: [],
+      }),
+      findAlternativeParts: async () => [
+        { mpn: "STM32F427", reason: "pin-compatible" },
+      ],
     } as unknown as Awaited<ReturnType<typeof stubFactory.forWorkspace>>;
   };
 
@@ -392,6 +399,56 @@ test("retried request with the same idempotency key does not double-bill", async
   // usageRows is the in-test mirror; recordUsage only pushes when
   // the underlying write succeeded → no growth here either.
   assert.equal(usageRows.length, beforeUsage);
+});
+
+test("/parts/availability is metered as bom_lookup, 1u per call", async () => {
+  // Reset so we have headroom — this test runs after the bucket
+  // exhaustion case.
+  quotaStore.reset();
+  const before = usageRows.length;
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces/${aliceWsId}/parts/availability?mpn=STM32F407`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(usageRows.length, before + 1);
+  assert.equal(usageRows[before]!.tool, "check_part_availability");
+  assert.equal(usageRows[before]!.metric, "bom_lookup");
+});
+
+test("/parts/alternatives is metered as bom_lookup, 1u per call", async () => {
+  quotaStore.reset();
+  const before = usageRows.length;
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces/${aliceWsId}/parts/alternatives?mpn=STM32F407`,
+    headers: { cookie: aliceCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(usageRows.length, before + 1);
+  assert.equal(usageRows[before]!.tool, "find_alternative_parts");
+  assert.equal(usageRows[before]!.metric, "bom_lookup");
+});
+
+test("/parts/availability returns 429 quota_exceeded after the bucket is full", async () => {
+  // Same hard-wall behavior as /parts/search — limit=2 plan, two
+  // alternative-or-availability calls fill the bucket, the third
+  // hits 429.
+  quotaStore.reset();
+  const url = `/api/orgs/${aliceOrgId}/workspaces/${aliceWsId}/parts/availability?mpn=STM32F407`;
+  const r1 = await app.inject({ method: "GET", url, headers: { cookie: aliceCookie } });
+  const r2 = await app.inject({ method: "GET", url, headers: { cookie: aliceCookie } });
+  assert.equal(r1.statusCode, 200);
+  assert.equal(r2.statusCode, 200);
+  const r3 = await app.inject({ method: "GET", url, headers: { cookie: aliceCookie } });
+  assert.equal(r3.statusCode, 429);
+  assert.equal(r3.json().error, "quota_exceeded");
+  assert.deepEqual(r3.json().detail, {
+    metric: "bom_lookup",
+    limit: 2,
+    used: 2,
+  });
 });
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {

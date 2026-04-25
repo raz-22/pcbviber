@@ -42,6 +42,7 @@ test("billing_only cannot do ANY currently-defined action", () => {
     "workspace.read",
     "api_key.create",
     "api_key.list",
+    "api_key.update",
     "api_key.revoke",
     "billing.checkout",
     "billing.portal_manage",
@@ -295,10 +296,11 @@ test("workspace.read: any non-billing role", () => {
 
 // ─── api_key.* ───────────────────────────────────────────────────────
 
-test("api_key.create / .list / .revoke: owner + admin only", () => {
+test("api_key.create / .list / .update / .revoke: owner + admin only", () => {
   for (const action of [
     "api_key.create",
     "api_key.list",
+    "api_key.update",
     "api_key.revoke",
   ] as const) {
     assert.equal(can(actor("owner"), action), true);
