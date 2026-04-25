@@ -28,6 +28,55 @@ export class NexarService {
     this.config = config;
   }
 
+  // ── Static credential check (used pre-storage by Workspace CRUD) ──
+  //
+  // Calls the Nexar token endpoint with the given client_credentials,
+  // does NOT mutate any state, NEVER stores the result. Useful for the
+  // "Test Connection" UX before a workspace is saved — we only persist
+  // encrypted creds after this returns ok:true.
+  static async checkCredentials(
+    clientId: string,
+    clientSecret: string
+  ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    if (!clientId || !clientSecret) {
+      return { ok: false, status: 400, error: "missing client id or secret" };
+    }
+    const body = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    let res: Response;
+    try {
+      res = await fetch(NEXAR_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        status: 0,
+        error: `network error contacting Nexar: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
+    if (!res.ok) {
+      // Don't surface raw Nexar response bodies to callers — they may
+      // contain identifiers we'd rather keep server-side.
+      return {
+        ok: false,
+        status: res.status,
+        error:
+          res.status === 401 || res.status === 400
+            ? "Nexar rejected the credentials"
+            : `Nexar returned HTTP ${res.status}`,
+      };
+    }
+    return { ok: true };
+  }
+
   // ── Auth ──────────────────────────────────────────────
 
   private async authenticate(): Promise<string> {
