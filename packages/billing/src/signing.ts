@@ -16,8 +16,9 @@
  *
  * Key source: routes derive the signing secret from
  * CREDENTIAL_ENCRYPTION_KEY (already-required env). A dedicated
- * BILLING_SIGNING_KEY would be cleaner key-separation; deferring the
- * env split keeps PR 4.2 narrow.
+ * BILLING_SIGNING_KEY would be cleaner key-separation; until that env
+ * split lands, the DOMAIN prefix above is what isolates this protocol
+ * from any other surface that might reuse the same secret.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";

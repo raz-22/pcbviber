@@ -10,14 +10,18 @@
  *
  * The Stripe Checkout session's `client_reference_id` is signed
  * (HMAC-SHA256 over `domain|orgId|priceId|seats`). The webhook
- * handler (PR 4.3) will verify it before binding the resulting
- * Subscription to an org — no other input is trusted for tenant
- * attribution.
+ * handler verifies it before binding the resulting Subscription to
+ * an org — no other input is trusted for tenant attribution.
  *
  * Stable error codes:
  *   not_authenticated  forbidden  invalid_input
  *   billing_not_configured  — STRIPE_SECRET_KEY isn't set
  *   invalid_price           — body.priceId isn't on the env allow-list
+ *   billing_upstream_error  — Stripe's API errored (network, declined,
+ *                              rate-limited, etc). Detail is logged
+ *                              server-side; not included in the body
+ *                              because Stripe error messages can echo
+ *                              customer + payment context.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -175,7 +179,17 @@ export async function registerBillingRoutes(
           reply.code(503);
           return { error: "billing_not_configured" };
         }
-        throw err;
+        // Generic Stripe failure: network glitch, rate limit, declined
+        // card, invalid price metadata, etc. Log server-side; surface
+        // a stable code without echoing Stripe's message — those can
+        // include customer + payment-method context that doesn't
+        // belong on the wire to a SPA.
+        req.log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "billing checkout-session upstream error"
+        );
+        reply.code(502);
+        return { error: "billing_upstream_error" };
       }
     }
   );

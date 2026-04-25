@@ -351,6 +351,32 @@ test("POST /checkout-session: 400 invalid_input on bad seats (zero, negative, hu
   }
 });
 
+test("POST /checkout-session: 502 billing_upstream_error when Stripe throws", async () => {
+  // Stripe network glitch / rate limit / declined card / invalid
+  // price metadata all bubble out of createCheckoutSession as a
+  // generic Error. The route catches and surfaces a stable code
+  // WITHOUT echoing the original message — Stripe error messages
+  // can include customer + payment context that doesn't belong on
+  // the wire to a SPA.
+  resetCapture();
+  capture.shouldThrow = new Error(
+    "stripe error with sensitive context: cus_secret_123 declined"
+  );
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/billing/checkout-session`,
+    headers: { cookie: aliceCookie },
+    payload: { priceId: TEAM_PRICE, seats: 1 },
+  });
+  assert.equal(res.statusCode, 502);
+  const body = res.json();
+  assert.equal(body.error, "billing_upstream_error");
+  // Defense in depth: the original error message must NOT appear in
+  // the response body. Server logs have the full detail.
+  assert.doesNotMatch(JSON.stringify(body), /cus_secret_123/);
+  assert.doesNotMatch(JSON.stringify(body), /declined/);
+});
+
 test("POST /checkout-session: 400 invalid_price for a priceId NOT on the env allow-list", async () => {
   resetCapture();
   const res = await app.inject({
