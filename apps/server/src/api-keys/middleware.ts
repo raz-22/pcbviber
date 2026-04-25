@@ -34,6 +34,7 @@ import type {
 } from "fastify";
 import { prisma } from "@altium-mcp/db";
 import { hashApiKey } from "./keys.js";
+import { tagRequestApiKey } from "../observability/sentry.js";
 
 const BEARER_PREFIX_LEN = "Bearer ".length;
 
@@ -131,6 +132,11 @@ export function makeRequireApiKey(): preHandlerAsyncHookHandler {
       },
       org: row.org,
     };
+    // Attach tenant + api-key attribution to the current Sentry
+    // scope. Inert when SENTRY_DSN is unset. Same reasoning as
+    // tenant.ts: app-level preHandler hooks run before
+    // route-level ones, so we tag here where the context exists.
+    tagRequestApiKey(req.apiKeyCtx);
   };
 }
 

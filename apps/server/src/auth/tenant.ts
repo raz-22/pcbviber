@@ -25,6 +25,7 @@ import type {
 } from "fastify";
 import { prisma } from "@altium-mcp/db";
 import type { AuthUser, Role } from "@altium-mcp/auth";
+import { tagRequestUser } from "../observability/sentry.js";
 
 /**
  * Per-request tenant context. Attached by makeRequireOrgRole after
@@ -148,6 +149,12 @@ export function makeRequireOrgRole(
       },
       role,
     };
+    // Attach tenant + user attribution to the current Sentry
+    // scope. Inert when SENTRY_DSN is unset. Done here (not in
+    // an app-level addHook) because Fastify runs app-level
+    // preHandler hooks BEFORE route-level ones — req.ctx
+    // wouldn't exist yet at that stage.
+    tagRequestUser(req.ctx);
   };
 }
 

@@ -1,46 +1,38 @@
 /**
  * Server-side Sentry wiring.
  *
- * Two entry points:
+ * Three exports:
  *
  *   - `initSentry(env)` — call ONCE at process start, BEFORE any
  *     other module imports. Sentry's instrumentation works by
  *     monkey-patching at require-time; importing http / pg / etc.
  *     before init means those modules ship without traces.
  *
- *   - `setupFastifySentry(app)` — call after route registration.
- *     Wires Sentry's Fastify error handler + an onRequest hook
- *     that pulls req.ctx.{user,org} into Sentry's per-request
- *     context. Logged errors get the right tenantId / userId
- *     attached automatically.
+ *   - `tagRequestUser(ctx)` / `tagRequestApiKey(ctx)` — set tenant
+ *     attribution on the current request's Sentry scope. Call from
+ *     inside the auth middleware, AFTER req.ctx (or req.apiKeyCtx)
+ *     is populated. Sentry's @sentry/node v10 uses async-context
+ *     tracking, so tags set during a route's preHandler attach to
+ *     just that request's scope. We do NOT use a Fastify app-level
+ *     `addHook("preHandler", ...)` for this — those run BEFORE
+ *     route-level preHandlers, so req.ctx would be undefined.
  *
- * Env-gated: `SENTRY_DSN` empty / unset → init is a no-op
- * (Sentry.init({ dsn: undefined, ... }) is documented as inert).
- * No conditional code on the call site; calling Sentry.captureX
- * in a no-op-init process is also inert. That keeps dev / tests
- * from needing to know whether Sentry is wired.
+ *   - `beforeSend` — pure-function PII filter wired as the SDK's
+ *     beforeSend hook. Exported so unit tests can pin the
+ *     redactions without spinning up the SDK transport.
  *
- * PII filter: `beforeSend` strips email + auth headers + cookies
- * before the event hits Sentry's wire. Pattern matches what other
- * @sentry users do; the filter is exported as a pure function so
- * the server unit tests can pin the redactions without spinning
- * up the SDK.
+ * Env-gated: `SENTRY_DSN` empty / unset → `initSentry` is a no-op.
+ * Calling Sentry.captureX / setUser / setTag in a no-op-init
+ * process is also inert (the SDK guards internally). That keeps
+ * dev / tests from needing to know whether Sentry is wired.
+ *
+ * PII filter strips email + auth headers + cookies before the
+ * event hits Sentry's wire. The filter runs on both error events
+ * and transactions so traces don't leak what errors don't.
  */
 
 import * as Sentry from "@sentry/node";
 import type { TransactionEvent } from "@sentry/core";
-
-export interface InitSentryOptions {
-  dsn?: string;
-  environment?: string;
-  release?: string;
-  /**
-   * 0..1. Spec §2.2 wants "errors + selective traces"; 10% strikes
-   * a balance — enough signal to debug a slow path, not enough to
-   * burn the project's transaction quota during a hot loop.
-   */
-  tracesSampleRate?: number;
-}
 
 /**
  * Initialize Sentry from env. Returns whether Sentry was actually
@@ -56,11 +48,43 @@ export function initSentry(env: NodeJS.ProcessEnv): boolean {
     dsn,
     environment: env.NODE_ENV ?? "production",
     release: env.SENTRY_RELEASE,
+    // Spec §2.2 wants "errors + selective traces"; 10% strikes
+    // a balance — enough signal to debug a slow path, not enough
+    // to burn the project's transaction quota during a hot loop.
     tracesSampleRate: 0.1,
     beforeSend,
-    beforeSendTransaction: beforeSendTransaction,
+    beforeSendTransaction,
   });
   return true;
+}
+
+/**
+ * Tag the current Sentry scope with cookie-session tenant +
+ * user attribution. Call from inside the auth/tenant middleware
+ * AFTER `req.ctx = { ... }` is populated. Inert when Sentry isn't
+ * configured — the SDK's setUser/setTag are no-ops in that case,
+ * so call sites don't need to know.
+ */
+export function tagRequestUser(ctx: {
+  user: { id: string };
+  org: { id: string };
+}): void {
+  Sentry.setUser({ id: ctx.user.id });
+  Sentry.setTag("tenantId", ctx.org.id);
+}
+
+/**
+ * Tag the current Sentry scope with API-key tenant attribution.
+ * Call from inside the api-key middleware AFTER `req.apiKeyCtx`
+ * is populated. No user.id (the MCP transport has no user — only
+ * a tenant-bound API key).
+ */
+export function tagRequestApiKey(ctx: {
+  apiKey: { id: string };
+  org: { id: string };
+}): void {
+  Sentry.setTag("tenantId", ctx.org.id);
+  Sentry.setTag("apiKeyId", ctx.apiKey.id);
 }
 
 /**
@@ -72,10 +96,10 @@ export function initSentry(env: NodeJS.ProcessEnv): boolean {
  *   - `request.cookies` (entire object — drops every named cookie)
  *   - request headers: `authorization`, `cookie`, `x-csrf-token`
  *   - `request.data.email` / `password` (auth bodies)
- *   - `request.query.email` (rare but defensive)
- *   - `user.email` / `user.username` (Sentry's user context;
- *     we set { id } only, but defense in depth catches future
- *     callsites that forget)
+ *   - `request.query_string.email` (rare but defensive)
+ *   - `user.email` / `user.username` / `user.ip_address`
+ *     (Sentry's user context; we set { id } only, but defense
+ *     in depth catches future callsites that forget)
  */
 export function beforeSend(
   event: Sentry.ErrorEvent,
