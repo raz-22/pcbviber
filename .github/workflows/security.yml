@@ -114,8 +114,10 @@ jobs:
           # Fail the job (exit 1) when a CRITICAL/HIGH finding
           # lands. Branch-protection turns this into a merge block.
           exit-code: '1'
-          # Skip the lockfile — gitleaks already scans it for
-          # secrets, and trivy's own SBOM-style scan of node_modules
-          # picks up the dep CVEs without needing the lockfile.
-          skip-files: 'pnpm-lock.yaml'
+          # Disable trivy's secret detector — gitleaks owns that
+          # surface and is configured for our specific
+          # false-positive allowlist (.gitleaks.toml). Trivy's
+          # detector double-flags every entry in that allowlist
+          # as a real key. Stick to vuln scanning here.
+          scanners: vuln
           format: table
