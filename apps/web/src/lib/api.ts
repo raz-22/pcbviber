@@ -260,6 +260,35 @@ export interface CreateApiKeyResponse {
   key: string;
 }
 
+// ── Types returned by /api/billing/* ──────────────────────────────────
+
+export interface BillingPlan {
+  /** Stable name the SPA uses internally ("starter" / "team" / …). */
+  name: string;
+  /** Stripe Price id — passed back to checkout-session. */
+  priceId: string;
+  /** Display name for the SPA's plan picker. */
+  label: string;
+}
+
+export interface BillingPlansResponse {
+  plans: BillingPlan[];
+}
+
+export interface CheckoutSessionInput {
+  priceId: string;
+  seats: number;
+}
+
+export interface CheckoutSessionResponse {
+  url: string;
+  sessionId: string;
+}
+
+export interface PortalSessionResponse {
+  url: string;
+}
+
 export const api = {
   // ─── Auth ──────────────────────────────────────────────────────────
   signup: (input: {
@@ -437,6 +466,22 @@ export const api = {
     call<{ ok: boolean }>(
       `/api/orgs/${encodeURIComponent(orgId)}/api-keys/${encodeURIComponent(keyId)}`,
       { method: "DELETE" }
+    ),
+
+  // ─── Billing ───────────────────────────────────────────────────────
+  listBillingPlans: () =>
+    call<BillingPlansResponse>("/api/billing/plans"),
+
+  createCheckoutSession: (orgId: string, input: CheckoutSessionInput) =>
+    call<CheckoutSessionResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/billing/checkout-session`,
+      { method: "POST", body: input }
+    ),
+
+  createPortalSession: (orgId: string) =>
+    call<PortalSessionResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/billing/portal-session`,
+      { method: "POST" }
     ),
 
   health: () => call<{ ok: boolean; name: string; version: string }>("/api/health"),

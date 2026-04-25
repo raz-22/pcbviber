@@ -10,6 +10,7 @@ import { NavLink, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { WorkspacesSettingsPage } from "./Workspaces";
 import { MembersSettingsPage } from "./Members";
 import { ApiKeysSettingsPage } from "./ApiKeys";
+import { BillingSettingsPage } from "./Billing";
 
 interface Tab {
   to: string;
@@ -22,8 +23,8 @@ const tabs: Tab[] = [
   { to: "/settings/workspaces", label: "Workspaces", available: true },
   { to: "/settings/members", label: "Members", available: true },
   { to: "/settings/api-keys", label: "API keys", available: true },
+  { to: "/settings/billing", label: "Billing", available: true },
   { to: "/settings/organization", label: "Organization", available: false, comingIn: "later" },
-  { to: "/settings/billing", label: "Billing", available: false, comingIn: "Sprint 4" },
 ];
 
 export function SettingsShell() {
@@ -81,6 +82,7 @@ export function SettingsRoutes() {
         <Route path="workspaces" element={<WorkspacesSettingsPage />} />
         <Route path="members" element={<MembersSettingsPage />} />
         <Route path="api-keys" element={<ApiKeysSettingsPage />} />
+        <Route path="billing" element={<BillingSettingsPage />} />
       </Route>
     </Routes>
   );

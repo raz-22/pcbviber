@@ -1,8 +1,14 @@
 /**
  * Billing routes.
  *
- *   POST /api/orgs/:orgId/billing/checkout-session  — owner only
- *   POST /api/orgs/:orgId/billing/portal-session    — owner only
+ *   GET  /api/billing/plans                          — auth required
+ *   POST /api/orgs/:orgId/billing/checkout-session   — owner only
+ *   POST /api/orgs/:orgId/billing/portal-session     — owner only
+ *
+ * GET /plans: surfaces the env-configured Stripe price ids so the SPA
+ * can render a plan picker without baking price ids into the
+ * client. Same allow-list checkout-session validates against — single
+ * source of truth.
  *
  * checkout-session: validates priceId against an env-derived allow-list
  * and signs the Stripe `client_reference_id` so the webhook can verify
@@ -56,22 +62,44 @@ const CheckoutSessionBody = z.object({
 });
 
 /**
- * Allow-list of price ids the route accepts. Read at handler time
- * so test setup that flips env between cases sees fresh values
- * without a process restart.
+ * Plan catalog — env var → label mapping. The labels are hardcoded
+ * because env vars only carry the Stripe price ids; display strings
+ * stay close to the code that consumes them. Order is the order the
+ * SPA renders.
+ *
+ * Read at handler time so test setup that flips env between cases
+ * sees fresh values without a process restart.
  */
-function loadAllowedPriceIds(): Set<string> {
-  const ids = new Set<string>();
-  for (const k of [
-    "STRIPE_PRICE_STARTER_SEAT",
-    "STRIPE_PRICE_TEAM_SEAT",
-    // Enterprise is invoiced (not Checkout) — no env entry.
-    // Annual variants land when we add the 20% discount tier.
-  ] as const) {
-    const v = process.env[k];
-    if (v && v.trim().length > 0) ids.add(v.trim());
+const PLAN_CATALOG: ReadonlyArray<{
+  name: string;
+  envVar: string;
+  label: string;
+}> = [
+  { name: "starter", envVar: "STRIPE_PRICE_STARTER_SEAT", label: "Starter" },
+  { name: "team", envVar: "STRIPE_PRICE_TEAM_SEAT", label: "Team" },
+  // Enterprise is invoiced (not Checkout) — no env entry, doesn't
+  // appear in the self-serve plan list.
+];
+
+interface PlanInfo {
+  name: string;
+  priceId: string;
+  label: string;
+}
+
+function loadPlans(): PlanInfo[] {
+  const out: PlanInfo[] = [];
+  for (const entry of PLAN_CATALOG) {
+    const v = process.env[entry.envVar];
+    if (v && v.trim().length > 0) {
+      out.push({ name: entry.name, priceId: v.trim(), label: entry.label });
+    }
   }
-  return ids;
+  return out;
+}
+
+function loadAllowedPriceIds(): Set<string> {
+  return new Set(loadPlans().map((p) => p.priceId));
 }
 
 // ─── Registration ─────────────────────────────────────────────────────
@@ -95,6 +123,23 @@ export async function registerBillingRoutes(
 ): Promise<void> {
   const requireAuth = makeRequireAuth(auth);
   const requireMember = makeRequireOrgRole([]);
+
+  // ── GET /api/billing/plans ────────────────────────────────────────────
+  // Auth-required (any signed-in user can read; the surface is the same
+  // for everyone) but UNTENANTED — plans are global. The SPA's billing
+  // page calls this once and renders a plan picker; submissions go
+  // through checkout-session.
+  app.get(
+    "/api/billing/plans",
+    { preHandler: [requireAuth] },
+    async () => {
+      // No "Stripe must be configured" gate here — an empty plans
+      // array is a perfectly valid answer for an env without prices
+      // configured. The SPA shows "billing not configured" via the
+      // banner / Settings → Billing copy.
+      return { plans: loadPlans() };
+    }
+  );
 
   app.post(
     "/api/orgs/:orgId/billing/checkout-session",

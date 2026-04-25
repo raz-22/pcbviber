@@ -777,3 +777,102 @@ test("409 api_key_already_revoked from DELETE surfaces", async () => {
     assert.equal(err.code, "api_key_already_revoked");
   }
 });
+
+// ─── Billing URLs ────────────────────────────────────────────────────
+
+test("api.listBillingPlans GETs /api/billing/plans", async () => {
+  let url = "";
+  installFetch(async (u) => {
+    url = String(u);
+    return jsonResponse(200, { plans: [] });
+  });
+  await api.listBillingPlans();
+  assert.equal(url, "/api/billing/plans");
+});
+
+test("api.createCheckoutSession POSTs priceId+seats and returns the URL", async () => {
+  let url = "";
+  let method = "";
+  let body = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    body = String(init?.body);
+    return jsonResponse(200, {
+      url: "https://checkout.stripe.com/c/pay/cs_xxx",
+      sessionId: "cs_xxx",
+    });
+  });
+  const out = await api.createCheckoutSession("org-1", {
+    priceId: "price_team",
+    seats: 5,
+  });
+  assert.equal(url, "/api/orgs/org-1/billing/checkout-session");
+  assert.equal(method, "POST");
+  assert.match(body, /"priceId":"price_team"/);
+  assert.match(body, /"seats":5/);
+  assert.equal(out.url, "https://checkout.stripe.com/c/pay/cs_xxx");
+});
+
+test("api.createPortalSession POSTs /portal-session with no body, returns the URL", async () => {
+  let url = "";
+  let method = "";
+  installFetch(async (u, init) => {
+    url = String(u);
+    method = init?.method ?? "GET";
+    return jsonResponse(200, {
+      url: "https://billing.stripe.com/p/session/x",
+    });
+  });
+  const out = await api.createPortalSession("org-1");
+  assert.equal(url, "/api/orgs/org-1/billing/portal-session");
+  assert.equal(method, "POST");
+  assert.equal(out.url, "https://billing.stripe.com/p/session/x");
+});
+
+test("503 billing_not_configured surfaces with the right code", async () => {
+  installFetch(async () =>
+    jsonResponse(503, { error: "billing_not_configured" })
+  );
+  try {
+    await api.createCheckoutSession("org-1", { priceId: "x", seats: 1 });
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 503);
+    assert.equal(err.code, "billing_not_configured");
+  }
+});
+
+test("409 not_yet_subscribed from /portal-session surfaces", async () => {
+  installFetch(async () =>
+    jsonResponse(409, { error: "not_yet_subscribed" })
+  );
+  try {
+    await api.createPortalSession("org-1");
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 409);
+    assert.equal(err.code, "not_yet_subscribed");
+  }
+});
+
+test("402 billing_inactive (from a tools call when suspended) surfaces", async () => {
+  // Tenant Nexar routes 402 when the org's billingStatus is suspended
+  // or canceled. The error envelope follows the standard Fastify
+  // shape until the tenant error handler is mounted (see PR #11
+  // review notes); for now the SPA's mapper just sees status=402
+  // and renders a billing-inactive message.
+  installFetch(async () =>
+    jsonResponse(402, { error: "billing_inactive" })
+  );
+  try {
+    await api.searchParts("org-1", "ws-1", "x", 5);
+    assert.fail("should have thrown");
+  } catch (err) {
+    expectApiError(err);
+    assert.equal(err.status, 402);
+    assert.equal(err.code, "billing_inactive");
+  }
+});
