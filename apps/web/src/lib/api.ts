@@ -397,6 +397,33 @@ export interface UsageReport {
   byTool: Record<string, number>;
 }
 
+// ── Types returned by /api/orgs/:orgId/audit ──────────────────────────
+
+export interface AuditLogRow {
+  id: string;
+  /** ISO-8601. */
+  timestamp: string;
+  /** Stable verb — `signup`, `workspace.add`, `member.role_change`, ... */
+  action: string;
+  /** Resource the action targeted (workspace id, invite id, ...). */
+  target: string | null;
+  /** Null when the user has been deleted (FK is SetNull) or the
+   *  action was system-initiated (e.g. webhook). */
+  actor: { id: string; email: string } | null;
+  ip: string | null;
+  userAgent: string | null;
+  /** Parsed JSON when the row's metadata is valid JSON; the raw
+   *  string when it isn't (legacy / corrupt rows); null otherwise. */
+  metadata: unknown;
+}
+
+export interface AuditLogResponse {
+  rows: AuditLogRow[];
+  /** Opaque base64 cursor; pass to the next request as `cursor=`.
+   *  Null when there are no more rows to read. */
+  nextCursor: string | null;
+}
+
 export const api = {
   // ─── Auth ──────────────────────────────────────────────────────────
   signup: (input: {
@@ -595,6 +622,21 @@ export const api = {
   // ─── Usage ─────────────────────────────────────────────────────────
   getUsage: (orgId: string) =>
     call<UsageReport>(`/api/orgs/${encodeURIComponent(orgId)}/usage`),
+
+  // ─── Audit log ─────────────────────────────────────────────────────
+  getAuditLog: (
+    orgId: string,
+    opts: { cursor?: string; limit?: number; action?: string } = {}
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    if (opts.limit) qs.set("limit", String(opts.limit));
+    if (opts.action) qs.set("action", opts.action);
+    const tail = qs.toString() ? `?${qs}` : "";
+    return call<AuditLogResponse>(
+      `/api/orgs/${encodeURIComponent(orgId)}/audit${tail}`
+    );
+  },
 
   health: () => call<{ ok: boolean; name: string; version: string }>("/api/health"),
 };
