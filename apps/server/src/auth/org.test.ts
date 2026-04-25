@@ -14,7 +14,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { deriveSlug, slugFromEmail, createOrgForOwner, findAvailableSlug } from "./org.js";
+import {
+  deriveSlug,
+  slugFromEmail,
+  createOrgForOwner,
+  findAvailableSlug,
+  TRIAL_DAYS,
+} from "./org.js";
 
 let workdir: string;
 let prisma: import("@altium-mcp/db").PrismaClient;
@@ -178,4 +184,59 @@ test("createOrgForOwner default name uses email local-part", async () => {
     email: "carol@vendor.io",
   });
   assert.equal(out.orgName, "carol's Organization");
+});
+
+// ─── Trial on signup ─────────────────────────────────────────────────
+
+test("createOrgForOwner sets billingStatus=trialing + trialEndsAt = now+TRIAL_DAYS", async () => {
+  // Per spec §3.1 every new org enters a trial without a card. Pin
+  // both the field shape (return value) and the persisted row.
+  // Importing TRIAL_DAYS rather than re-deriving 14*24*60*60*1000
+  // anchors the assertion to the same constant the implementation
+  // uses — change it to 7 or 30 and the test follows.
+  const before = Date.now();
+  const u = await prisma.user.create({ data: { email: "trial@example.com" } });
+  const out = await createOrgForOwner({
+    userId: u.id,
+    email: "trial@example.com",
+  });
+  const after = Date.now();
+
+  assert.equal(out.billingStatus, "trialing");
+  assert.ok(typeof out.trialEndsAt === "string");
+  const trialMs = new Date(out.trialEndsAt).getTime();
+  // Allow a 1-second window on each side for clock-tick noise across
+  // the user.create + createOrgForOwner span.
+  const trialMsOffset = TRIAL_DAYS * 24 * 60 * 60 * 1000;
+  assert.ok(
+    trialMs >= before + trialMsOffset - 1000 && trialMs <= after + trialMsOffset + 1000,
+    `trialEndsAt out of expected window: ${out.trialEndsAt}`
+  );
+
+  // The persisted row matches the return.
+  const row = await prisma.organization.findUnique({ where: { id: out.orgId } });
+  assert.ok(row);
+  assert.equal(row.billingStatus, "trialing");
+  assert.ok(row.trialEndsAt);
+  assert.equal(row.trialEndsAt!.toISOString(), out.trialEndsAt);
+  // billingMode default — checkout (vs invoicing for Enterprise NET-30).
+  assert.equal(row.billingMode, "checkout");
+});
+
+test("createOrgForOwner does NOT set a billingCustomerId or planId on signup", async () => {
+  // The Stripe customer is created on first checkout, not at signup.
+  // Trial is "untethered" — just a deadline. Pinning this ensures
+  // future callers don't accidentally assume a sub exists pre-checkout.
+  const u = await prisma.user.create({ data: { email: "untethered@example.com" } });
+  const out = await createOrgForOwner({
+    userId: u.id,
+    email: "untethered@example.com",
+  });
+  const row = await prisma.organization.findUnique({ where: { id: out.orgId } });
+  assert.ok(row);
+  assert.equal(row.billingCustomerId, null);
+  assert.equal(row.planId, null);
+  // No Subscription row either.
+  const subs = await prisma.subscription.findMany({ where: { orgId: out.orgId } });
+  assert.equal(subs.length, 0);
 });

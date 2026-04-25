@@ -65,6 +65,8 @@ const SIGNUP_FIXTURE: SignupResponse = {
     id: "org_1",
     slug: "alice",
     name: "alice's Organization",
+    billingStatus: "trialing",
+    trialEndsAt: "2026-05-08T00:00:00Z",
   },
 };
 
@@ -76,6 +78,16 @@ test("authMeFromSignup wraps the single org as orgs[] with role owner", () => {
   assert.equal(me.orgs[0].slug, "alice");
   assert.equal(me.orgs[0].name, "alice's Organization");
   assert.equal(me.orgs[0].role, "owner");
+});
+
+test("authMeFromSignup carries billing state from the signup response", () => {
+  // The SPA seeds ["auth", "me"] from the signup response so the
+  // post-signup navigate(/) renders billing state without a re-fetch.
+  // Drop these fields from the projection and the trial banner won't
+  // show until the next /me round-trip — visible flicker.
+  const me = authMeFromSignup(SIGNUP_FIXTURE);
+  assert.equal(me.orgs[0].billingStatus, "trialing");
+  assert.equal(me.orgs[0].trialEndsAt, "2026-05-08T00:00:00Z");
 });
 
 test("seedAuthMeCache populates the ['auth','me'] key — what useAuth would read", () => {

@@ -94,12 +94,22 @@ export interface AuthMe {
     slug: string;
     name: string;
     role: string;
+    /** "free" | "trialing" | "active" | "past_due" | "suspended" | "canceled" */
+    billingStatus: string;
+    /** ISO-8601 string while trialing; null otherwise. */
+    trialEndsAt: string | null;
   }>;
 }
 
 export interface SignupResponse {
   user: AuthMe["user"];
-  org: { id: string; slug: string; name: string };
+  org: {
+    id: string;
+    slug: string;
+    name: string;
+    billingStatus: string;
+    trialEndsAt: string | null;
+  };
 }
 
 export interface LoginResponse extends AuthMe {}

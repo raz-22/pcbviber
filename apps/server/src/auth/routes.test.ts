@@ -209,6 +209,49 @@ test("GET /api/auth/me with a valid session cookie returns user + orgs", async (
   assert.equal(body.orgs[0].role, "owner");
 });
 
+test("POST /api/auth/signup response carries billingStatus=trialing + trialEndsAt", async () => {
+  // The SPA seeds ["auth","me"] from this response so the post-signup
+  // navigate(/) renders billing state without a re-fetch. Pin the
+  // fields are present on the wire so the SPA's seed isn't blank.
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "trial-signup@example.com", password: STRONG },
+  });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.equal(body.org.billingStatus, "trialing");
+  assert.ok(typeof body.org.trialEndsAt === "string");
+  // Trial deadline is in the future.
+  assert.ok(new Date(body.org.trialEndsAt).getTime() > Date.now());
+});
+
+test("GET /api/auth/me carries per-org billingStatus + trialEndsAt", async () => {
+  // Sign up a fresh user so we know exactly which org's billing state
+  // we expect.
+  await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "trial-me@example.com", password: STRONG },
+  });
+  const login = await app.inject({
+    method: "POST",
+    url: "/api/auth/login",
+    payload: { email: "trial-me@example.com", password: STRONG },
+  });
+  const sessionCookie = extractSessionCookie(login.headers["set-cookie"]);
+  assert.ok(sessionCookie);
+
+  const me = await app.inject({
+    method: "GET",
+    url: "/api/auth/me",
+    headers: { cookie: sessionCookie },
+  });
+  const body = me.json();
+  assert.equal(body.orgs[0].billingStatus, "trialing");
+  assert.ok(typeof body.orgs[0].trialEndsAt === "string");
+});
+
 test("GET /api/auth/me with a tampered session cookie returns 401 + clears cookie", async () => {
   const me = await app.inject({
     method: "GET",

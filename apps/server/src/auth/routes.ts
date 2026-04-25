@@ -84,7 +84,13 @@ export async function registerAuthRoutes(
       setSessionCookie(reply, session.sealed, session.expiresAt);
       return {
         user: serializeUser(user),
-        org: { id: org.orgId, slug: org.orgSlug, name: org.orgName },
+        org: {
+          id: org.orgId,
+          slug: org.orgSlug,
+          name: org.orgName,
+          billingStatus: org.billingStatus,
+          trialEndsAt: org.trialEndsAt,
+        },
       };
     } catch (err) {
       return mapAuthError(reply, err);
@@ -176,6 +182,8 @@ export async function registerAuthRoutes(
           slug: m.orgSlug,
           name: m.orgName,
           role: m.role,
+          billingStatus: m.billingStatus,
+          trialEndsAt: m.trialEndsAt,
         })),
       };
     }

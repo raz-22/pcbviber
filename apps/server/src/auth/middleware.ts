@@ -24,15 +24,19 @@ import { prisma } from "@altium-mcp/db";
 export const SESSION_COOKIE = "session";
 
 /**
- * Membership view we attach to req. Sprint-2 RLS / authz will use the
- * `role` per org; for Sprint 1 we only need orgId so /api/auth/me can
- * surface "your organization."
+ * Membership view we attach to req. Includes per-org billing state
+ * (status + trialEndsAt) so the SPA's banner / Settings → Billing
+ * pages can render without a second round-trip.
  */
 export interface RequestMembership {
   orgId: string;
   orgSlug: string;
   orgName: string;
   role: string;
+  /** "free" | "trialing" | "active" | "past_due" | "suspended" | "canceled" */
+  billingStatus: string;
+  /** ISO-8601 string when trialing; null otherwise. */
+  trialEndsAt: string | null;
 }
 
 declare module "fastify" {
@@ -80,7 +84,17 @@ export function makeRequireAuth(
 async function loadMemberships(userId: string): Promise<RequestMembership[]> {
   const rows = await prisma.membership.findMany({
     where: { userId },
-    include: { org: { select: { id: true, slug: true, name: true } } },
+    include: {
+      org: {
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          billingStatus: true,
+          trialEndsAt: true,
+        },
+      },
+    },
     orderBy: { createdAt: "asc" },
   });
   return rows.map((m) => ({
@@ -88,6 +102,8 @@ async function loadMemberships(userId: string): Promise<RequestMembership[]> {
     orgSlug: m.org.slug,
     orgName: m.org.name,
     role: m.role,
+    billingStatus: m.org.billingStatus,
+    trialEndsAt: m.org.trialEndsAt ? m.org.trialEndsAt.toISOString() : null,
   }));
 }
 
