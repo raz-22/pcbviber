@@ -221,6 +221,27 @@ test("valid bearer token → 200 with apiKeyCtx populated", async () => {
   assert.notEqual(ctx.org.id, bobOrgId);
 });
 
+test("auth-scheme is case-insensitive (RFC 7235): 'bearer' lowercase works", async () => {
+  // Per RFC 7235 §2.1 the auth-scheme is case-insensitive. Most
+  // real clients send capitalized "Bearer", but a non-conforming
+  // client sending "bearer" or "BEARER" should still authenticate.
+  const lower = await app.inject({
+    method: "POST",
+    url: "/protected",
+    headers: { authorization: `bearer ${validPlaintext}` },
+  });
+  assert.equal(lower.statusCode, 200);
+  assert.equal(lower.json().apiKey.id, validKeyId);
+
+  const upper = await app.inject({
+    method: "POST",
+    url: "/protected",
+    headers: { authorization: `BEARER ${validPlaintext}` },
+  });
+  assert.equal(upper.statusCode, 200);
+  assert.equal(upper.json().apiKey.id, validKeyId);
+});
+
 test("a key with empty scopes resolves to an empty array (no spurious entries)", async () => {
   // The "revoked-key" we seeded has scopes: "". Its hash table entry
   // exists; we'd hit it ONLY if we reverse the revocation. So instead

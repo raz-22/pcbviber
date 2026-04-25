@@ -35,7 +35,16 @@ import type {
 import { prisma } from "@altium-mcp/db";
 import { hashApiKey } from "./keys.js";
 
-const BEARER_PREFIX = "Bearer ";
+const BEARER_PREFIX_LEN = "Bearer ".length;
+
+/**
+ * RFC 7235 §2.1: the auth-scheme is case-insensitive, so a header like
+ * `bearer pcb_…` or `BEARER pcb_…` must validate the same as
+ * `Bearer pcb_…`. Most real clients send capitalized `Bearer`, but
+ * matching strictly would 401 a perfectly valid token from a
+ * non-conforming client.
+ */
+const BEARER_PREFIX_RE = /^Bearer /i;
 
 /** Per-request context populated by makeRequireApiKey. */
 export interface ApiKeyContext {
@@ -72,11 +81,11 @@ function reject(reply: FastifyReply): void {
 export function makeRequireApiKey(): preHandlerAsyncHookHandler {
   return async function requireApiKey(req: FastifyRequest, reply: FastifyReply) {
     const header = req.headers.authorization;
-    if (typeof header !== "string" || !header.startsWith(BEARER_PREFIX)) {
+    if (typeof header !== "string" || !BEARER_PREFIX_RE.test(header)) {
       reject(reply);
       throw new Error("not_authenticated");
     }
-    const plaintext = header.slice(BEARER_PREFIX.length).trim();
+    const plaintext = header.slice(BEARER_PREFIX_LEN).trim();
     if (!plaintext) {
       reject(reply);
       throw new Error("not_authenticated");
