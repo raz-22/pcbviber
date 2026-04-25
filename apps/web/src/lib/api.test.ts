@@ -860,10 +860,12 @@ test("409 not_yet_subscribed from /portal-session surfaces", async () => {
 
 test("402 billing_inactive (from a tools call when suspended) surfaces", async () => {
   // Tenant Nexar routes 402 when the org's billingStatus is suspended
-  // or canceled. The error envelope follows the standard Fastify
-  // shape until the tenant error handler is mounted (see PR #11
-  // review notes); for now the SPA's mapper just sees status=402
-  // and renders a billing-inactive message.
+  // or canceled. Test stubs the error envelope as
+  // `{ error: "billing_inactive" }` — the eventual server-side
+  // tenant error handler will produce this shape; for now the
+  // shape comes from Fastify defaults and the SPA's mapper falls
+  // through to err.message. Either way, status=402 + the code on
+  // ApiError is what the SPA's billingErrorMessage keys off.
   installFetch(async () =>
     jsonResponse(402, { error: "billing_inactive" })
   );

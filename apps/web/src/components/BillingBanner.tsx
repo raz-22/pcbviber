@@ -8,9 +8,9 @@
  *   - suspended  → "Subscribe now" → Settings → Billing
  *   - canceled   → "Subscribe again" → Settings → Billing
  *
- * The banner reads me.orgs[0] (Sprint 4 still keys off the first
- * org per the multi-org-switching gap noted in PR 2.4 / 3.5). Once
- * multi-org switching lands, this can take an explicit orgId prop.
+ * The banner reads `me.orgs[0]` — the SPA still keys off the first
+ * org everywhere; multi-org switching is a deferred concern. Once
+ * that lands, this component can take an explicit `orgId` prop.
  */
 
 import { Link } from "react-router-dom";

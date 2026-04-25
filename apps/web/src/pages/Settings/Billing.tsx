@@ -271,10 +271,10 @@ function SubscribePane({
                 priceId: effectivePriceId,
                 seats,
               });
-              // Full-page redirect to Stripe-hosted Checkout. After
-              // the user completes (or cancels), Stripe sends them
-              // back to /settings/billing — see PR 4.2's success/
-              // cancel URL config.
+              // Full-page redirect to Stripe-hosted Checkout. The
+              // server-side checkout-session config sends Stripe's
+              // success_url + cancel_url back to /settings/billing,
+              // so the user lands here regardless of outcome.
               window.location.href = res.url;
             } catch {
               /* error rendered below */
