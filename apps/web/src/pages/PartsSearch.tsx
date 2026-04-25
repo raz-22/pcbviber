@@ -1,9 +1,45 @@
-import { useState } from "react";
+/**
+ * Parts Search — rewritten in PR 2.4 to run against a tenant-scoped
+ * workspace (PR 2.3 routes). The workspace selector at the top is the
+ * single source of truth; all subsequent queries key off the chosen
+ * workspaceId so switching workspaces doesn't show stale results.
+ *
+ * Empty / pre-config states:
+ *   - no workspaces in the org    → CTA to Settings
+ *   - selected workspace has no
+ *     Nexar creds                 → inline warning, query disabled
+ */
+
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import type { PartSearchResult } from "@altium-mcp/shared";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { useWorkspaces, workspaceErrorMessage } from "../lib/workspaces";
 
 export function PartsSearch() {
+  const { me } = useAuth();
+  const orgId = me?.orgs[0]?.id;
+  const wsQ = useWorkspaces(orgId);
+
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+
+  // Auto-select the first configured workspace once the list loads.
+  // Prefer one with Nexar creds — otherwise the user lands on a 503 by
+  // default. Falls back to the first if none are configured (so the
+  // selector still shows something to switch from).
+  useEffect(() => {
+    if (workspaceId) return;
+    const list = wsQ.data;
+    if (!list || list.length === 0) return;
+    const configured = list.find((w) => w.hasNexarCredentials);
+    setWorkspaceId(configured?.id ?? list[0].id);
+  }, [wsQ.data, workspaceId]);
+
+  const selected = wsQ.data?.find((w) => w.id === workspaceId) ?? null;
+  const canQuery = !!orgId && !!selected && selected.hasNexarCredentials;
+
   const [searchInput, setSearchInput] = useState("");
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [expandedMpn, setExpandedMpn] = useState<string | null>(null);
@@ -12,19 +48,41 @@ export function PartsSearch() {
   const [activeMpn, setActiveMpn] = useState<string | null>(null);
 
   const searchQ = useQuery({
-    queryKey: ["search", activeQuery],
-    queryFn: () => api.searchParts(activeQuery!, 10),
-    enabled: !!activeQuery,
+    queryKey: ["search", orgId, workspaceId, activeQuery],
+    queryFn: () => api.searchParts(orgId!, workspaceId!, activeQuery!, 10),
+    enabled: !!activeQuery && canQuery,
   });
 
   const availQ = useQuery({
-    queryKey: ["availability", activeMpn],
-    queryFn: () => api.checkAvailability(activeMpn!),
-    enabled: !!activeMpn,
+    queryKey: ["availability", orgId, workspaceId, activeMpn],
+    queryFn: () => api.checkAvailability(orgId!, workspaceId!, activeMpn!),
+    enabled: !!activeMpn && canQuery,
   });
 
+  if (!me || !orgId) return null;
+
   return (
-    <div className="space-y-10">
+    <div className="space-y-8">
+      <WorkspacePicker
+        wsQ={wsQ}
+        workspaceId={workspaceId}
+        onChange={(id) => {
+          setWorkspaceId(id);
+          // Clear active queries — they were keyed to the old workspace.
+          setActiveQuery(null);
+          setActiveMpn(null);
+          setExpandedMpn(null);
+        }}
+      />
+
+      {wsQ.data && wsQ.data.length === 0 && (
+        <EmptyWorkspacesNotice />
+      )}
+
+      {selected && !selected.hasNexarCredentials && (
+        <NotConfiguredNotice />
+      )}
+
       <section>
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-600 mb-3">
           Search parts
@@ -38,15 +96,16 @@ export function PartsSearch() {
           }}
         >
           <input
-            className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+            className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:bg-slate-50"
             placeholder="e.g. 100uF 25V MLCC, STM32F407, LM358"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
+            disabled={!canQuery}
           />
           <button
             type="submit"
             className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-            disabled={!searchInput.trim()}
+            disabled={!searchInput.trim() || !canQuery}
           >
             Search
           </button>
@@ -56,7 +115,7 @@ export function PartsSearch() {
           {searchQ.isLoading && <p className="text-sm text-slate-500">Searching…</p>}
           {searchQ.error && (
             <p className="text-sm text-red-600">
-              Error: {(searchQ.error as Error).message}
+              {workspaceErrorMessage(searchQ.error)}
             </p>
           )}
           {searchQ.data && searchQ.data.length > 0 && (
@@ -84,15 +143,16 @@ export function PartsSearch() {
           }}
         >
           <input
-            className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+            className="flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:bg-slate-50"
             placeholder="Exact MPN, e.g. STM32F407VGT6"
             value={mpnInput}
             onChange={(e) => setMpnInput(e.target.value)}
+            disabled={!canQuery}
           />
           <button
             type="submit"
             className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-            disabled={!mpnInput.trim()}
+            disabled={!mpnInput.trim() || !canQuery}
           >
             Check
           </button>
@@ -102,7 +162,7 @@ export function PartsSearch() {
           {availQ.isLoading && <p className="text-sm text-slate-500">Checking…</p>}
           {availQ.error && (
             <p className="text-sm text-red-600">
-              Error: {(availQ.error as Error).message}
+              {workspaceErrorMessage(availQ.error)}
             </p>
           )}
           {availQ.data && "notFound" in availQ.data && (
@@ -118,6 +178,86 @@ export function PartsSearch() {
     </div>
   );
 }
+
+// ─── Workspace picker + notices ──────────────────────────────────────
+
+function WorkspacePicker({
+  wsQ,
+  workspaceId,
+  onChange,
+}: {
+  wsQ: ReturnType<typeof useWorkspaces>;
+  workspaceId: string | null;
+  onChange: (id: string) => void;
+}) {
+  if (wsQ.isLoading) {
+    return <p className="text-sm text-slate-500">Loading workspaces…</p>;
+  }
+  if (wsQ.error) {
+    return (
+      <p className="text-sm text-red-600">{workspaceErrorMessage(wsQ.error)}</p>
+    );
+  }
+  if (!wsQ.data || wsQ.data.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-3">
+      <label className="text-sm text-slate-700">Workspace</label>
+      <select
+        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+        value={workspaceId ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {wsQ.data.map((w) => (
+          <option key={w.id} value={w.id}>
+            {w.altiumWorkspaceUrl ?? w.id}
+            {w.hasNexarCredentials ? "" : " (not configured)"}
+          </option>
+        ))}
+      </select>
+      <Link to="/settings/workspaces" className="text-xs text-blue-600 hover:underline">
+        Manage…
+      </Link>
+    </div>
+  );
+}
+
+function EmptyWorkspacesNotice() {
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-5 text-sm text-amber-900">
+      <p className="font-medium">No workspaces yet</p>
+      <p className="mt-1">
+        Parts Search needs a workspace with Nexar credentials.{" "}
+        <Link
+          to="/settings/workspaces"
+          className="font-medium text-amber-900 underline"
+        >
+          Create one in Settings
+        </Link>
+        .
+      </p>
+    </div>
+  );
+}
+
+function NotConfiguredNotice() {
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-5 text-sm text-amber-900">
+      <p>
+        This workspace has no Nexar credentials.{" "}
+        <Link
+          to="/settings/workspaces"
+          className="font-medium text-amber-900 underline"
+        >
+          Add them in Settings
+        </Link>
+        .
+      </p>
+    </div>
+  );
+}
+
+// ─── Result + availability tables (unchanged from prior version) ─────
 
 function ResultsTable({
   results,

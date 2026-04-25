@@ -5,15 +5,17 @@ import { HomePage } from "./pages/Home";
 import { LoginPage } from "./pages/Login";
 import { SignupPage } from "./pages/Signup";
 import { PartsSearch } from "./pages/PartsSearch";
+import { SettingsRoutes } from "./pages/Settings";
 
 /**
- * Top-level router. Sprint 1 routes:
+ * Top-level router.
  *
- *   /             — protected: home (org summary + tool links)
- *   /login        — public, redirects to / when already authed
- *   /signup       — public, redirects to / when already authed
- *   /parts        — protected: existing PartsSearch page
- *   *             — 404 → /
+ *   /                      — protected: home (org summary + tool links)
+ *   /login                 — public, redirects to / when already authed
+ *   /signup                — public, redirects to / when already authed
+ *   /parts                 — protected: PartsSearch (workspace-scoped)
+ *   /settings/*            — protected: Settings shell, see Settings/index.tsx
+ *   *                      — 404 → /
  */
 export function App() {
   return (
@@ -53,6 +55,14 @@ export function App() {
                   <div className="mx-auto max-w-6xl px-6 py-8">
                     <PartsSearch />
                   </div>
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/settings/*"
+              element={
+                <RequireAuth>
+                  <SettingsRoutes />
                 </RequireAuth>
               }
             />

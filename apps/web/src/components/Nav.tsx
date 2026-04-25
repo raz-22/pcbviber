@@ -44,6 +44,12 @@ export function Nav() {
               >
                 Parts
               </Link>
+              <Link
+                to="/settings/workspaces"
+                className="text-slate-700 hover:underline"
+              >
+                Settings
+              </Link>
               <button
                 onClick={async () => {
                   await logout.mutateAsync();
