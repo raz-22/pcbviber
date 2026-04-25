@@ -53,6 +53,9 @@ export type CanAction =
   | "workspace.update"
   | "workspace.delete"
   | "workspace.read"
+  | "api_key.create"
+  | "api_key.list"
+  | "api_key.revoke"
   | "tools.use";
 
 export interface Actor {
@@ -140,6 +143,12 @@ export function can(
     case "workspace.create":
     case "workspace.update":
     case "workspace.delete":
+    case "api_key.create":
+    case "api_key.list":
+    case "api_key.revoke":
+      // API key management is owner/admin only — keys grant MCP
+      // tool access at the org level, so handing out (or revoking)
+      // them is a privileged action. Members never see the list.
       return actor.role === "owner" || actor.role === "admin";
 
     case "workspace.read":

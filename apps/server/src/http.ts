@@ -19,6 +19,7 @@ import { registerOrgRoutes } from "./auth/org-routes.js";
 import { registerWorkspaceRoutes } from "./workspaces/routes.js";
 import { registerNexarRoutes } from "./workspaces/nexar-routes.js";
 import { registerMemberRoutes } from "./members/routes.js";
+import { registerApiKeyRoutes } from "./api-keys/routes.js";
 import { NexarServiceFactory } from "./services/nexar-factory.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { NexarService } from "./services/nexar.js";
@@ -73,6 +74,9 @@ export async function startHttpServer(opts: {
   await registerNexarRoutes(app, authProvider, { nexarFactory });
   // Members + invitations (Sprint 3 PR 3.1).
   await registerMemberRoutes(app, authProvider);
+  // API keys CRUD (Sprint 3 PR 3.3); MCP transport verifies the keys
+  // in PR 3.4.
+  await registerApiKeyRoutes(app, authProvider);
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);

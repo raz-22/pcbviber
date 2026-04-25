@@ -40,6 +40,9 @@ test("billing_only cannot do ANY currently-defined action", () => {
     "workspace.update",
     "workspace.delete",
     "workspace.read",
+    "api_key.create",
+    "api_key.list",
+    "api_key.revoke",
     "tools.use",
   ];
   for (const action of actions) {
@@ -286,6 +289,24 @@ test("workspace.read: any non-billing role", () => {
   assert.equal(can(actor("admin"), "workspace.read"), true);
   assert.equal(can(actor("member"), "workspace.read"), true);
   assert.equal(can(actor("billing_only"), "workspace.read"), false);
+});
+
+// ─── api_key.* ───────────────────────────────────────────────────────
+
+test("api_key.create / .list / .revoke: owner + admin only", () => {
+  for (const action of [
+    "api_key.create",
+    "api_key.list",
+    "api_key.revoke",
+  ] as const) {
+    assert.equal(can(actor("owner"), action), true);
+    assert.equal(can(actor("admin"), action), true);
+    // Members + billing_only can't see or touch keys. Members aren't
+    // billing-restricted, so this also verifies that "member" without
+    // an explicit allow defaults to denied for these actions.
+    assert.equal(can(actor("member"), action), false);
+    assert.equal(can(actor("billing_only"), action), false);
+  }
 });
 
 // ─── tools.use ───────────────────────────────────────────────────────
