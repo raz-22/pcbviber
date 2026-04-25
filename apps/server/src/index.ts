@@ -12,6 +12,13 @@
  *                    HTTP_PORT (default 3000), HTTP_HOST (default 127.0.0.1)
  */
 
+// Sentry MUST be imported + initialized first. Its instrumentation
+// works by monkey-patching at require-time; importing http / pg /
+// other instrumented modules before init means those modules ship
+// without traces. No-op when SENTRY_DSN is unset.
+import { initSentry } from "./observability/sentry.js";
+initSentry(process.env);
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { NexarService } from "./services/nexar.js";

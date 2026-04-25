@@ -11,6 +11,7 @@
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
+import * as Sentry from "@sentry/node";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import csrfProtection from "@fastify/csrf-protection";
@@ -88,6 +89,25 @@ export async function startHttpServer(opts: {
   });
 
   await app.register(cookie);
+
+  // ── Sentry per-request context ──────────────────────────
+  // Pull req.ctx.{user,org} into Sentry's per-request scope so any
+  // captureException / unhandled rejection inside the handler
+  // carries the right tenantId / userId tag automatically.
+  // Runs at preHandler — after the auth/tenant middleware has
+  // populated req.ctx but before the handler body. No-op when
+  // Sentry isn't configured (the SDK guards this internally).
+  app.addHook("preHandler", async (req) => {
+    if (req.ctx) {
+      Sentry.setUser({ id: req.ctx.user.id });
+      Sentry.setTag("tenantId", req.ctx.org.id);
+    } else if (req.apiKeyCtx) {
+      // MCP transport: there's no user, but there's an API key
+      // bound to an org — same tenant attribution.
+      Sentry.setTag("tenantId", req.apiKeyCtx.org.id);
+      Sentry.setTag("apiKeyId", req.apiKeyCtx.apiKey.id);
+    }
+  });
 
   // ── Security headers ────────────────────────────────────
   // CSP / HSTS (prod only) / X-Frame-Options / X-Content-Type-Options /
@@ -324,6 +344,15 @@ export async function startHttpServer(opts: {
   // `{ error: "not_authenticated" }` body. Mounted last so all
   // routes are registered before the error handler is replaced.
   installApiKeyErrorHandler(app);
+
+  // Sentry's Fastify error handler: captures any error that
+  // bubbles out of a route handler. Mounted AFTER our own
+  // error handlers so they get first crack at reshaping known
+  // error codes (csrf_invalid, rate_limited, not_authenticated,
+  // quota_exceeded). Whatever lands here is by definition an
+  // "unexpected" error — exactly what Sentry should see.
+  // No-op when SENTRY_DSN is unset.
+  Sentry.setupFastifyErrorHandler(app);
 
   app.get("/api/health", async () => ({
     ok: true,
