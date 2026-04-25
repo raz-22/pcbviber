@@ -15,6 +15,7 @@ import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { selectAuthProvider } from "@altium-mcp/auth";
 import { registerAuthRoutes } from "./auth/routes.js";
+import { registerOrgRoutes } from "./auth/org-routes.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   SearchPartsInput,
@@ -64,6 +65,7 @@ export async function startHttpServer(opts: {
   // env-gated: WorkOS in prod, LocalAuthProvider in dev.
   const authProvider = selectAuthProvider();
   await registerAuthRoutes(app, authProvider);
+  await registerOrgRoutes(app, authProvider);
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
