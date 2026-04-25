@@ -13,9 +13,9 @@
  *      SPA gets from REST 429.
  *
  * Non-metered tools (ad_*, list_workspaces, list_projects, …) skip
- * the meter wrapper entirely and run identically to the pre-5.4
- * codepath. Stdio (which has no per-tenant context) falls into the
- * same "no metering" branch.
+ * the meter wrapper entirely and run through `toMcpResponse`
+ * unchanged. Stdio (which has no per-tenant context) falls into
+ * the same "no metering" branch.
  */
 
 import { QuotaExceeded } from "@altium-mcp/metering";

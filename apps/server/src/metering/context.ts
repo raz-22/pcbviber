@@ -1,19 +1,25 @@
 /**
- * Server-side glue between the tenant middleware and @altium-mcp/metering.
+ * Server-side glue between the tenant / api-key middleware and
+ * @altium-mcp/metering.
  *
- * Routes that meter a tool call do this:
+ * Two entry points wrap the same shared core:
+ *   - `buildMeterContext(req, deps)` — web-session callers; reads
+ *     `req.ctx` populated by `requireOrgRole`. Sets `userId` on
+ *     the resulting MeterContext.
+ *   - `buildApiKeyMeterContext(req, deps)` — MCP transport callers;
+ *     reads `req.apiKeyCtx` populated by `makeRequireApiKey`.
+ *     `userId` is null (API keys authenticate at org level).
  *
- *     const ctx = await buildMeterContext(req, deps);
- *     return await meter(ctx, { tool, metric, units }, async () => {...}, deps.metering);
- *
- * `buildMeterContext` runs ONE Prisma query (latest non-terminal
- * Subscription with its Plan) and synthesizes the MeterContext from
- * `req.ctx` (already populated by `requireOrgRole`) + that row +
- * `req.id` (for the idempotency key).
+ * Both run one Prisma query for Organization (createdAt +
+ * billingStatus) and one for the latest non-terminal Subscription
+ * (in parallel), then hand the snapshots to
+ * `resolveQuotaForOrg`. The returned MeterContext is fed straight
+ * to `meter()` by the route / dispatch layer.
  *
  * Routes that throw QuotaExceeded surface it here as 429 + a stable
- * error code. The catch sits inline in the route — no global error
- * handler — so other errors keep their existing routing.
+ * error code via `handleQuotaError`. The catch sits inline in the
+ * route — no global error handler — so other errors keep their
+ * existing routing.
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -118,10 +124,10 @@ async function buildMeterContextForOrg(
   ]);
 
   if (!org) {
-    // The auth/api-key middleware verified the org against
+    // The auth / api-key middleware verified the org against
     // Membership / ApiKey before we got here. Disappearance
     // between that query and now is a race we can't recover from.
-    throw new Error("buildMeterContext: organization vanished");
+    throw new Error(`meter context: organization ${args.orgId} vanished`);
   }
 
   const now = deps.now?.() ?? new Date();
