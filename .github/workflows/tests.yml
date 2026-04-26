@@ -69,7 +69,11 @@ jobs:
       - name: Set up Node + pnpm cache
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22 — earlier versions don't support glob patterns
+          # passed to `node --test "build/**/*.test.js"`. Bumping
+          # to 22 is the cleanest fix; the package's engines field
+          # advertises >=20 but the test scripts effectively need 22+.
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies (frozen lockfile)

@@ -47,9 +47,13 @@ function makeClient(): PrismaClient {
 let cachedClient: PrismaClient | null = null;
 
 export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
-  get(_target, prop, receiver) {
+  get(_target, prop) {
     if (!cachedClient) cachedClient = makeClient();
     const value = Reflect.get(cachedClient, prop, cachedClient);
+    // Bind methods so `prisma.$disconnect()` etc. don't lose `this`.
+    // Non-function properties (model accessors like `prisma.user`)
+    // pass through unchanged — Prisma's model-level proxy handles
+    // its own binding.
     return typeof value === "function" ? value.bind(cachedClient) : value;
   },
 }) as PrismaClient;
