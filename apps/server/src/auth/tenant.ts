@@ -28,6 +28,7 @@ import type { AuthUser, Role } from "@altium-mcp/auth";
 import { tagRequestUser } from "../observability/sentry.js";
 import { checkIpAllowlistOrThrow } from "../security/ip-allowlist-middleware.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { can, type CanAction } from "./can.js";
 
 /**
  * Per-request tenant context. Attached by makeRequireOrgRole after
@@ -186,6 +187,38 @@ export function makeRequireOrgRole(
 
 /** Shorthand: any member (owner / admin / member / billing_only) is OK. */
 export const requireOrgMember = makeRequireOrgRole([]);
+
+/**
+ * Factory: returns a Fastify preHandler that gates the route on the
+ * `can()` policy for a given action. Use it when "any role passes the
+ * tenant check, but the policy still says no" — most importantly to
+ * keep `billing_only` out of `tools.use` and `workspace.read` paths.
+ *
+ * MUST run AFTER makeRequireOrgRole — it reads `req.ctx.role`. Pair
+ * with `requireOrgMember` (`makeRequireOrgRole([])`), not a stricter
+ * factory; if the strict factory already excludes the role, the
+ * `can()` check is dead weight.
+ *
+ * For actions whose decision needs a resource (e.g. `member.role_change`),
+ * keep the inline `can(...)` call in the handler — those need data
+ * the preHandler can't see.
+ */
+export function requireCan(action: CanAction): preHandlerAsyncHookHandler {
+  return async function requireCanPreHandler(req: FastifyRequest, reply: FastifyReply) {
+    if (!req.ctx) {
+      reply.code(500);
+      throw new Error("requireCan called without req.ctx");
+    }
+    const allowed = can(
+      { userId: req.ctx.user.id, role: req.ctx.role },
+      action
+    );
+    if (!allowed) {
+      reply.code(403);
+      throw new Error("forbidden");
+    }
+  };
+}
 
 /**
  * Factory: returns a Fastify preHandler that loads the `:workspaceId`

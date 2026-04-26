@@ -26,7 +26,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { encryptCredential } from "@altium-mcp/db";
 import { makeRequireAuth } from "../auth/middleware.js";
-import { makeRequireOrgRole } from "../auth/tenant.js";
+import { makeRequireOrgRole, requireCan } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { AuthProvider } from "@altium-mcp/auth";
@@ -123,9 +123,14 @@ export async function registerWorkspaceRoutes(
   );
 
   // ── List workspaces ─────────────────────────────────────────────────
+  // requireCan("workspace.read") closes the gap left by requireMember:
+  // billing_only is a member, but the policy denies it workspace.read.
+  // Without this, finance-only accounts could enumerate workspaces
+  // (incl. altiumWorkspaceUrl), contradicting the file-header authz
+  // contract and `can()`'s billing_only short-circuit.
   app.get(
     "/api/orgs/:orgId/workspaces",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [requireAuth, requireMember, requireCan("workspace.read")] },
     async (req) => {
       const ctx = req.ctx!;
       return await withTenantTx(ctx.org.id, async (tx) => {
@@ -141,7 +146,7 @@ export async function registerWorkspaceRoutes(
   // ── Get a single workspace ──────────────────────────────────────────
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId",
-    { preHandler: [requireAuth, requireMember] },
+    { preHandler: [requireAuth, requireMember, requireCan("workspace.read")] },
     async (req, reply) => {
       const ctx = req.ctx!;
       const { workspaceId } = req.params as { workspaceId: string };
