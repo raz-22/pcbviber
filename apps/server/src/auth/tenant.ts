@@ -27,6 +27,7 @@ import { prisma } from "@altium-mcp/db";
 import type { AuthUser, Role } from "@altium-mcp/auth";
 import { tagRequestUser } from "../observability/sentry.js";
 import { checkIpAllowlistOrThrow } from "../security/ip-allowlist-middleware.js";
+import { withTenantTx } from "../db/tenant-tx.js";
 
 /**
  * Per-request tenant context. Attached by makeRequireOrgRole after
@@ -216,16 +217,23 @@ export function makeRequireWorkspace(): preHandlerAsyncHookHandler {
       throw new Error("missing :workspaceId in route");
     }
 
-    const ws = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: {
-        id: true,
-        orgId: true,
-        altiumWorkspaceUrl: true,
-        nexarClientIdEnc: true,
-        nexarClientSecretEnc: true,
-      },
-    });
+    // RLS-bounded read: with the tenant tx in effect, the Workspace
+    // policy filters by orgId = current_setting('app.current_org_id').
+    // A workspaceId from a different org returns null even before the
+    // explicit orgId check below — but we keep that check for the
+    // SQLite/admin-tests path and as belt-and-braces.
+    const ws = await withTenantTx(req.ctx.org.id, (tx) =>
+      tx.workspace.findUnique({
+        where: { id: workspaceId },
+        select: {
+          id: true,
+          orgId: true,
+          altiumWorkspaceUrl: true,
+          nexarClientIdEnc: true,
+          nexarClientSecretEnc: true,
+        },
+      })
+    );
     if (!ws || ws.orgId !== req.ctx.org.id) {
       reply.code(404);
       throw new Error("workspace not found");

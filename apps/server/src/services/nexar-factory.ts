@@ -18,7 +18,8 @@
  * at the scale we'll see in the first sprints.
  */
 
-import { prisma, decryptCredential } from "@altium-mcp/db";
+import { decryptCredential } from "@altium-mcp/db";
+import { withTenantTx } from "../db/tenant-tx.js";
 import { NexarService } from "./nexar.js";
 
 const DEFAULT_MAX_ENTRIES = 500;
@@ -59,8 +60,18 @@ export class NexarServiceFactory {
    * The factory's job is to keep the decrypted secret in memory only
    * for the lifetime of the cache entry; nothing else outside this
    * file should ever need to call decryptCredential().
+   *
+   * `orgId` is required so the encrypted-creds read can run inside
+   * a tenant-scoped transaction. RLS on Workspace then filters by
+   * `orgId = current_setting('app.current_org_id')`, so a
+   * workspaceId from a different org returns null even if the cache
+   * happened to be cold and the row exists. Defense in depth on the
+   * highest-value secret in the system (decrypted Nexar creds).
    */
-  async forWorkspace(workspaceId: string): Promise<NexarService> {
+  async forWorkspace(
+    workspaceId: string,
+    orgId: string
+  ): Promise<NexarService> {
     const cached = this.cache.get(workspaceId);
     if (cached && cached.expiresAt > Date.now()) {
       // LRU bump: re-insert to push to end of iteration order.
@@ -69,14 +80,16 @@ export class NexarServiceFactory {
       return cached.service;
     }
 
-    const ws = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: {
-        id: true,
-        nexarClientIdEnc: true,
-        nexarClientSecretEnc: true,
-      },
-    });
+    const ws = await withTenantTx(orgId, (tx) =>
+      tx.workspace.findUnique({
+        where: { id: workspaceId },
+        select: {
+          id: true,
+          nexarClientIdEnc: true,
+          nexarClientSecretEnc: true,
+        },
+      })
+    );
     if (!ws) {
       throw new Error(`workspace ${workspaceId} not found`);
     }

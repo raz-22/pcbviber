@@ -320,7 +320,8 @@ export async function startHttpServer(opts: {
     let perRequestNexar: NexarService;
     try {
       perRequestNexar = await nexarFactory.forWorkspace(
-        apiKey.defaultWorkspaceId
+        apiKey.defaultWorkspaceId,
+        apiKeyCtx.org.id
       );
     } catch (err) {
       // Workspace exists but credentials missing / unloadable. Same
