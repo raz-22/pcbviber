@@ -8,23 +8,20 @@
  *   - Role-restricted middleware rejects allowed-set mismatch
  *   - Forged orgId → same 403 as not-a-member (no enumeration leak)
  *
- * Hermetic: temp SQLite DB, applies migrations, builds a Fastify app
+ * Hermetic: isolated Postgres schema, applies migrations, builds a Fastify app
  * with cookie + auth + org routes wired, exercises through inject().
  */
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { setupTestDatabase } from "@altium-mcp/db/test-utils";
 
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 
 let app: FastifyInstance;
-let workdir: string;
+let teardown: () => Promise<void>;
 let aliceCookie: string; // owner of Alice's org
 let bobCookie: string;   // owner of Bob's org (different tenant)
 let aliceOrgId: string;
@@ -35,28 +32,13 @@ let bobUserId: string;
 const STRONG = "correct-horse-battery-staple-2";
 
 before(async () => {
-  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-tenant-test-"));
-  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
-  process.env.DATABASE_URL = `file:${dbPath}`;
+  ({ teardown } = await setupTestDatabase());
   process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
   process.env.WORKOS_COOKIE_PASSWORD = randomBytes(48).toString("base64");
   delete process.env.WORKOS_API_KEY;
   delete process.env.WORKOS_CLIENT_ID;
 
   // Apply schema to the temp DB.
-  const dbPkg = join(process.cwd(), "..", "..", "packages", "db");
-  const schemaPath = join(dbPkg, "prisma", "schema.prisma");
-  const prismaBin =
-    process.platform === "win32"
-      ? join(dbPkg, "node_modules", ".bin", "prisma.CMD")
-      : join(dbPkg, "node_modules", ".bin", "prisma");
-  execFileSync(prismaBin, ["migrate", "deploy", "--schema", schemaPath], {
-    shell: true,
-    stdio: "ignore",
-    env: process.env,
-    cwd: dbPkg,
-  });
-
   // Reset the cached singletons so the new env vars take effect.
   const { __resetSessionCacheForTests, __resetAuthProviderCacheForTests } =
     await import("@altium-mcp/auth");
@@ -102,11 +84,7 @@ after(async () => {
   if (app) await app.close();
   const { prisma } = await import("@altium-mcp/db");
   await prisma.$disconnect();
-  try {
-    rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    /* best-effort */
-  }
+  await teardown();
 });
 
 // ─── 401: anonymous request to a protected route ────────────────────

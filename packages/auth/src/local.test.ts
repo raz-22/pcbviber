@@ -1,5 +1,5 @@
 /**
- * End-to-end LocalAuthProvider tests against a fresh SQLite DB.
+ * End-to-end LocalAuthProvider tests against a fresh Postgres schema.
  * Mirrors the pattern from packages/db/src/schema.test.ts — hermetic
  * temp DB, self-applies migrations, tears down afterward.
  */
@@ -7,10 +7,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { setupTestDatabase } from "@altium-mcp/db/test-utils";
 
 import { AuthError } from "./types.js";
 import { __resetSessionCacheForTests } from "./session.js";
@@ -18,31 +15,13 @@ import { __resetSessionCacheForTests } from "./session.js";
 let LocalAuthProvider: typeof import("./local.js").LocalAuthProvider;
 let resetRevocation: typeof import("./local.js").__resetLocalAuthRevocationForTests;
 let prisma: import("@altium-mcp/db").PrismaClient;
-let workdir: string;
+let teardown: () => Promise<void>;
 
 before(async () => {
-  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-auth-test-"));
-  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
-  process.env.DATABASE_URL = `file:${dbPath}`;
+  ({ teardown } = await setupTestDatabase());
   process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
   process.env.WORKOS_COOKIE_PASSWORD = randomBytes(48).toString("base64");
   __resetSessionCacheForTests();
-
-  // Apply db-package migrations to the test DB. packages/auth doesn't
-  // have prisma on PATH directly, so we invoke the per-package shim
-  // from packages/db by absolute path.
-  const dbPkg = join(process.cwd(), "..", "db");
-  const schemaPath = join(dbPkg, "prisma", "schema.prisma");
-  const prismaBin =
-    process.platform === "win32"
-      ? join(dbPkg, "node_modules", ".bin", "prisma.CMD")
-      : join(dbPkg, "node_modules", ".bin", "prisma");
-  execFileSync(prismaBin, ["migrate", "deploy", "--schema", schemaPath], {
-    shell: true,
-    stdio: "ignore",
-    env: process.env,
-    cwd: dbPkg,
-  });
 
   const db = await import("@altium-mcp/db");
   prisma = db.prisma;
@@ -53,11 +32,7 @@ before(async () => {
 
 after(async () => {
   if (prisma) await prisma.$disconnect();
-  try {
-    rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    // best-effort teardown
-  }
+  await teardown();
 });
 
 test("signup creates a user + returns a usable session", async () => {

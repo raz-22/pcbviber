@@ -14,7 +14,7 @@
  *   - When billingStatus is `suspended`, the requireActiveBilling
  *     middleware 402s before metering runs.
  *
- * Hermetic: fresh SQLite DB per file, stubbed NexarServiceFactory, a
+ * Hermetic: fresh Postgres schema per file, stubbed NexarServiceFactory, a
  * fixed in-memory quota store, and a tiny test plan (limit=2) so the
  * cap is reachable in three calls.
  */
@@ -22,10 +22,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { setupTestDatabase } from "@altium-mcp/db/test-utils";
 
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
@@ -36,7 +33,7 @@ import {
 } from "@altium-mcp/metering";
 
 let app: FastifyInstance;
-let workdir: string;
+let teardown: () => Promise<void>;
 let aliceCookie: string;
 let aliceOrgId: string;
 let aliceWsId: string;
@@ -66,28 +63,13 @@ let searchPartsImpl: () => Promise<unknown> = async () => [
 const STRONG = "correct-horse-battery-staple-4";
 
 before(async () => {
-  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-metering-routes-"));
-  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
-  process.env.DATABASE_URL = `file:${dbPath}`;
+  ({ teardown } = await setupTestDatabase());
   process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
   process.env.WORKOS_COOKIE_PASSWORD = randomBytes(48).toString("base64");
   delete process.env.WORKOS_API_KEY;
   delete process.env.WORKOS_CLIENT_ID;
   delete process.env.STRIPE_PRICE_STARTER_SEAT;
   delete process.env.STRIPE_PRICE_TEAM_SEAT;
-
-  const dbPkg = join(process.cwd(), "..", "..", "packages", "db");
-  const schemaPath = join(dbPkg, "prisma", "schema.prisma");
-  const prismaBin =
-    process.platform === "win32"
-      ? join(dbPkg, "node_modules", ".bin", "prisma.CMD")
-      : join(dbPkg, "node_modules", ".bin", "prisma");
-  execFileSync(prismaBin, ["migrate", "deploy", "--schema", schemaPath], {
-    shell: true,
-    stdio: "ignore",
-    env: process.env,
-    cwd: dbPkg,
-  });
 
   const { __resetSessionCacheForTests, __resetAuthProviderCacheForTests } =
     await import("@altium-mcp/auth");
@@ -223,11 +205,7 @@ after(async () => {
   if (app) await app.close();
   const { prisma } = await import("@altium-mcp/db");
   await prisma.$disconnect();
-  try {
-    rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    /* best-effort */
-  }
+  await teardown();
 });
 
 test("first call succeeds and writes a UsageEvent (bom_lookup)", async () => {

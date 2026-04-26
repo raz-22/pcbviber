@@ -1,54 +1,38 @@
 /**
  * Schema-level integration tests.
  *
- * Exercises the live Prisma client against a fresh SQLite DB to verify:
+ * Exercises the live Prisma client against a fresh Postgres schema
+ * to verify:
  *   - tenant creation + membership + workspace with encrypted creds
  *   - FK cascades (deleting an org removes its memberships/workspaces)
  *   - unique / idempotency constraints actually fire
  *   - audit log + usage event round-trips
  *
- * Requires DATABASE_URL and CREDENTIAL_ENCRYPTION_KEY in env. The test
- * driver sets a throwaway key and points DATABASE_URL at a temp SQLite
- * file, applies the committed migrations, and cleans up after itself.
+ * Requires TEST_DATABASE_URL pointing at a Postgres instance the
+ * caller has CREATE/DROP SCHEMA privileges on (Neon free tier, a
+ * docker-compose `postgres` service, etc.). See repo docker-compose.yml.
  */
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import {
   encryptCredential,
   decryptCredential,
   __resetEncryptionCacheForTests,
 } from "./encryption.js";
+import { setupTestDatabase } from "./test-utils.js";
 
 // Lazy imports so we can set env vars BEFORE @prisma/client initializes.
 let prisma: import("@prisma/client").PrismaClient;
-let workdir: string;
+let teardown: () => Promise<void>;
 
 before(async () => {
-  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-schema-test-"));
-  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
+  ({ teardown } = await setupTestDatabase());
 
-  process.env.DATABASE_URL = `file:${dbPath}`;
   process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
   __resetEncryptionCacheForTests();
-
-  // Apply migrations to the fresh DB. Uses the committed migration history
-  // so the test verifies the schema the way prod will see it.
-  //
-  // pnpm puts the per-package `prisma` shim on PATH when it runs scripts,
-  // so we just invoke "prisma" through a shell (required for .CMD on Windows).
-  const schemaPath = join(process.cwd(), "prisma", "schema.prisma");
-  execFileSync("prisma", ["migrate", "deploy", "--schema", schemaPath], {
-    shell: true,
-    stdio: "ignore",
-    env: process.env,
-  });
 
   // Dynamic import must happen AFTER env is set, so PrismaClient reads
   // the right DATABASE_URL.
@@ -58,11 +42,7 @@ before(async () => {
 
 after(async () => {
   if (prisma) await prisma.$disconnect();
-  try {
-    rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    // test teardown is best-effort
-  }
+  await teardown();
 });
 
 test("creates Organization + User + Membership", async () => {

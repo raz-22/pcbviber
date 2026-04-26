@@ -1,47 +1,29 @@
 /**
  * Reconciliation tests — sums UsageEvent rows for the current
  * period and writes the result back into the QuotaStore. Hermetic
- * SQLite + InMemoryQuotaStore so the assertions stay deterministic
+ * Postgres + InMemoryQuotaStore so the assertions stay deterministic
  * regardless of wall-clock time.
  */
 
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { setupTestDatabase } from "@altium-mcp/db/test-utils";
 
 import { InMemoryQuotaStore } from "./in-memory-store.js";
 import { reconcileQuotas } from "./reconciliation.js";
 import { monthlyPeriodFor } from "./period.js";
 
 let prisma: import("@altium-mcp/db").PrismaClient;
-let workdir: string;
+let teardown: () => Promise<void>;
 let store: InMemoryQuotaStore;
 let aliceId: string;
 let bobId: string;
 const NOW = new Date("2026-04-15T00:00:00Z");
 
 before(async () => {
-  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-reconciliation-test-"));
-  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
-  process.env.DATABASE_URL = `file:${dbPath}`;
+  ({ teardown } = await setupTestDatabase());
   process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
-
-  const dbPkg = join(process.cwd(), "..", "db");
-  const schemaPath = join(dbPkg, "prisma", "schema.prisma");
-  const prismaBin =
-    process.platform === "win32"
-      ? join(dbPkg, "node_modules", ".bin", "prisma.CMD")
-      : join(dbPkg, "node_modules", ".bin", "prisma");
-  execFileSync(prismaBin, ["migrate", "deploy", "--schema", schemaPath], {
-    shell: true,
-    stdio: "ignore",
-    env: process.env,
-    cwd: dbPkg,
-  });
 
   const db = await import("@altium-mcp/db");
   prisma = db.prisma;
@@ -49,11 +31,7 @@ before(async () => {
 
 after(async () => {
   if (prisma) await prisma.$disconnect();
-  try {
-    rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    /* best-effort */
-  }
+  await teardown();
 });
 
 beforeEach(async () => {

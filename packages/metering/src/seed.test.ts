@@ -3,40 +3,22 @@
  * spec quotas, picks up Stripe Price IDs from env, and is idempotent
  * (re-running it doesn't error or duplicate rows).
  *
- * Hermetic: brings up a fresh SQLite DB and runs the committed
+ * Hermetic: brings up a fresh Postgres schema and runs the committed
  * migrations, same pattern as packages/auth/src/local.test.ts.
  */
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { setupTestDatabase } from "@altium-mcp/db/test-utils";
 
 let prisma: import("@altium-mcp/db").PrismaClient;
 let seedPlans: typeof import("./seed.js").seedPlans;
-let workdir: string;
+let teardown: () => Promise<void>;
 
 before(async () => {
-  workdir = mkdtempSync(join(tmpdir(), "altium-mcp-metering-seed-test-"));
-  const dbPath = join(workdir, "test.db").replace(/\\/g, "/");
-  process.env.DATABASE_URL = `file:${dbPath}`;
+  ({ teardown } = await setupTestDatabase());
   process.env.CREDENTIAL_ENCRYPTION_KEY = randomBytes(32).toString("base64");
-
-  const dbPkg = join(process.cwd(), "..", "db");
-  const schemaPath = join(dbPkg, "prisma", "schema.prisma");
-  const prismaBin =
-    process.platform === "win32"
-      ? join(dbPkg, "node_modules", ".bin", "prisma.CMD")
-      : join(dbPkg, "node_modules", ".bin", "prisma");
-  execFileSync(prismaBin, ["migrate", "deploy", "--schema", schemaPath], {
-    shell: true,
-    stdio: "ignore",
-    env: process.env,
-    cwd: dbPkg,
-  });
 
   const db = await import("@altium-mcp/db");
   prisma = db.prisma;
@@ -45,11 +27,7 @@ before(async () => {
 
 after(async () => {
   if (prisma) await prisma.$disconnect();
-  try {
-    rmSync(workdir, { recursive: true, force: true });
-  } catch {
-    // best-effort teardown
-  }
+  await teardown();
 });
 
 test("seedPlans upserts starter, team, and enterprise rows", async () => {
