@@ -27,10 +27,10 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { prisma } from "@altium-mcp/db";
 import type { AuthProvider } from "@altium-mcp/auth";
 import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
+import { withTenantTx } from "../db/tenant-tx.js";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -103,21 +103,19 @@ export async function registerAuditRoutes(
       const limit = parseLimit(query.limit);
       const cursor = decodeCursor(query.cursor);
 
-      // Build the where clause. Tenant scope is non-negotiable —
-      // every other branch composes onto this.
+      // Build the where clause. The orgId predicate is redundant with
+      // RLS (the policy filters by current_setting('app.current_org_id'))
+      // but we keep it: defense in depth, and it lets a SQLite or
+      // RLS-bypassed test still see expected behavior.
       const where: Record<string, unknown> = { orgId: ctx.org.id };
 
       if (typeof query.action === "string" && query.action.length > 0) {
-        // Exact match. The action vocabulary is finite and stable
-        // (audit.ts top-of-file documents it); a contains-search
-        // would invite typo-driven empty results.
         where.action = query.action;
       }
 
       if (cursor) {
-        // Strict less-than on (timestamp, id). SQLite + Postgres
-        // both support row-tuple compare via OR-of-AND, which is
-        // what Prisma emits from the OR shape below.
+        // Strict less-than on (timestamp, id). Prisma emits a row-tuple
+        // compare via OR-of-AND from the OR shape below.
         where.OR = [
           { timestamp: { lt: new Date(cursor.ms) } },
           {
@@ -127,36 +125,38 @@ export async function registerAuditRoutes(
         ];
       }
 
-      // Fetch limit + 1 so we know whether another page exists
-      // without a separate COUNT query.
-      const rows = await prisma.auditLog.findMany({
-        where,
-        orderBy: [{ timestamp: "desc" }, { id: "desc" }],
-        take: limit + 1,
-        include: {
-          // User schema today is just { id, email } — no display name.
-          // The SPA renders "user@example.com" directly.
-          actor: { select: { id: true, email: true } },
-        },
+      return await withTenantTx(ctx.org.id, async (tx) => {
+        // Fetch limit + 1 so we know whether another page exists
+        // without a separate COUNT query.
+        const rows = await tx.auditLog.findMany({
+          where,
+          orderBy: [{ timestamp: "desc" }, { id: "desc" }],
+          take: limit + 1,
+          include: {
+            // User schema today is just { id, email } — no display name.
+            // The SPA renders "user@example.com" directly.
+            actor: { select: { id: true, email: true } },
+          },
+        });
+
+        const hasMore = rows.length > limit;
+        const page = hasMore ? rows.slice(0, limit) : rows;
+        const last = page[page.length - 1];
+
+        return {
+          rows: page.map((r) => ({
+            id: r.id,
+            timestamp: r.timestamp.toISOString(),
+            action: r.action,
+            target: r.target,
+            actor: r.actor ? { id: r.actor.id, email: r.actor.email } : null,
+            ip: r.ip,
+            userAgent: r.userAgent,
+            metadata: parseMetadata(r.metadata),
+          })),
+          nextCursor: hasMore && last ? encodeCursor(last.timestamp, last.id) : null,
+        };
       });
-
-      const hasMore = rows.length > limit;
-      const page = hasMore ? rows.slice(0, limit) : rows;
-      const last = page[page.length - 1];
-
-      return {
-        rows: page.map((r) => ({
-          id: r.id,
-          timestamp: r.timestamp.toISOString(),
-          action: r.action,
-          target: r.target,
-          actor: r.actor ? { id: r.actor.id, email: r.actor.email } : null,
-          ip: r.ip,
-          userAgent: r.userAgent,
-          metadata: parseMetadata(r.metadata),
-        })),
-        nextCursor: hasMore && last ? encodeCursor(last.timestamp, last.id) : null,
-      };
     }
   );
 }
