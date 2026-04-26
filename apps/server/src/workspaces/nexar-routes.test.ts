@@ -337,6 +337,51 @@ test("two requests to different workspaces load different NexarService instances
   assert.equal(lastForWorkspaceId, bobWsId);
 });
 
+// ─── billing_only role gating ───────────────────────────────────────
+
+test("billing_only is 403 on tenant-scoped Nexar data routes (no quota spent)", async () => {
+  // billing_only is a member of the org, so requireMember accepts the
+  // session — but the policy denies tools.use for that role. Pin one
+  // representative route from each surface (parts, library, altium-365)
+  // so a future refactor that drops the requireCan gate fails here
+  // loud instead of silently letting finance accounts spend Nexar
+  // quota. lastForWorkspaceId is asserted null afterward — the gate
+  // must reject before factory.forWorkspace runs.
+  const fUser = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `finance-${randomBytes(3).toString("hex")}@nexar-routes.example`,
+      password: STRONG,
+    },
+  });
+  const fUserId = fUser.json().user.id;
+  const fCookie = extractCookie(fUser.headers["set-cookie"])!;
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.membership.create({
+    data: { orgId: aliceOrgId, userId: fUserId, role: "billing_only" },
+  });
+
+  for (const url of [
+    `/api/orgs/${aliceOrgId}/workspaces/${aliceWsConfiguredId}/parts/search?query=x`,
+    `/api/orgs/${aliceOrgId}/workspaces/${aliceWsConfiguredId}/library/components`,
+    `/api/orgs/${aliceOrgId}/workspaces/${aliceWsConfiguredId}/altium-365/projects`,
+  ]) {
+    lastForWorkspaceId = null;
+    const res = await app.inject({
+      method: "GET",
+      url,
+      headers: { cookie: fCookie },
+    });
+    assert.equal(res.statusCode, 403, `billing_only should be 403 on ${url}`);
+    assert.equal(
+      lastForWorkspaceId,
+      null,
+      `factory.forWorkspace must NOT be called for ${url} when billing_only is rejected`
+    );
+  }
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {

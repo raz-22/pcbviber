@@ -435,7 +435,7 @@ test("a member (not owner/admin) cannot create a workspace — 403", async () =>
   assert.equal(res.statusCode, 403);
 });
 
-test("a member CAN list workspaces (read access for any role)", async () => {
+test("a member CAN list workspaces (read access for owner/admin/member)", async () => {
   const mUser = await app.inject({
     method: "POST",
     url: "/api/auth/signup",
@@ -458,6 +458,55 @@ test("a member CAN list workspaces (read access for any role)", async () => {
     headers: { cookie: mCookie },
   });
   assert.equal(list.statusCode, 200);
+});
+
+test("billing_only is 403 on GET /workspaces and GET /workspaces/:id", async () => {
+  // billing_only is a member of the org, so requireMember accepts the
+  // session — but the policy denies workspace.read for that role. Pin
+  // both GETs so a future refactor that drops the requireCan gate
+  // fails here loud instead of silently leaking workspace metadata
+  // (incl. altiumWorkspaceUrl) to a finance-only account.
+  testCredsResult = { ok: true };
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      altiumWorkspaceUrl: "https://billing-only-test.altium365.com",
+      nexarClientId: "bo-id",
+      nexarClientSecret: "bo-secret",
+    },
+  });
+  const wsId = created.json().workspace.id;
+
+  const fUser = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: {
+      email: `finance-${randomBytes(3).toString("hex")}@ws-test.example`,
+      password: STRONG,
+    },
+  });
+  const fUserId = fUser.json().user.id;
+  const fCookie = extractCookie(fUser.headers["set-cookie"])!;
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.membership.create({
+    data: { orgId: aliceOrgId, userId: fUserId, role: "billing_only" },
+  });
+
+  const list = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: fCookie },
+  });
+  assert.equal(list.statusCode, 403);
+
+  const one = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces/${wsId}`,
+    headers: { cookie: fCookie },
+  });
+  assert.equal(one.statusCode, 403);
 });
 
 // ─── Cache invalidation on PATCH/DELETE ─────────────────────────────

@@ -38,6 +38,7 @@ import {
   makeRequireOrgRole,
   makeRequireWorkspace,
   requireActiveBilling,
+  requireCan,
 } from "../auth/tenant.js";
 import { buildMeterContext, handleQuotaError } from "../metering/context.js";
 import { meteredToolConfig } from "../jobs/metered-tools.js";
@@ -73,6 +74,18 @@ export async function registerNexarRoutes(
   const { nexarFactory } = deps;
   const quotaStore = deps.quotaStore ?? selectQuotaStore();
   const recordUsage = deps.recordUsage ?? writeUsageEvent;
+
+  // Shared preHandler chain for every Nexar data route on this surface.
+  // requireCan("tools.use") closes the gap left by requireMember:
+  // billing_only is a member, but the policy denies it tools.use, so
+  // without this gate a finance-only account could spend Nexar quota.
+  const dataRoutePreHandlers = [
+    requireAuth,
+    requireMember,
+    requireWorkspace,
+    requireActiveBilling,
+    requireCan("tools.use"),
+  ];
 
   /**
    * Loads + returns the NexarService for the current request's workspace.
@@ -148,7 +161,7 @@ export async function registerNexarRoutes(
 
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/search",
-    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
+    { preHandler: dataRoutePreHandlers },
     async (req, reply) => {
       const parsed = SearchPartsInput.safeParse(req.query);
       if (!parsed.success) {
@@ -171,7 +184,7 @@ export async function registerNexarRoutes(
 
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/availability",
-    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
+    { preHandler: dataRoutePreHandlers },
     async (req, reply) => {
       const parsed = CheckAvailabilityInput.safeParse(req.query);
       if (!parsed.success) {
@@ -194,7 +207,7 @@ export async function registerNexarRoutes(
 
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/parts/alternatives",
-    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
+    { preHandler: dataRoutePreHandlers },
     async (req, reply) => {
       const parsed = FindAlternativePartsInput.safeParse(req.query);
       if (!parsed.success) {
@@ -225,7 +238,7 @@ export async function registerNexarRoutes(
   });
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/library/components",
-    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
+    { preHandler: dataRoutePreHandlers },
     async (req, reply) => {
       const parsed = LibraryQuery.safeParse(req.query);
       if (!parsed.success) {
@@ -262,7 +275,7 @@ export async function registerNexarRoutes(
   // vs. PCBviber's own /api/orgs/:orgId/workspaces.
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/altium-365/workspaces",
-    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
+    { preHandler: dataRoutePreHandlers },
     async (req, reply) => {
       const nexar = await loadNexarOr503(req, reply);
       if (!nexar) return;
@@ -280,7 +293,7 @@ export async function registerNexarRoutes(
   });
   app.get(
     "/api/orgs/:orgId/workspaces/:workspaceId/altium-365/projects",
-    { preHandler: [requireAuth, requireMember, requireWorkspace, requireActiveBilling] },
+    { preHandler: dataRoutePreHandlers },
     async (req, reply) => {
       const parsed = Altium365ProjectsQuery.safeParse(req.query);
       if (!parsed.success) {
