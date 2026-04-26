@@ -105,8 +105,9 @@ export async function registerAuditRoutes(
 
       // Build the where clause. The orgId predicate is redundant with
       // RLS (the policy filters by current_setting('app.current_org_id'))
-      // but we keep it: defense in depth, and it lets a SQLite or
-      // RLS-bypassed test still see expected behavior.
+      // but we keep it: defense in depth, plus tests that run as the
+      // RLS-bypassed admin role still see the expected behavior without
+      // needing a withTenantTx wrapper.
       const where: Record<string, unknown> = { orgId: ctx.org.id };
 
       if (typeof query.action === "string" && query.action.length > 0) {
