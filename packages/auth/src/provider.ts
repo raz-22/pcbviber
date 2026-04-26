@@ -60,4 +60,27 @@ export interface AuthProvider {
    * signup and after a refresh. Does NOT re-check credentials.
    */
   issueSession(userId: string): Promise<Session>;
+
+  /**
+   * Build the IdP authorization URL for an SSO redirect (SAML / OIDC
+   * via WorkOS). Optional on providers that don't support SSO —
+   * `LocalAuthProvider` returns null. Routes guard on the return
+   * value before initiating an SSO flow.
+   */
+  startSso?(opts: {
+    connectionId: string;
+    redirectUri: string;
+    state: string;
+  }): string;
+
+  /**
+   * Complete an SSO callback by exchanging the IdP `code` for a
+   * profile and creating a local session. Optional, paired with
+   * `startSso`.
+   */
+  completeSsoCallback?(opts: { code: string }): Promise<{
+    user: AuthUser;
+    session: Session;
+    isNewUser: boolean;
+  }>;
 }

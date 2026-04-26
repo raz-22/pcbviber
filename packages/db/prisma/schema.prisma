@@ -39,6 +39,13 @@ model Organization {
   /// "checkout" — uses Stripe Checkout + Customer Portal.
   /// "invoicing" — Enterprise NET-30 via Stripe Invoicing (set manually).
   billingMode        String         @default("checkout")
+  /// WorkOS SSO connection id (e.g. `conn_01H...`). When set, the
+  /// SSO start/callback routes can authenticate users for this org
+  /// against the IdP this connection points at (Okta / Azure AD /
+  /// etc.). Set out-of-band by an operator after WorkOS dashboard
+  /// configuration; admin UI for self-service connection management
+  /// lands in PR 7.3b.
+  workosConnectionId String?
   createdAt          DateTime       @default(now())
   deletedAt          DateTime?
 

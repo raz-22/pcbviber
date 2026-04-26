@@ -134,6 +134,93 @@ export class WorkOSAuthProvider implements AuthProvider {
     const signed = await signSession(userId, { issuer: ISSUER });
     return { sealed: signed.sealed, userId, expiresAt: signed.expiresAt };
   }
+
+  // ─── SSO (SAML / OIDC) ──────────────────────────────────────────
+
+  /**
+   * Build the WorkOS authorization URL the SPA should redirect to.
+   * `connectionId` identifies the IdP (set up in the WorkOS
+   * dashboard); `redirectUri` is the absolute URL of our
+   * /api/auth/sso/callback route; `state` is our signed state JWT.
+   *
+   * Pure delegation to WorkOS's SSO module; no DB access, no side
+   * effects. Tests can swap the WorkOS SDK without DB plumbing.
+   */
+  startSso(opts: {
+    connectionId: string;
+    redirectUri: string;
+    state: string;
+  }): string {
+    return this.workos.sso.getAuthorizationUrl({
+      connection: opts.connectionId,
+      clientId: this.clientId,
+      redirectUri: opts.redirectUri,
+      state: opts.state,
+    });
+  }
+
+  /**
+   * Complete the WorkOS SSO callback. Exchanges the IdP's `code`
+   * for a profile, upserts the local User row keyed on email,
+   * issues a session.
+   *
+   * Caller is responsible for verifying the state JWT BEFORE
+   * calling this method — by the time we touch WorkOS, the orgId
+   * and returnTo are trusted. Caller is also responsible for
+   * creating any Membership row this user needs in the org;
+   * WorkOSAuthProvider deals only with the User identity.
+   */
+  async completeSsoCallback(opts: { code: string }): Promise<{
+    user: AuthUser;
+    session: Session;
+    isNewUser: boolean;
+  }> {
+    let result: Awaited<
+      ReturnType<typeof this.workos.sso.getProfileAndToken>
+    >;
+    try {
+      result = await this.workos.sso.getProfileAndToken({
+        clientId: this.clientId,
+        code: opts.code,
+      });
+    } catch (err) {
+      throw mapWorkOSError(err);
+    }
+    const profile = result.profile;
+    if (!profile?.email) {
+      throw new AuthError(
+        "provider_error",
+        "WorkOS SSO profile is missing email"
+      );
+    }
+    const email = profile.email.trim().toLowerCase();
+
+    // Upsert the User row by email (the natural identity key). If
+    // the user already exists from a password signup, we just link
+    // their workosUserId — same human, same row.
+    const before = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+    const user = await prisma.user.upsert({
+      where: { email },
+      update: { workosUserId: profile.id },
+      create: {
+        email,
+        workosUserId: profile.id,
+        // SSO users come pre-verified by their IdP — Okta / AAD
+        // wouldn't return a profile with an unverified email.
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    const session = await this.issueSession(user.id);
+    return {
+      user: toAuthUser(user),
+      session,
+      isNewUser: !before,
+    };
+  }
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
