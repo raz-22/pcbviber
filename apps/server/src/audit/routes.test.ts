@@ -434,3 +434,260 @@ test("GET /audit on a non-member's orgId returns 403, not 404", async () => {
   });
   assert.equal(res.statusCode, 403);
 });
+
+// ─── csvEscape (pure unit) ──────────────────────────────────────────
+
+test("csvEscape: plain ASCII passes through unchanged", async () => {
+  const { csvEscape } = await import("./routes.js");
+  assert.equal(csvEscape("hello"), "hello");
+  assert.equal(csvEscape("alice@example.test"), "alice@example.test");
+});
+
+test("csvEscape: null and undefined produce empty cell", async () => {
+  const { csvEscape } = await import("./routes.js");
+  assert.equal(csvEscape(null), "");
+  assert.equal(csvEscape(undefined), "");
+});
+
+test("csvEscape: comma forces quoting", async () => {
+  const { csvEscape } = await import("./routes.js");
+  assert.equal(csvEscape("a,b"), '"a,b"');
+});
+
+test("csvEscape: embedded quote is doubled and the cell is wrapped", async () => {
+  const { csvEscape } = await import("./routes.js");
+  assert.equal(csvEscape('she said "hi"'), '"she said ""hi"""');
+});
+
+test("csvEscape: newline / CR force quoting (RFC 4180)", async () => {
+  const { csvEscape } = await import("./routes.js");
+  assert.equal(csvEscape("line1\nline2"), '"line1\nline2"');
+  assert.equal(csvEscape("a\rb"), '"a\rb"');
+});
+
+test("csvEscape: leading whitespace is preserved by quoting", async () => {
+  // Some CSV readers (Excel) strip leading spaces unless the cell
+  // is quoted. Pin both leading-space + leading-tab.
+  const { csvEscape } = await import("./routes.js");
+  assert.equal(csvEscape(" hello"), '" hello"');
+  assert.equal(csvEscape("\tvalue"), '"\tvalue"');
+});
+
+// ─── GET /audit/export.csv ──────────────────────────────────────────
+
+test("GET /audit/export.csv: returns CSV with header + data rows", async () => {
+  // Use a fresh org so the row count is deterministic.
+  const owner = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "export-deterministic@audit.example", password: STRONG },
+  });
+  const orgId = owner.json().org.id;
+  const ownerCookie = extractCookie(owner.headers["set-cookie"])!;
+  const ownerUserId = owner.json().user.id;
+
+  const { prisma } = await import("@altium-mcp/db");
+  // Drop the signup row so the body is one known row + the export's
+  // own self-audit row.
+  await prisma.auditLog.deleteMany({ where: { orgId } });
+  await prisma.auditLog.create({
+    data: {
+      orgId,
+      actorUserId: ownerUserId,
+      action: "test.export",
+      target: "deadbeef",
+      ip: "203.0.113.5",
+      userAgent: "test-suite/1.0",
+      metadata: '{"k":"v"}',
+      timestamp: new Date(2026, 0, 15, 12, 34, 56),
+    },
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${orgId}/audit/export.csv`,
+    headers: { cookie: ownerCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.match(
+    res.headers["content-type"] as string,
+    /text\/csv/i,
+    "content-type should be text/csv"
+  );
+  assert.match(
+    res.headers["content-disposition"] as string,
+    /attachment; filename="audit-.+\.csv"/,
+    "content-disposition should mark as attachment"
+  );
+
+  const lines = res.body.split("\r\n").filter((l) => l.length > 0);
+  // Header + the test.export row + the admin.audit.export row.
+  assert.equal(lines[0], "timestamp,action,target,actor,ip,userAgent,metadata");
+  assert.ok(
+    lines.some((l) => l.includes("test.export") && l.includes("deadbeef")),
+    "should contain the seeded row"
+  );
+});
+
+test("GET /audit/export.csv: ?action= filters the export", async () => {
+  const owner = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "export-filter@audit.example", password: STRONG },
+  });
+  const orgId = owner.json().org.id;
+  const ownerCookie = extractCookie(owner.headers["set-cookie"])!;
+
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.auditLog.deleteMany({ where: { orgId } });
+  await prisma.auditLog.create({ data: { orgId, action: "wanted" } });
+  await prisma.auditLog.create({ data: { orgId, action: "skip.me" } });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${orgId}/audit/export.csv?action=wanted`,
+    headers: { cookie: ownerCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  // Header + 1 data row. The self-audit row writes to admin.audit.export
+  // which doesn't match the filter, so the filtered export only has 1 data line.
+  const dataLines = res.body
+    .split("\r\n")
+    .filter((l) => l.length > 0)
+    .slice(1); // drop header
+  assert.equal(dataLines.length, 1);
+  assert.match(dataLines[0]!, /^[^,]+,wanted,/);
+});
+
+test("GET /audit/export.csv: writes admin.audit.export self-audit row", async () => {
+  // Each export of an admin's own org appears as one new row tagged
+  // admin.audit.export. The metadata records the row count + the
+  // active filter so a downstream auditor can tie an export back to
+  // a specific request.
+  const owner = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "export-self-audit@audit.example", password: STRONG },
+  });
+  const orgId = owner.json().org.id;
+  const ownerCookie = extractCookie(owner.headers["set-cookie"])!;
+
+  const { prisma } = await import("@altium-mcp/db");
+  const before = await prisma.auditLog.count({
+    where: { orgId, action: "admin.audit.export" },
+  });
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${orgId}/audit/export.csv`,
+    headers: { cookie: ownerCookie },
+  });
+  assert.equal(res.statusCode, 200);
+
+  const after = await prisma.auditLog.count({
+    where: { orgId, action: "admin.audit.export" },
+  });
+  assert.equal(
+    after,
+    before + 1,
+    "exactly one admin.audit.export row should have been written"
+  );
+
+  const row = await prisma.auditLog.findFirst({
+    where: { orgId, action: "admin.audit.export" },
+    orderBy: { timestamp: "desc" },
+  });
+  assert.ok(row);
+  assert.match(row!.metadata ?? "", /"format":"csv"/);
+  assert.match(row!.metadata ?? "", /"rowCount":/);
+});
+
+test("GET /audit/export.csv: 401 without a session", async () => {
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/audit/export.csv`,
+  });
+  assert.equal(res.statusCode, 401);
+});
+
+test("GET /audit/export.csv: 403 for member role (admin-only)", async () => {
+  const { prisma } = await import("@altium-mcp/db");
+  const dev = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "member-on-export@audit.example", password: STRONG },
+  });
+  const devUserId = dev.json().user.id;
+  const devCookie = extractCookie(dev.headers["set-cookie"])!;
+  await prisma.membership.create({
+    data: { orgId: aliceOrgId, userId: devUserId, role: "member" },
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/audit/export.csv`,
+    headers: { cookie: devCookie },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("GET /audit/export.csv: cross-tenant returns 403", async () => {
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/audit/export.csv`,
+    headers: { cookie: bobCookie },
+  });
+  assert.equal(res.statusCode, 403);
+});
+
+test("GET /audit/export.csv: CSV cells with commas / quotes round-trip safely", async () => {
+  const owner = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "csv-escape-roundtrip@audit.example", password: STRONG },
+  });
+  const orgId = owner.json().org.id;
+  const ownerCookie = extractCookie(owner.headers["set-cookie"])!;
+
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.auditLog.deleteMany({ where: { orgId } });
+  // userAgent contains a comma; metadata JSON contains both `,` and `"`.
+  // If the escape is correct, the row stays a single CSV record.
+  await prisma.auditLog.create({
+    data: {
+      orgId,
+      action: "tricky",
+      userAgent: "Mozilla/5.0 (X11; Linux), build=42",
+      metadata: JSON.stringify({ msg: 'he said "hi"' }),
+    },
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${orgId}/audit/export.csv?action=tricky`,
+    headers: { cookie: ownerCookie },
+  });
+  assert.equal(res.statusCode, 200);
+  // Find the row containing "tricky". It must be exactly one CSV
+  // line (commas-in-cells stayed inside their quoted cell).
+  const dataLines = res.body
+    .split("\r\n")
+    .filter((l) => l.length > 0)
+    .slice(1);
+  const trickyLines = dataLines.filter((l) => l.includes("tricky"));
+  assert.equal(
+    trickyLines.length,
+    1,
+    "the comma in userAgent must not split the cell into two rows"
+  );
+  // The userAgent (containing a comma) is present + wrapped in quotes
+  // exactly once: csvEscape's quoting wins over the embedded comma.
+  assert.match(
+    trickyLines[0]!,
+    /"Mozilla\/5\.0 \(X11; Linux\), build=42"/
+  );
+  // Embedded `"` inside the metadata JSON gets doubled per RFC 4180.
+  // The metadata is stored as JSON-serialized text containing `\"`,
+  // so the post-csvEscape form is `\""...\""` (the `\` is part of
+  // the original JSON; the `""` is csvEscape's quote-doubling).
+  assert.match(trickyLines[0]!, /\\""hi\\""/);
+});

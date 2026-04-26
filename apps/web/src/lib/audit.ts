@@ -10,6 +10,65 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api, ApiError, type AuditLogResponse, type AuditLogRow } from "./api";
 
+// ─── CSV export ─────────────────────────────────────────────────────
+
+/**
+ * Trigger a CSV download of the audit log for `orgId`. The browser
+ * receives a `text/csv` body with a `Content-Disposition: attachment`
+ * header; we still wrap the response in a Blob + anchor click so the
+ * download starts even when the browser would have rendered the CSV
+ * inline (Safari's default for `text/csv`).
+ *
+ * Throws an `ApiError` (or a plain `Error` for network issues) on
+ * failure — the caller maps it to a UI message via `auditErrorMessage`.
+ */
+export async function downloadAuditCsv(
+  orgId: string,
+  action?: string
+): Promise<void> {
+  const qs = new URLSearchParams();
+  if (action) qs.set("action", action);
+  const tail = qs.toString() ? `?${qs}` : "";
+  const url = `/api/orgs/${encodeURIComponent(orgId)}/audit/export.csv${tail}`;
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) {
+    // Try to mirror the ApiError shape — JSON body if present, else
+    // a synthesized message. The audit-error mapper covers both.
+    let code: string | null = null;
+    let detail: unknown = null;
+    try {
+      const body = (await res.json()) as { error?: string; detail?: unknown };
+      code = typeof body.error === "string" ? body.error : null;
+      detail = body.detail ?? null;
+    } catch {
+      /* non-JSON failure — keep code null */
+    }
+    throw new ApiError(
+      res.status,
+      code,
+      detail,
+      code ?? `${res.status} ${res.statusText}`.trim() ?? "export failed"
+    );
+  }
+  // Filename is provided by Content-Disposition; if browsers strip it,
+  // fall back to a sane default. We parse the header for the value.
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  const filenameMatch = /filename="([^"]+)"/i.exec(cd);
+  const filename = filenameMatch?.[1] ?? `audit-${orgId}.csv`;
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 // ─── Hook ───────────────────────────────────────────────────────────
 
 export function useAuditLog(
