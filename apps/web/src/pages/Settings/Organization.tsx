@@ -143,8 +143,8 @@ export function OrganizationSettingsPage() {
             Status:{" "}
             {enabled ? (
               <span className="text-emerald-700">
-                Enabled — {currentEntries.length} entry
-                {currentEntries.length === 1 ? "" : "ies"}
+                Enabled — {currentEntries.length}{" "}
+                {currentEntries.length === 1 ? "entry" : "entries"}
               </span>
             ) : (
               <span className="text-slate-500">Disabled (allow all IPs)</span>
