@@ -9,6 +9,10 @@
     ".": {
       "types": "./build/index.d.ts",
       "default": "./build/index.js"
+    },
+    "./test-utils": {
+      "types": "./build/test-utils.d.ts",
+      "default": "./build/test-utils.js"
     }
   },
   "scripts": {
@@ -25,8 +29,10 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
     "cross-env": "^7.0.3",
     "dotenv-cli": "^7.4.4",
+    "pg": "^8.20.0",
     "prisma": "^5.22.0",
     "typescript": "^5.7.0"
   }

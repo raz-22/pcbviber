@@ -1,0 +1,49 @@
+# Local-dev infrastructure. Bring up with `docker-compose up -d`.
+#
+# Two databases live on one server:
+#   - `altium_dev`  — used by `pnpm dev` (DATABASE_URL in .env)
+#   - `altium_test` — used by `pnpm -r test` via TEST_DATABASE_URL;
+#     each test file creates/drops a unique schema inside it.
+#
+# Volumes persist between restarts. Wipe with `docker-compose down -v`.
+#
+# Production runs Postgres separately (managed RDS / Neon / etc.) —
+# this compose file is dev-only.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: altium
+      POSTGRES_PASSWORD: altium_dev
+      # `altium_dev` is created by the entrypoint; `altium_test` is
+      # created by the init script below.
+      POSTGRES_DB: altium_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - altium_pg:/var/lib/postgresql/data
+      - ./infra/postgres-init.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U altium -d altium_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - altium_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  altium_pg:
+  altium_redis:

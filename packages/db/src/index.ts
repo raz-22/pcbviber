@@ -1,9 +1,18 @@
 /**
  * Database client for the Altium-MCP SaaS.
  *
- * Exports a singleton PrismaClient plus the encryption helpers used to
- * protect tenant-scoped credentials at rest. See package README for
- * setup (DATABASE_URL, CREDENTIAL_ENCRYPTION_KEY).
+ * Exports a lazy singleton PrismaClient plus the encryption helpers
+ * used to protect tenant-scoped credentials at rest. See package
+ * README for setup (DATABASE_URL, CREDENTIAL_ENCRYPTION_KEY).
+ *
+ * Lazy construction: PrismaClient resolves `env("DATABASE_URL")`
+ * at construction time. If we built the client at module-import
+ * time, every test file that statically imports something from this
+ * package (directly or transitively) would lock in whatever
+ * DATABASE_URL was at that exact moment — usually unset. We hide
+ * the singleton behind a Proxy so the real client is constructed
+ * on the first property access, after `setupTestDatabase()` /
+ * dotenv / etc. have populated the env.
  */
 
 import { PrismaClient } from "@prisma/client";
@@ -13,11 +22,6 @@ declare global {
   var __prismaClient__: PrismaClient | undefined;
 }
 
-/**
- * A single PrismaClient per Node process. In dev with tsx-watch / tsc
- * --watch, module reloads would otherwise leak connections; the global
- * cache bounds that.
- */
 function pickLogLevels(): ("query" | "info" | "warn" | "error")[] {
   // Dev surfaces queries so slow paths are obvious; prod and test stay
   // quiet (prod avoids PII in logs; test output stays readable).
@@ -30,12 +34,29 @@ function pickLogLevels(): ("query" | "info" | "warn" | "error")[] {
   }
 }
 
-export const prisma: PrismaClient =
-  globalThis.__prismaClient__ ?? new PrismaClient({ log: pickLogLevels() });
-
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__prismaClient__ = prisma;
+function makeClient(): PrismaClient {
+  // A single PrismaClient per Node process. In dev with tsx-watch /
+  // tsc --watch, module reloads would otherwise leak connections;
+  // the global cache bounds that.
+  if (!globalThis.__prismaClient__) {
+    globalThis.__prismaClient__ = new PrismaClient({ log: pickLogLevels() });
+  }
+  return globalThis.__prismaClient__;
 }
+
+let cachedClient: PrismaClient | null = null;
+
+export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    if (!cachedClient) cachedClient = makeClient();
+    const value = Reflect.get(cachedClient, prop, cachedClient);
+    // Bind methods so `prisma.$disconnect()` etc. don't lose `this`.
+    // Non-function properties (model accessors like `prisma.user`)
+    // pass through unchanged — Prisma's model-level proxy handles
+    // its own binding.
+    return typeof value === "function" ? value.bind(cachedClient) : value;
+  },
+}) as PrismaClient;
 
 export * from "@prisma/client";
 export * from "./encryption.js";

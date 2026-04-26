@@ -1,14 +1,14 @@
 // Altium-MCP tenant & billing schema.
 //
-// Per the internal design spec §2.4. The model is deliberately kept
-// narrow for Sprint 1 — only the tables Sprint 1 through Sprint 4 need.
-// Row-Level Security notes are in the package README; RLS is enabled
-// per-table via a migration hook in Sprint 2.
+// Postgres 15+. Dev runs against either docker-compose's `postgres`
+// service (root docker-compose.yml) or a remote dev DB pointed at
+// via DATABASE_URL. Tests use packages/db/src/test-utils.ts to spin
+// up a per-file ephemeral schema against TEST_DATABASE_URL.
 //
-// Dev default is SQLite so the package builds without any external
-// service. Production points DATABASE_URL at Postgres 16 and re-runs
-// `prisma migrate deploy` — no schema changes required (SQLite-specific
-// types are avoided on purpose).
+// Row-Level Security policies + per-request `app.current_org_id`
+// session-var wiring land in PR 6.6b — this PR is the datasource
+// cutover only. Application-layer requireOrgRole is still the
+// tenant gate.
 
 generator client {
   provider      = "prisma-client-js"
@@ -16,7 +16,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

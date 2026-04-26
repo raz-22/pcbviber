@@ -1,0 +1,89 @@
+# Hermetic test suite for every PR + push to main.
+#
+# Runs `pnpm -r test` against a Postgres 16 service container. Each
+# test file creates / drops its own schema inside the `altium_test`
+# database via packages/db/src/test-utils.ts; running them in parallel
+# is safe because schemas are isolated.
+#
+# Why a service container instead of an external DB:
+#   - Hermetic. No shared dev DB to clean up between runs.
+#   - Free. GitHub Actions service containers cost no compute beyond
+#     the runner.
+#   - Matches local docker-compose.yml semantics, so a green CI run
+#     means `pnpm -r test` will also pass on a developer's machine
+#     after `docker-compose up -d`.
+
+name: tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pnpm -r test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: altium
+          POSTGRES_PASSWORD: altium_test
+          POSTGRES_DB: altium_test
+        ports:
+          - 5432:5432
+        # Wait for Postgres to accept connections before the steps
+        # below try to connect. Without this, prisma migrate deploy
+        # races the container startup.
+        options: >-
+          --health-cmd "pg_isready -U altium -d altium_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Tests read TEST_DATABASE_URL; migrations during build read
+      # DATABASE_URL. Both point at the same service container, but
+      # the test DB is treated as scratch space — no schema state
+      # survives between test files.
+      TEST_DATABASE_URL: postgresql://altium:altium_test@127.0.0.1:5432/altium_test
+      DATABASE_URL: postgresql://altium:altium_test@127.0.0.1:5432/altium_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node + pnpm cache
+        uses: actions/setup-node@v4
+        with:
+          # Node 22 — earlier versions don't support glob patterns
+          # passed to `node --test "build/**/*.test.js"`. Bumping
+          # to 22 is the cleanest fix; the package's engines field
+          # advertises >=20 but the test scripts effectively need 22+.
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        # Builds the Prisma client + every workspace's compiled
+        # output. Tests run from `build/` (per package.json scripts),
+        # so this is a hard prerequisite.
+        run: pnpm -r --workspace-concurrency=1 build
+
+      - name: Run tests
+        run: pnpm -r --workspace-concurrency=1 test
