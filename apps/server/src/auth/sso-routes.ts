@@ -11,9 +11,10 @@
  *
  * Both routes are env-gated: when WORKOS_API_KEY is unset (LocalAuth
  * is the active provider), they 503 with `sso_not_configured`. The
- * SPA login button hides the SSO option in that mode by reading the
- * `/api/health` response — which is a follow-up; for now the button
- * surfaces a clean error.
+ * SPA's "Sign in with SSO" button is always visible regardless of
+ * provider; clicking it in LocalAuth-mode surfaces the 503 as a
+ * clean error message. A future PR could read the active provider
+ * via `/api/health` and hide the button preemptively.
  *
  * Per-org enablement: an org is SSO-eligible iff
  * `Organization.workosConnectionId` is set. Today operators set this
