@@ -100,6 +100,16 @@ test("auditErrorMessage: not_found → 'no longer exists'", () => {
   assert.match(auditErrorMessage(err), /no longer exists/i);
 });
 
+test("auditErrorMessage: audit_export_too_large → narrow-the-filter hint", () => {
+  // PR 7.1: the export route hard-caps inline streams at
+  // AUDIT_EXPORT_MAX_ROWS and returns 413 above that. Operators
+  // should see actionable guidance, not the raw error code.
+  const err = new ApiError(413, "audit_export_too_large", null, "x");
+  const msg = auditErrorMessage(err);
+  assert.match(msg, /Too many rows/i);
+  assert.match(msg, /action filter/i);
+});
+
 test("auditErrorMessage: falls through to ApiError.message on unknown codes", () => {
   const err = new ApiError(500, "weird_code", null, "raw");
   assert.equal(auditErrorMessage(err), "raw");

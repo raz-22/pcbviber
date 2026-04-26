@@ -72,6 +72,26 @@ export function csvEscape(value: string | null | undefined): string {
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
+/**
+ * Hard cap on inline-streamed export size. A row averages ~300 bytes
+ * after CSV escape, so 10k rows ≈ 3 MB — comfortable for a single
+ * Fastify response without backpressure or worker memory pressure.
+ * Beyond this we refuse with 413 and point operators at the action
+ * filter; the eventual S3-signed-URL export (deferred) handles the
+ * unbounded case.
+ *
+ * Tunable via `AUDIT_EXPORT_MAX_ROWS` for ops who genuinely want a
+ * larger inline cap, plus the integration tests use a small value
+ * to make the over-cap path cheap to seed.
+ */
+function maxExportRows(): number {
+  const raw = process.env.AUDIT_EXPORT_MAX_ROWS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return 10_000;
+}
 
 interface CursorParts {
   ms: number;
@@ -132,6 +152,14 @@ export async function registerAuditRoutes(
   // MUST be registered BEFORE the parameterized "/audit" GET below.
   // Fastify matches static segments first regardless of registration
   // order, but explicit ordering keeps the routing intent obvious.
+  //
+  // CSRF: this is a GET, so it doesn't go through csrfOrPassthrough.
+  // A cross-origin attacker COULD trick a logged-in admin's browser
+  // into firing this GET (e.g. via <img src=...>), which would write
+  // one `admin.audit.export` row — annoying but not data-exfiltration:
+  // the same-origin policy blocks the attacker page from reading the
+  // CSV body. The downside (a spurious audit row) is below the bar
+  // for adding non-standard CSRF on a GET.
   app.get(
     "/api/orgs/:orgId/audit/export.csv",
     { preHandler: [requireAuth, requireAdmin] },
@@ -146,18 +174,40 @@ export async function registerAuditRoutes(
 
       // Stream the CSV inline. We collect into a string here rather
       // than truly streaming with reply.raw — Fastify's reply API +
-      // this scale (~100k rows max) keeps the implementation simple.
-      // When prod scale forces it, swap to reply.raw + a Postgres
-      // cursor.
+      // this scale (≤ MAX_EXPORT_ROWS) keeps the implementation
+      // simple. When prod scale forces unbounded exports, swap to
+      // reply.raw + a Postgres cursor (or the eventual S3-signed-URL
+      // path).
+      //
+      // We `take: cap + 1` so we can detect over-cap requests
+      // without paying for the entire result set.
+      const cap = maxExportRows();
       const rows = await withTenantTx(ctx.org.id, async (tx) => {
         return await tx.auditLog.findMany({
           where,
           orderBy: [{ timestamp: "desc" }, { id: "desc" }],
+          take: cap + 1,
           include: {
             actor: { select: { email: true } },
           },
         });
       });
+
+      if (rows.length > cap) {
+        // 413 Payload Too Large is the closest semantic match for
+        // "your filter would dump more rows than this endpoint can
+        // safely stream." The SPA's auditErrorMessage maps the code
+        // through; operators see "narrow your filter or use the
+        // signed-URL export."
+        reply.code(413);
+        return {
+          error: "audit_export_too_large",
+          detail: {
+            maxRows: cap,
+            hint: "Use ?action=<verb> to narrow the export.",
+          },
+        };
+      }
 
       const lines: string[] = [];
       lines.push(

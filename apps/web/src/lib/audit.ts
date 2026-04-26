@@ -162,6 +162,11 @@ export function auditErrorMessage(err: unknown): string {
         return "This organization no longer exists.";
       case "not_authenticated":
         return "Your session has expired. Please log in again.";
+      case "audit_export_too_large":
+        return (
+          "Too many rows for an inline export. Use the action filter " +
+          "to narrow the result, or contact support for a full dump."
+        );
       default:
         return err.message || "Could not load audit log. Please try again.";
     }

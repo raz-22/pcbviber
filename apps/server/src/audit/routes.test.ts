@@ -639,6 +639,56 @@ test("GET /audit/export.csv: cross-tenant returns 403", async () => {
   assert.equal(res.statusCode, 403);
 });
 
+test("GET /audit/export.csv: refuses with 413 when over the row cap", async () => {
+  // Lower the cap via env so seeding stays cheap. The route reads
+  // AUDIT_EXPORT_MAX_ROWS on every request, so this works without
+  // restarting the server.
+  const owner = await app.inject({
+    method: "POST",
+    url: "/api/auth/signup",
+    payload: { email: "export-cap@audit.example", password: STRONG },
+  });
+  const orgId = owner.json().org.id;
+  const ownerCookie = extractCookie(owner.headers["set-cookie"])!;
+
+  const { prisma } = await import("@altium-mcp/db");
+  await prisma.auditLog.deleteMany({ where: { orgId } });
+  // Seed cap+1 rows. With the override at 5, we insert 6 — fast.
+  const seedCount = 6;
+  await prisma.auditLog.createMany({
+    data: Array.from({ length: seedCount }, (_, i) => ({
+      orgId,
+      action: `cap.${i}`,
+    })),
+  });
+
+  process.env.AUDIT_EXPORT_MAX_ROWS = "5";
+  try {
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/orgs/${orgId}/audit/export.csv`,
+      headers: { cookie: ownerCookie },
+    });
+    assert.equal(res.statusCode, 413);
+    const body = res.json();
+    assert.equal(body.error, "audit_export_too_large");
+    assert.equal(body.detail.maxRows, 5);
+    assert.match(body.detail.hint, /action=/);
+  } finally {
+    delete process.env.AUDIT_EXPORT_MAX_ROWS;
+  }
+
+  // And: with the cap removed, the same request succeeds. Pin the
+  // recovery path so a future regression that strands the env var
+  // shows up here.
+  const ok = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${orgId}/audit/export.csv`,
+    headers: { cookie: ownerCookie },
+  });
+  assert.equal(ok.statusCode, 200);
+});
+
 test("GET /audit/export.csv: CSV cells with commas / quotes round-trip safely", async () => {
   const owner = await app.inject({
     method: "POST",
