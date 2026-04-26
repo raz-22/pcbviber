@@ -1,29 +1,37 @@
 /**
- * Audit-log read API.
+ * Audit-log read + export API.
  *
  *   GET /api/orgs/:orgId/audit?cursor=&limit=&action=
+ *   GET /api/orgs/:orgId/audit/export.csv?action=
  *
  * Reads from the AuditLog table that's already populated by signup,
  * login, workspace.*, member.*, api_key.*, and billing.* mutations
- * across the rest of the server. This PR adds *only* the read path;
- * the write surface was built incrementally in prior sprints.
+ * across the rest of the server.
  *
  * Authorization: owner | admin. Audit content includes IP addresses,
  * other members' login times, and similar moderately-sensitive
  * org-level operational data — gating to admins matches how Members
  * and Billing pages restrict the same audience.
  *
- * Pagination: cursor over `(timestamp DESC, id DESC)`. Plain `id`
- * isn't safe — cuids are roughly time-ordered but collisions across
- * processes can produce ties or out-of-order ids, so we pin both
- * fields. The cursor is base64(`${ms}.${id}`); invalid cursors are
- * ignored (treated as "no cursor") rather than 400'd, since the SPA
- * stores cursors in URL state and a stale tab shouldn't surface as
- * a hard error.
+ * Pagination (read): cursor over `(timestamp DESC, id DESC)`. Plain
+ * `id` isn't safe — cuids are roughly time-ordered but collisions
+ * across processes can produce ties or out-of-order ids, so we pin
+ * both fields. The cursor is base64(`${ms}.${id}`); invalid cursors
+ * are ignored (treated as "no cursor") rather than 400'd, since the
+ * SPA stores cursors in URL state and a stale tab shouldn't surface
+ * as a hard error.
  *
- * No audit row is written for the act of reading audits — see Usage
+ * Export: streams CSV inline. No object storage / signed URL in
+ * this iteration — handles up to ~100k rows comfortably. The
+ * export route writes its own `admin.audit.export` audit row so
+ * exports are themselves auditable. S3-backed signed URLs (per
+ * spec §3.5 "30s exit criterion") land in a follow-up PR when
+ * production scale needs them.
+ *
+ * No audit row is written for the act of READING audits — see Usage
  * routes for the same rationale; informational reads would flood
- * the table.
+ * the table. Exports are different: they ship data off-system, so
+ * they DO get audited.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -31,9 +39,59 @@ import type { AuthProvider } from "@altium-mcp/auth";
 import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { writeAuditLog, clientIp } from "../auth/audit.js";
+
+// ─── CSV escape ─────────────────────────────────────────────────────
+
+/**
+ * Escape one cell for RFC 4180 CSV. Wraps in `"..."` and doubles
+ * embedded quotes when the value contains `,`, `"`, `\n`, `\r`, or
+ * leading whitespace. Plain values pass through unchanged.
+ *
+ * Exported so the unit tests can pin behavior without spinning up
+ * the route.
+ */
+export function csvEscape(value: string | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  if (s === "") return "";
+  // Force-quote when the value would otherwise be ambiguous, OR when
+  // a leading space/tab would get stripped by some CSV readers.
+  if (
+    s.includes(",") ||
+    s.includes('"') ||
+    s.includes("\n") ||
+    s.includes("\r") ||
+    s.startsWith(" ") ||
+    s.startsWith("\t")
+  ) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
+/**
+ * Hard cap on inline-streamed export size. A row averages ~300 bytes
+ * after CSV escape, so 10k rows ≈ 3 MB — comfortable for a single
+ * Fastify response without backpressure or worker memory pressure.
+ * Beyond this we refuse with 413 and point operators at the action
+ * filter; the eventual S3-signed-URL export (deferred) handles the
+ * unbounded case.
+ *
+ * Tunable via `AUDIT_EXPORT_MAX_ROWS` for ops who genuinely want a
+ * larger inline cap, plus the integration tests use a small value
+ * to make the over-cap path cheap to seed.
+ */
+function maxExportRows(): number {
+  const raw = process.env.AUDIT_EXPORT_MAX_ROWS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return 10_000;
+}
 
 interface CursorParts {
   ms: number;
@@ -89,6 +147,125 @@ export async function registerAuditRoutes(
 ): Promise<void> {
   const requireAuth = makeRequireAuth(auth);
   const requireAdmin = makeRequireOrgRole(["owner", "admin"]);
+
+  // ── GET /api/orgs/:orgId/audit/export.csv ────────────────────────
+  // MUST be registered BEFORE the parameterized "/audit" GET below.
+  // Fastify matches static segments first regardless of registration
+  // order, but explicit ordering keeps the routing intent obvious.
+  //
+  // CSRF: this is a GET, so it doesn't go through csrfOrPassthrough.
+  // A cross-origin attacker COULD trick a logged-in admin's browser
+  // into firing this GET (e.g. via <img src=...>), which would write
+  // one `admin.audit.export` row — annoying but not data-exfiltration:
+  // the same-origin policy blocks the attacker page from reading the
+  // CSV body. The downside (a spurious audit row) is below the bar
+  // for adding non-standard CSRF on a GET.
+  app.get(
+    "/api/orgs/:orgId/audit/export.csv",
+    { preHandler: [requireAuth, requireAdmin] },
+    async (req, reply) => {
+      const ctx = req.ctx!;
+      const query = req.query as { action?: string };
+
+      const where: Record<string, unknown> = { orgId: ctx.org.id };
+      if (typeof query.action === "string" && query.action.length > 0) {
+        where.action = query.action;
+      }
+
+      // Stream the CSV inline. We collect into a string here rather
+      // than truly streaming with reply.raw — Fastify's reply API +
+      // this scale (≤ MAX_EXPORT_ROWS) keeps the implementation
+      // simple. When prod scale forces unbounded exports, swap to
+      // reply.raw + a Postgres cursor (or the eventual S3-signed-URL
+      // path).
+      //
+      // We `take: cap + 1` so we can detect over-cap requests
+      // without paying for the entire result set.
+      const cap = maxExportRows();
+      const rows = await withTenantTx(ctx.org.id, async (tx) => {
+        return await tx.auditLog.findMany({
+          where,
+          orderBy: [{ timestamp: "desc" }, { id: "desc" }],
+          take: cap + 1,
+          include: {
+            actor: { select: { email: true } },
+          },
+        });
+      });
+
+      if (rows.length > cap) {
+        // 413 Payload Too Large is the closest semantic match for
+        // "your filter would dump more rows than this endpoint can
+        // safely stream." The SPA's auditErrorMessage maps the code
+        // through; operators see "narrow your filter or use the
+        // signed-URL export."
+        reply.code(413);
+        return {
+          error: "audit_export_too_large",
+          detail: {
+            maxRows: cap,
+            hint: "Use ?action=<verb> to narrow the export.",
+          },
+        };
+      }
+
+      const lines: string[] = [];
+      lines.push(
+        ["timestamp", "action", "target", "actor", "ip", "userAgent", "metadata"]
+          .join(",")
+      );
+      for (const r of rows) {
+        lines.push(
+          [
+            csvEscape(r.timestamp.toISOString()),
+            csvEscape(r.action),
+            csvEscape(r.target),
+            csvEscape(r.actor?.email ?? ""),
+            csvEscape(r.ip),
+            csvEscape(r.userAgent),
+            // Metadata stays as the raw stored JSON string (the read
+            // route parses it for the table view; the export keeps
+            // it raw so a downstream consumer can re-parse without
+            // ambiguity).
+            csvEscape(r.metadata),
+          ].join(",")
+        );
+      }
+      // RFC 4180 line terminator — `\r\n` for max interop with Excel.
+      const body = lines.join("\r\n") + "\r\n";
+
+      // Audit the export itself. Admins running ad-hoc exports leave
+      // a trail; metadata records the row count + the active filter
+      // so a later auditor can correlate exports with downstream
+      // incidents. Fire-and-forget — a failed audit write must not
+      // block the export response.
+      await writeAuditLog({
+        orgId: ctx.org.id,
+        actorUserId: ctx.user.id,
+        action: "admin.audit.export",
+        ip: clientIp(req),
+        userAgent: req.headers["user-agent"],
+        metadata: {
+          rowCount: rows.length,
+          action: query.action ?? null,
+          format: "csv",
+        },
+      });
+
+      // Filename: audit-<orgSlug>-<YYYY-MM-DD>.csv. Slugs are stable
+      // and shorter than ids; the date stamps the export moment in
+      // the user's view, not the data's date range.
+      const today = new Date().toISOString().slice(0, 10);
+      const filename = `audit-${ctx.org.slug}-${today}.csv`;
+
+      reply
+        .header("Content-Type", "text/csv; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`)
+        // Surface to caches (and the SPA): every export is unique.
+        .header("Cache-Control", "private, no-store");
+      return body;
+    }
+  );
 
   app.get(
     "/api/orgs/:orgId/audit",

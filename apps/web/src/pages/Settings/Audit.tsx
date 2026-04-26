@@ -15,6 +15,7 @@ import { useAuth } from "../../lib/auth";
 import {
   useAuditLog,
   auditErrorMessage,
+  downloadAuditCsv,
   formatActor,
   formatAuditAction,
   formatAuditTimestamp,
@@ -45,6 +46,8 @@ export function AuditSettingsPage() {
   const { me } = useAuth();
   const orgId = me?.orgs[0]?.id;
   const [actionFilter, setActionFilter] = useState<string>("");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const auditQ = useAuditLog(orgId, {
     action: actionFilter || undefined,
     pageSize: 50,
@@ -54,29 +57,57 @@ export function AuditSettingsPage() {
     return <p className="text-sm text-slate-500">Loading…</p>;
   }
 
+  async function onExport() {
+    if (!orgId) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadAuditCsv(orgId, actionFilter || undefined);
+    } catch (err) {
+      setExportError(auditErrorMessage(err));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   // ── Header (always renders, so the filter survives an error state) ──
   const header = (
-    <header className="flex items-center justify-between">
+    <header className="flex items-center justify-between gap-4">
       <div>
         <h2 className="text-lg font-semibold">Audit log</h2>
         <p className="mt-1 text-sm text-slate-600">
           Security-relevant events for this organization. Newest first.
         </p>
       </div>
-      <label className="flex items-center gap-2 text-sm">
-        <span className="text-slate-600">Filter:</span>
-        <select
-          value={actionFilter}
-          onChange={(e) => setActionFilter(e.target.value)}
-          className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-slate-600">Filter:</span>
+          <select
+            value={actionFilter}
+            onChange={(e) => setActionFilter(e.target.value)}
+            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+          >
+            {ACTION_FILTERS.map((f) => (
+              <option key={f.value || "_all"} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => void onExport()}
+          disabled={exporting}
+          className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          title={
+            actionFilter
+              ? `Export rows matching ${actionFilter} as CSV`
+              : "Export all rows as CSV"
+          }
         >
-          {ACTION_FILTERS.map((f) => (
-            <option key={f.value || "_all"} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-      </label>
+          {exporting ? "Exporting…" : "Export CSV"}
+        </button>
+      </div>
     </header>
   );
 
@@ -112,6 +143,10 @@ export function AuditSettingsPage() {
   return (
     <div className="space-y-6">
       {header}
+
+      {exportError && (
+        <p className="text-sm text-rose-700">{exportError}</p>
+      )}
 
       {rows.length === 0 ? (
         <p className="text-sm text-slate-500">
