@@ -333,6 +333,42 @@ test("members promote: rejects no-op (same role)", async () => {
   assert.match(output, /no change/);
 });
 
+test("members promote: refuses to demote the last owner", async () => {
+  // bob's org has exactly one owner (bob). Promoting carol to owner
+  // earlier added a second owner — so for this test we use a fresh
+  // single-owner org. Build it inline.
+  const orgId = "o_solo";
+  const orgSlug = "solo-co";
+  await prisma.organization.create({
+    data: { id: orgId, name: "Solo", slug: orgSlug },
+  });
+  await prisma.user.create({
+    data: { id: "u_solo", email: "solo@admin-cli.test" },
+  });
+  await prisma.membership.create({
+    data: { orgId, userId: "u_solo", role: "owner" },
+  });
+
+  const { output, exitCode } = await runCli([
+    "members",
+    "promote",
+    "--org",
+    orgSlug,
+    "--email",
+    "solo@admin-cli.test",
+    "--role",
+    "admin",
+  ]);
+  assert.notEqual(exitCode, 0);
+  assert.match(output, /last owner/);
+
+  // Confirm the role wasn't changed despite the failed call.
+  const m = await prisma.membership.findUnique({
+    where: { orgId_userId: { orgId, userId: "u_solo" } },
+  });
+  assert.equal(m?.role, "owner");
+});
+
 // ─── missing required flag ──────────────────────────────────────────
 
 test("members add: missing --email exits non-zero with usage hint", async () => {

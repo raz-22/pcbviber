@@ -167,6 +167,24 @@ export async function promoteMember(
     );
   }
 
+  // Refuse to demote the last remaining owner — same guard the HTTP
+  // /members PATCH route uses (cannot_demote_last_owner). The CLI is
+  // an operator tool, not a deliberately-foot-gunny tool. Use case
+  // for this CLI is *promoting* into owner; demoting the last owner
+  // would silently leave the org without an admin who can manage
+  // billing or invite teammates.
+  if (currentRole === "owner" && newRole !== "owner") {
+    const owners = await prisma.membership.count({
+      where: { orgId: org.id, role: "owner" },
+    });
+    if (owners <= 1) {
+      throw new Error(
+        `refusing to demote last owner of ${org.slug}: ` +
+          `add another owner first via 'members add' or 'members promote'`
+      );
+    }
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.membership.update({
       where: { orgId_userId: { orgId: org.id, userId: user.id } },
