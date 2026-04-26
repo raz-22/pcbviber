@@ -27,6 +27,16 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000; // 15 min
 
 interface CacheEntry {
   service: NexarService;
+  /**
+   * orgId the cached entry was loaded for. Validated on hit so a
+   * programmer-error call site that passes the wrong orgId can't
+   * silently get a service for a workspace that belongs to another
+   * tenant. The route layer's `requireWorkspace` middleware would
+   * normally catch this earlier (RLS hides cross-tenant workspaces
+   * during its lookup), but we don't rely on call-site discipline
+   * for a cache that survives 15 minutes.
+   */
+  orgId: string;
   expiresAt: number;
 }
 
@@ -73,12 +83,20 @@ export class NexarServiceFactory {
     orgId: string
   ): Promise<NexarService> {
     const cached = this.cache.get(workspaceId);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (
+      cached &&
+      cached.expiresAt > Date.now() &&
+      cached.orgId === orgId
+    ) {
       // LRU bump: re-insert to push to end of iteration order.
       this.cache.delete(workspaceId);
       this.cache.set(workspaceId, cached);
       return cached.service;
     }
+    // Cache miss OR orgId mismatch — fall through to a fresh read.
+    // A mismatch means a buggy caller passed the wrong orgId; the
+    // tenant-bounded read below will return null + we'll throw
+    // "not found", same as if the workspace didn't exist.
 
     const ws = await withTenantTx(orgId, (tx) =>
       tx.workspace.findUnique({
@@ -117,7 +135,7 @@ export class NexarServiceFactory {
       nexarClientSecret: clientSecret,
     });
 
-    this.put(workspaceId, service);
+    this.put(workspaceId, orgId, service);
     return service;
   }
 
@@ -135,7 +153,7 @@ export class NexarServiceFactory {
     this.cache.clear();
   }
 
-  private put(workspaceId: string, service: NexarService): void {
+  private put(workspaceId: string, orgId: string, service: NexarService): void {
     if (this.cache.size >= this.maxEntries) {
       // Evict the oldest entry (insertion order = age, oldest first).
       const oldest = this.cache.keys().next().value;
@@ -143,6 +161,7 @@ export class NexarServiceFactory {
     }
     this.cache.set(workspaceId, {
       service,
+      orgId,
       expiresAt: Date.now() + this.ttlMs,
     });
   }

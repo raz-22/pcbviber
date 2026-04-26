@@ -308,3 +308,43 @@ test("forWorkspace surfaces a clear error when ciphertext is corrupt", async () 
   const factory = new NexarServiceFactory();
   await assert.rejects(() => factory.forWorkspace(ws.id, org.id), /failed to decrypt/i);
 });
+
+test("forWorkspace cache: hit only when orgId matches the cached entry", async () => {
+  // Defense in depth on the orgId param added in PR 7.6. The
+  // primary tenant gate is `requireWorkspace` (RLS-bounded read),
+  // so a buggy direct caller is the only way to reach forWorkspace
+  // with a mismatched orgId. The cache must NOT silently return a
+  // service for the wrong tenant.
+  const orgA = await prisma.organization.create({
+    data: { name: "A", slug: "cache-tenant-a" },
+  });
+  const orgB = await prisma.organization.create({
+    data: { name: "B", slug: "cache-tenant-b" },
+  });
+  const ws = await prisma.workspace.create({
+    data: {
+      orgId: orgA.id,
+      nexarClientIdEnc: encryptCredential("c"),
+      nexarClientSecretEnc: encryptCredential("s"),
+    },
+  });
+
+  const factory = new NexarServiceFactory();
+  // Prime cache for orgA.
+  const a = await factory.forWorkspace(ws.id, orgA.id);
+  assert.equal(factory.__sizeForTests(), 1);
+
+  // orgB asking for the same workspaceId — must NOT return the
+  // cached service. The tenant-bounded read returns null (RLS
+  // hides ws since ws.orgId === orgA.id), so we throw "not found".
+  await assert.rejects(
+    () => factory.forWorkspace(ws.id, orgB.id),
+    /not found/i,
+    "cache hit for wrong orgId must fall through to RLS-filtered read"
+  );
+
+  // orgA still gets the original cached service (the failed B
+  // lookup didn't poison the entry).
+  const a2 = await factory.forWorkspace(ws.id, orgA.id);
+  assert.equal(a, a2, "orgA's cache hit should still return the original service");
+});
