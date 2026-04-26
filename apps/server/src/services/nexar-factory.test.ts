@@ -110,10 +110,10 @@ test("forWorkspace decrypts stored creds and instantiates NexarService", async (
   });
 
   const factory = new NexarServiceFactory();
-  const service1 = await factory.forWorkspace(ws.id);
+  const service1 = await factory.forWorkspace(ws.id, org.id);
   assert.ok(service1);
   // Cached on second call — same instance returned.
-  const service2 = await factory.forWorkspace(ws.id);
+  const service2 = await factory.forWorkspace(ws.id, org.id);
   assert.equal(service1, service2);
 });
 
@@ -127,15 +127,18 @@ test("forWorkspace throws when the workspace has no creds", async () => {
 
   const factory = new NexarServiceFactory();
   await assert.rejects(
-    () => factory.forWorkspace(ws.id),
+    () => factory.forWorkspace(ws.id, org.id),
     /no Nexar credentials/i
   );
 });
 
 test("forWorkspace throws when the workspace doesn't exist", async () => {
   const factory = new NexarServiceFactory();
+  // No org is set up in this test — the orgId arg is just the
+  // tenant scope for the read; with a bogus workspaceId there are
+  // no rows that could match either way.
   await assert.rejects(
-    () => factory.forWorkspace("nonexistent-id"),
+    () => factory.forWorkspace("nonexistent-id", "org_placeholder"),
     /not found/i
   );
 });
@@ -153,9 +156,9 @@ test("invalidate(workspaceId) drops the cached service", async () => {
   });
 
   const factory = new NexarServiceFactory();
-  const a = await factory.forWorkspace(ws.id);
+  const a = await factory.forWorkspace(ws.id, org.id);
   factory.invalidate(ws.id);
-  const b = await factory.forWorkspace(ws.id);
+  const b = await factory.forWorkspace(ws.id, org.id);
   // Cache was cleared, so a fresh NexarService was constructed.
   assert.notEqual(a, b);
 });
@@ -187,14 +190,14 @@ test("LRU eviction kicks in when maxEntries is exceeded", async () => {
     },
   });
 
-  await factory.forWorkspace(ws1.id);
-  await factory.forWorkspace(ws2.id);
+  await factory.forWorkspace(ws1.id, org.id);
+  await factory.forWorkspace(ws2.id, org.id);
   assert.equal(factory.__sizeForTests(), 2);
-  await factory.forWorkspace(ws3.id);
+  await factory.forWorkspace(ws3.id, org.id);
   // ws1 evicted (oldest); ws2 + ws3 retained.
   assert.equal(factory.__sizeForTests(), 2);
   // Re-loading ws1 constructs a fresh service.
-  const reloaded = await factory.forWorkspace(ws1.id);
+  const reloaded = await factory.forWorkspace(ws1.id, org.id);
   assert.ok(reloaded);
 });
 
@@ -210,9 +213,9 @@ test("expired entries are reloaded on next forWorkspace call", async () => {
       nexarClientSecretEnc: encryptCredential("s"),
     },
   });
-  const a = await factory.forWorkspace(ws.id);
+  const a = await factory.forWorkspace(ws.id, org.id);
   await new Promise((r) => setTimeout(r, 25));
-  const b = await factory.forWorkspace(ws.id);
+  const b = await factory.forWorkspace(ws.id, org.id);
   assert.notEqual(a, b, "expired cache entry should not be reused");
 });
 
@@ -237,8 +240,8 @@ test("invalidateAll() clears every cached service in one call", async () => {
       nexarClientSecretEnc: encryptCredential("s2"),
     },
   });
-  await factory.forWorkspace(w1.id);
-  await factory.forWorkspace(w2.id);
+  await factory.forWorkspace(w1.id, org.id);
+  await factory.forWorkspace(w2.id, org.id);
   assert.equal(factory.__sizeForTests(), 2);
 
   factory.invalidateAll();
@@ -276,15 +279,15 @@ test("LRU bumps recently-used entries so the OLDEST gets evicted", async () => {
   });
 
   // Seed: cache holds [a, b] (a oldest).
-  const aSvc1 = await factory.forWorkspace(a.id);
-  await factory.forWorkspace(b.id);
+  const aSvc1 = await factory.forWorkspace(a.id, org.id);
+  await factory.forWorkspace(b.id, org.id);
   // Touch a → cache should now hold [b, a] (a most-recent).
-  const aSvc2 = await factory.forWorkspace(a.id);
+  const aSvc2 = await factory.forWorkspace(a.id, org.id);
   assert.equal(aSvc1, aSvc2, "touching a should hit the cache, not reload");
   // Load c → b is now oldest and should be evicted, NOT a.
-  await factory.forWorkspace(c.id);
+  await factory.forWorkspace(c.id, org.id);
   // Reloading a still hits the cache (proves it wasn't the one evicted).
-  const aSvc3 = await factory.forWorkspace(a.id);
+  const aSvc3 = await factory.forWorkspace(a.id, org.id);
   assert.equal(aSvc1, aSvc3, "a was bumped on touch, must survive eviction");
 });
 
@@ -303,5 +306,45 @@ test("forWorkspace surfaces a clear error when ciphertext is corrupt", async () 
   });
 
   const factory = new NexarServiceFactory();
-  await assert.rejects(() => factory.forWorkspace(ws.id), /failed to decrypt/i);
+  await assert.rejects(() => factory.forWorkspace(ws.id, org.id), /failed to decrypt/i);
+});
+
+test("forWorkspace cache: hit only when orgId matches the cached entry", async () => {
+  // Defense in depth on the orgId param added in PR 7.6. The
+  // primary tenant gate is `requireWorkspace` (RLS-bounded read),
+  // so a buggy direct caller is the only way to reach forWorkspace
+  // with a mismatched orgId. The cache must NOT silently return a
+  // service for the wrong tenant.
+  const orgA = await prisma.organization.create({
+    data: { name: "A", slug: "cache-tenant-a" },
+  });
+  const orgB = await prisma.organization.create({
+    data: { name: "B", slug: "cache-tenant-b" },
+  });
+  const ws = await prisma.workspace.create({
+    data: {
+      orgId: orgA.id,
+      nexarClientIdEnc: encryptCredential("c"),
+      nexarClientSecretEnc: encryptCredential("s"),
+    },
+  });
+
+  const factory = new NexarServiceFactory();
+  // Prime cache for orgA.
+  const a = await factory.forWorkspace(ws.id, orgA.id);
+  assert.equal(factory.__sizeForTests(), 1);
+
+  // orgB asking for the same workspaceId — must NOT return the
+  // cached service. The tenant-bounded read returns null (RLS
+  // hides ws since ws.orgId === orgA.id), so we throw "not found".
+  await assert.rejects(
+    () => factory.forWorkspace(ws.id, orgB.id),
+    /not found/i,
+    "cache hit for wrong orgId must fall through to RLS-filtered read"
+  );
+
+  // orgA still gets the original cached service (the failed B
+  // lookup didn't poison the entry).
+  const a2 = await factory.forWorkspace(ws.id, orgA.id);
+  assert.equal(a, a2, "orgA's cache hit should still return the original service");
 });

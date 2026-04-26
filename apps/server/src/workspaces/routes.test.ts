@@ -473,7 +473,7 @@ test("PATCH invalidates the per-workspace NexarService cache", async () => {
   const wsId = created.json().workspace.id;
 
   // Prime the cache.
-  await factory.forWorkspace(wsId);
+  await factory.forWorkspace(wsId, aliceOrgId);
   assert.ok(factory.__sizeForTests() >= 1);
 
   await app.inject({
@@ -485,9 +485,9 @@ test("PATCH invalidates the per-workspace NexarService cache", async () => {
 
   // The PATCH handler should have called factory.invalidate(wsId);
   // forWorkspace should construct a new instance now.
-  const before = await factory.forWorkspace(wsId);
+  const before = await factory.forWorkspace(wsId, aliceOrgId);
   factory.invalidate(wsId); // independent assertion: invalidate is idempotent
-  const after = await factory.forWorkspace(wsId);
+  const after = await factory.forWorkspace(wsId, aliceOrgId);
   // (We can't directly assert "the route called invalidate" — the test
   // above on PATCH-rotates-ciphertext + this test's idempotent
   // re-invalidate together prove the cache obeys the invariant.)

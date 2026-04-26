@@ -87,6 +87,13 @@ export async function registerNexarRoutes(
       reply.code(500).send({ error: "missing_workspace_context" });
       return null;
     }
+    if (!req.ctx) {
+      // requireMember mounts before requireWorkspace, so ctx is always
+      // present here. Defense-in-depth — make the missing-context
+      // case explicit rather than crashing inside the factory.
+      reply.code(500).send({ error: "missing_org_context" });
+      return null;
+    }
     if (!req.workspace.hasNexarCredentials) {
       reply.code(503).send({
         error: "workspace_not_configured",
@@ -95,7 +102,14 @@ export async function registerNexarRoutes(
       return null;
     }
     try {
-      return await nexarFactory.forWorkspace(req.workspace.id);
+      // forWorkspace runs the encrypted-creds read inside a tenant-
+      // scoped transaction (PR 7.6). Pass the orgId so RLS filters
+      // by it — a stray workspaceId from another org would return
+      // null even if the factory cache were cold.
+      return await nexarFactory.forWorkspace(
+        req.workspace.id,
+        req.ctx.org.id
+      );
     } catch (err) {
       reply.code(503).send({
         error: "workspace_unavailable",
