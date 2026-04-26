@@ -5,7 +5,8 @@
   "type": "module",
   "main": "build/index.js",
   "bin": {
-    "altium-mcp": "build/index.js"
+    "altium-mcp": "build/index.js",
+    "pcbviber-admin": "build/admin/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -13,6 +14,7 @@
     "start": "node --env-file=../../.env build/index.js",
     "start:http": "node --env-file=../../.env build/index.js --transport=http",
     "run-job": "node --env-file=../../.env build/jobs/run-once.js",
+    "admin": "node --env-file=../../.env build/admin/cli.js",
     "inspect": "npx @anthropic-ai/mcp-inspector build/index.js",
     "test": "cross-env NODE_ENV=test node --test --experimental-test-coverage --test-reporter=spec \"build/**/*.test.js\""
   },
