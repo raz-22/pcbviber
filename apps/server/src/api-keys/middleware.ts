@@ -35,6 +35,7 @@ import type {
 import { prisma } from "@altium-mcp/db";
 import { hashApiKey } from "./keys.js";
 import { tagRequestApiKey } from "../observability/sentry.js";
+import { checkIpAllowlistOrThrow } from "../security/ip-allowlist-middleware.js";
 
 const BEARER_PREFIX_LEN = "Bearer ".length;
 
@@ -60,6 +61,8 @@ export interface ApiKeyContext {
     id: string;
     slug: string;
     name: string;
+    /** Raw `ipAllowlistJson`. Parsed + enforced by `enforceIpAllowlist`. */
+    ipAllowlistJson: string | null;
   };
 }
 
@@ -96,7 +99,14 @@ export function makeRequireApiKey(): preHandlerAsyncHookHandler {
     const row = await prisma.apiKey.findUnique({
       where: { hashedKey: hashed },
       include: {
-        org: { select: { id: true, slug: true, name: true } },
+        org: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            ipAllowlistJson: true,
+          },
+        },
       },
     });
     if (!row) {
@@ -137,6 +147,17 @@ export function makeRequireApiKey(): preHandlerAsyncHookHandler {
     // tenant.ts: app-level preHandler hooks run before
     // route-level ones, so we tag here where the context exists.
     tagRequestApiKey(req.apiKeyCtx);
+
+    // Enforce the org's IP allowlist on the MCP transport too.
+    // Same defense as REST: a leaked api key from outside the
+    // allowlist gets rejected with 403 ip_not_allowed before the
+    // tool dispatch runs. Audit row is written by the helper.
+    await checkIpAllowlistOrThrow(req, reply, {
+      orgId: req.apiKeyCtx.org.id,
+      allowlistJson: req.apiKeyCtx.org.ipAllowlistJson,
+      actorUserId: null,
+      apiKeyId: req.apiKeyCtx.apiKey.id,
+    });
   };
 }
 
@@ -157,6 +178,13 @@ export function installApiKeyErrorHandler(app: import("fastify").FastifyInstance
     const status = reply.statusCode;
     if (status === 401 && err instanceof Error && err.message === "not_authenticated") {
       reply.code(401).send({ error: "not_authenticated" });
+      return;
+    }
+    // The IP-allowlist check throws `ip_not_allowed` with a 403
+    // already set on `reply`. Reshape into the same body the REST
+    // mapper uses so SPA + MCP clients see one stable code.
+    if (status === 403 && err instanceof Error && err.message === "ip_not_allowed") {
+      reply.code(403).send({ error: "ip_not_allowed" });
       return;
     }
     previous(err, req, reply);

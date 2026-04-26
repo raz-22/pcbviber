@@ -26,7 +26,7 @@ export class ApiError extends Error {
 }
 
 interface ApiOpts {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
 }
 
@@ -81,7 +81,12 @@ async function fetchCsrfToken(): Promise<string> {
 }
 
 function isStateChange(method: string): boolean {
-  return method === "POST" || method === "PATCH" || method === "DELETE";
+  return (
+    method === "POST" ||
+    method === "PUT" ||
+    method === "PATCH" ||
+    method === "DELETE"
+  );
 }
 
 /**
@@ -101,7 +106,7 @@ async function call<T>(path: string, opts: ApiOpts = {}): Promise<T> {
 
 async function callWithCsrfRetry<T>(
   path: string,
-  method: "GET" | "POST" | "PATCH" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   opts: ApiOpts,
   retried: boolean
 ): Promise<T> {
@@ -622,6 +627,21 @@ export const api = {
   // ─── Usage ─────────────────────────────────────────────────────────
   getUsage: (orgId: string) =>
     call<UsageReport>(`/api/orgs/${encodeURIComponent(orgId)}/usage`),
+
+  // ─── IP allowlist ──────────────────────────────────────────────────
+  getIpAllowlist: (orgId: string) =>
+    call<{ entries: string[] }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/ip-allowlist`
+    ),
+
+  putIpAllowlist: (
+    orgId: string,
+    input: { entries: string[]; force?: boolean }
+  ) =>
+    call<{ entries: string[] }>(
+      `/api/orgs/${encodeURIComponent(orgId)}/ip-allowlist`,
+      { method: "PUT", body: input }
+    ),
 
   // ─── Audit log ─────────────────────────────────────────────────────
   getAuditLog: (

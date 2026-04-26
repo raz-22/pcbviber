@@ -26,6 +26,7 @@ import type {
 import { prisma } from "@altium-mcp/db";
 import type { AuthUser, Role } from "@altium-mcp/auth";
 import { tagRequestUser } from "../observability/sentry.js";
+import { checkIpAllowlistOrThrow } from "../security/ip-allowlist-middleware.js";
 
 /**
  * Per-request tenant context. Attached by makeRequireOrgRole after
@@ -40,7 +41,18 @@ import { tagRequestUser } from "../observability/sentry.js";
  */
 export interface RequestContext {
   user: AuthUser;
-  org: { id: string; slug: string; name: string; billingStatus: string };
+  org: {
+    id: string;
+    slug: string;
+    name: string;
+    billingStatus: string;
+    /**
+     * Raw `ipAllowlistJson` column. Parsed + enforced by
+     * `enforceIpAllowlist` middleware after this one. Carried on
+     * ctx so the IP check doesn't need a second round trip.
+     */
+    ipAllowlistJson: string | null;
+  };
   role: Role;
 }
 
@@ -113,6 +125,7 @@ export function makeRequireOrgRole(
             slug: true,
             name: true,
             billingStatus: true,
+            ipAllowlistJson: true,
           },
         },
       },
@@ -146,9 +159,21 @@ export function makeRequireOrgRole(
         slug: membership.org.slug,
         name: membership.org.name,
         billingStatus: membership.org.billingStatus,
+        ipAllowlistJson: membership.org.ipAllowlistJson,
       },
       role,
     };
+    // Enforce per-org IP allowlist BEFORE the handler body runs.
+    // No-op when the org has none configured. Throws (with reply
+    // 403'd) on a miss — same shape as the role-not-allowed throw
+    // above, so the same installTenantErrorHandler reshaping
+    // handles both. Audit row is written by the helper.
+    await checkIpAllowlistOrThrow(req, reply, {
+      orgId: req.ctx.org.id,
+      allowlistJson: req.ctx.org.ipAllowlistJson,
+      actorUserId: req.ctx.user.id,
+      apiKeyId: null,
+    });
     // Attach tenant + user attribution to the current Sentry
     // scope. Inert when SENTRY_DSN is unset. Done here (not in
     // an app-level addHook) because Fastify runs app-level
@@ -274,6 +299,15 @@ export function installTenantErrorHandler(app: FastifyInstance): void {
       return;
     }
     if (status === 403) {
+      // The IP allowlist throws `ip_not_allowed` to distinguish from
+      // role-based 403s. The SPA needs to render different copy for
+      // "your account can't see this" vs "you're connecting from a
+      // disallowed network."
+      const message = err instanceof Error ? err.message : "";
+      if (/^ip_not_allowed$/.test(message)) {
+        reply.code(403).send({ error: "ip_not_allowed" });
+        return;
+      }
       reply.code(403).send({ error: "forbidden" });
       return;
     }

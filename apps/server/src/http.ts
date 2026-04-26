@@ -34,6 +34,7 @@ import { registerBillingRoutes } from "./billing/routes.js";
 import { registerBillingWebhookRoute } from "./billing/webhook.js";
 import { registerUsageRoutes } from "./usage/routes.js";
 import { registerAuditRoutes } from "./audit/routes.js";
+import { registerIpAllowlistRoutes } from "./security/ip-allowlist-routes.js";
 import {
   makeBillingSigner,
   selectBillingProvider,
@@ -241,6 +242,12 @@ export async function startHttpServer(opts: {
   // Audit log read-only endpoint — drives Settings → Audit. Admin-
   // only inside the route file (matches Members/Billing visibility).
   await registerAuditRoutes(app, authProvider);
+
+  // Per-org IP allowlist — drives Settings → Organization. Admin-
+  // only. The middleware that ENFORCES the allowlist lives inline
+  // in tenant.ts + api-keys/middleware.ts; these routes only handle
+  // read + update of the configuration.
+  await registerIpAllowlistRoutes(app, authProvider);
 
   // Metering background worker — boots only when REDIS_URL is set
   // (BullMQ requires Redis). In dev without Redis the meter wrapper

@@ -13,6 +13,7 @@ import { ApiKeysSettingsPage } from "./ApiKeys";
 import { BillingSettingsPage } from "./Billing";
 import { UsageSettingsPage } from "./Usage";
 import { AuditSettingsPage } from "./Audit";
+import { OrganizationSettingsPage } from "./Organization";
 
 interface Tab {
   to: string;
@@ -28,7 +29,7 @@ const tabs: Tab[] = [
   { to: "/settings/billing", label: "Billing", available: true },
   { to: "/settings/usage", label: "Usage", available: true },
   { to: "/settings/audit", label: "Audit log", available: true },
-  { to: "/settings/organization", label: "Organization", available: false, comingIn: "later" },
+  { to: "/settings/organization", label: "Organization", available: true },
 ];
 
 export function SettingsShell() {
@@ -89,6 +90,7 @@ export function SettingsRoutes() {
         <Route path="billing" element={<BillingSettingsPage />} />
         <Route path="usage" element={<UsageSettingsPage />} />
         <Route path="audit" element={<AuditSettingsPage />} />
+        <Route path="organization" element={<OrganizationSettingsPage />} />
       </Route>
     </Routes>
   );
