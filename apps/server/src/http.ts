@@ -20,6 +20,7 @@ import rateLimit from "@fastify/rate-limit";
 import { selectAuthProvider } from "@altium-mcp/auth";
 import { prisma } from "@altium-mcp/db";
 import { registerAuthRoutes } from "./auth/routes.js";
+import { registerSsoRoutes } from "./auth/sso-routes.js";
 import { registerOrgRoutes } from "./auth/org-routes.js";
 import { registerWorkspaceRoutes } from "./workspaces/routes.js";
 import { registerNexarRoutes } from "./workspaces/nexar-routes.js";
@@ -195,6 +196,11 @@ export async function startHttpServer(opts: {
   // PR 2.3 will cut Nexar-using tool handlers over to this factory.
   const nexarFactory = new NexarServiceFactory();
   await registerAuthRoutes(app, authProvider);
+  // SAML / OIDC via WorkOS. The routes themselves are always
+  // mounted; if the active provider doesn't expose startSso /
+  // completeSsoCallback (e.g. LocalAuthProvider), the routes
+  // 503 with `sso_not_configured`.
+  await registerSsoRoutes(app, authProvider);
   await registerOrgRoutes(app, authProvider);
   await registerWorkspaceRoutes(app, authProvider, { nexarFactory });
   // Tenant-scoped Nexar routes (Sprint 2 PR 2.3): every Parts /
