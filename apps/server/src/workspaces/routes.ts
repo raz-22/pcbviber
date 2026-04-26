@@ -325,17 +325,24 @@ export async function registerWorkspaceRoutes(
       const ctx = req.ctx!;
       const { workspaceId } = req.params as { workspaceId: string };
 
-      const existing = await withTenantTx(ctx.org.id, (tx) =>
-        tx.workspace.findUnique({ where: { id: workspaceId } })
-      );
-      if (!existing || existing.orgId !== ctx.org.id) {
+      // Atomic find + delete — no external calls between the two
+      // queries, so they ride one transaction (closes the TOCTOU
+      // window where a concurrent delete would 500 on the second op).
+      const result = await withTenantTx(ctx.org.id, async (tx) => {
+        const existing = await tx.workspace.findUnique({
+          where: { id: workspaceId },
+        });
+        if (!existing || existing.orgId !== ctx.org.id) {
+          return { kind: "not_found" } as const;
+        }
+        await tx.workspace.delete({ where: { id: workspaceId } });
+        return { kind: "ok", existing } as const;
+      });
+      if (result.kind === "not_found") {
         reply.code(404);
         return { error: "not_found" };
       }
-
-      await withTenantTx(ctx.org.id, (tx) =>
-        tx.workspace.delete({ where: { id: workspaceId } })
-      );
+      const existing = result.existing;
       nexarFactory.invalidate(workspaceId);
 
       await writeAuditLog({
