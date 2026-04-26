@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Nav } from "./components/Nav";
 import { BillingBanner } from "./components/BillingBanner";
+import { Footer } from "./components/Footer";
 import { RequireAuth, RedirectIfAuthed } from "./components/RequireAuth";
 import { HomePage } from "./pages/Home";
 import { LoginPage } from "./pages/Login";
@@ -8,6 +9,8 @@ import { SignupPage } from "./pages/Signup";
 import { PartsSearch } from "./pages/PartsSearch";
 import { SettingsRoutes } from "./pages/Settings";
 import { AcceptInvitePage } from "./pages/AcceptInvite";
+import { DpaPage } from "./pages/Legal/Dpa";
+import { SubprocessorsPage } from "./pages/Legal/Subprocessors";
 
 /**
  * Top-level router.
@@ -17,15 +20,17 @@ import { AcceptInvitePage } from "./pages/AcceptInvite";
  *   /signup                — public, redirects to / when already authed
  *   /parts                 — protected: PartsSearch (workspace-scoped)
  *   /settings/*            — protected: Settings shell, see Settings/index.tsx
+ *   /legal/dpa             — public: data processing addendum
+ *   /legal/subprocessors   — public: subprocessor list
  *   *                      — 404 → /
  */
 export function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen">
+      <div className="flex min-h-screen flex-col">
         <Nav />
         <BillingBanner />
-        <main>
+        <main className="flex-1">
           <Routes>
             <Route
               path="/"
@@ -77,9 +82,17 @@ export function App() {
                 </RequireAuth>
               }
             />
+            {/* Public legal pages — readable without a session so
+                prospects under procurement review can link directly. */}
+            <Route path="/legal/dpa" element={<DpaPage />} />
+            <Route
+              path="/legal/subprocessors"
+              element={<SubprocessorsPage />}
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
+        <Footer />
       </div>
     </BrowserRouter>
   );
