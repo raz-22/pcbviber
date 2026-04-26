@@ -28,6 +28,7 @@ import type { AuthUser, Role } from "@altium-mcp/auth";
 import { tagRequestUser } from "../observability/sentry.js";
 import { checkIpAllowlistOrThrow } from "../security/ip-allowlist-middleware.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { can, type CanAction } from "./can.js";
 
 /**
  * Per-request tenant context. Attached by makeRequireOrgRole after
@@ -202,15 +203,12 @@ export const requireOrgMember = makeRequireOrgRole([]);
  * keep the inline `can(...)` call in the handler — those need data
  * the preHandler can't see.
  */
-export function requireCan(
-  action: import("./can.js").CanAction
-): preHandlerAsyncHookHandler {
+export function requireCan(action: CanAction): preHandlerAsyncHookHandler {
   return async function requireCanPreHandler(req: FastifyRequest, reply: FastifyReply) {
     if (!req.ctx) {
       reply.code(500);
       throw new Error("requireCan called without req.ctx");
     }
-    const { can } = await import("./can.js");
     const allowed = can(
       { userId: req.ctx.user.id, role: req.ctx.role },
       action
