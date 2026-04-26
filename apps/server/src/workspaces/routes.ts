@@ -24,10 +24,11 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { prisma, encryptCredential } from "@altium-mcp/db";
+import { encryptCredential } from "@altium-mcp/db";
 import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
 import { writeAuditLog, clientIp } from "../auth/audit.js";
+import { withTenantTx } from "../db/tenant-tx.js";
 import type { AuthProvider } from "@altium-mcp/auth";
 import type { NexarServiceFactory } from "../services/nexar-factory.js";
 import { csrfOrPassthrough } from "../security/csrf.js";
@@ -127,11 +128,13 @@ export async function registerWorkspaceRoutes(
     { preHandler: [requireAuth, requireMember] },
     async (req) => {
       const ctx = req.ctx!;
-      const rows = await prisma.workspace.findMany({
-        where: { orgId: ctx.org.id },
-        orderBy: { createdAt: "asc" },
+      return await withTenantTx(ctx.org.id, async (tx) => {
+        const rows = await tx.workspace.findMany({
+          where: { orgId: ctx.org.id },
+          orderBy: { createdAt: "asc" },
+        });
+        return { workspaces: rows.map(serializeWorkspace) };
       });
-      return { workspaces: rows.map(serializeWorkspace) };
     }
   );
 
@@ -142,12 +145,14 @@ export async function registerWorkspaceRoutes(
     async (req, reply) => {
       const ctx = req.ctx!;
       const { workspaceId } = req.params as { workspaceId: string };
-      const ws = await prisma.workspace.findUnique({
-        where: { id: workspaceId },
-      });
+      const ws = await withTenantTx(ctx.org.id, (tx) =>
+        tx.workspace.findUnique({ where: { id: workspaceId } })
+      );
+      // RLS-bypassed admin tests still see cross-tenant rows, so the
+      // explicit orgId check stays — defense in depth, plus tests.
       if (!ws || ws.orgId !== ctx.org.id) {
-        // Same defense as cross-tenant: collapse "no such workspace"
-        // and "not yours" into 404 to prevent enumeration.
+        // Collapse "no such workspace" and "not yours" into 404 to
+        // prevent id enumeration.
         reply.code(404);
         return { error: "not_found" };
       }
@@ -191,17 +196,19 @@ export async function registerWorkspaceRoutes(
         }
       }
 
-      const ws = await prisma.workspace.create({
-        data: {
-          orgId: ctx.org.id,
-          altiumWorkspaceUrl: data.altiumWorkspaceUrl ?? null,
-          nexarClientIdEnc: encryptCredential(data.nexarClientId),
-          nexarClientSecretEnc: encryptCredential(data.nexarClientSecret),
-          altiumRestTokenEnc: data.altiumRestToken
-            ? encryptCredential(data.altiumRestToken)
-            : null,
-        },
-      });
+      const ws = await withTenantTx(ctx.org.id, (tx) =>
+        tx.workspace.create({
+          data: {
+            orgId: ctx.org.id,
+            altiumWorkspaceUrl: data.altiumWorkspaceUrl ?? null,
+            nexarClientIdEnc: encryptCredential(data.nexarClientId),
+            nexarClientSecretEnc: encryptCredential(data.nexarClientSecret),
+            altiumRestTokenEnc: data.altiumRestToken
+              ? encryptCredential(data.altiumRestToken)
+              : null,
+          },
+        })
+      );
 
       await writeAuditLog({
         orgId: ctx.org.id,
@@ -232,9 +239,9 @@ export async function registerWorkspaceRoutes(
       const { workspaceId } = req.params as { workspaceId: string };
       const data = parsed.data;
 
-      const existing = await prisma.workspace.findUnique({
-        where: { id: workspaceId },
-      });
+      const existing = await withTenantTx(ctx.org.id, (tx) =>
+        tx.workspace.findUnique({ where: { id: workspaceId } })
+      );
       if (!existing || existing.orgId !== ctx.org.id) {
         reply.code(404);
         return { error: "not_found" };
@@ -284,10 +291,12 @@ export async function registerWorkspaceRoutes(
             : encryptCredential(data.altiumRestToken);
       }
 
-      const ws = await prisma.workspace.update({
-        where: { id: workspaceId },
-        data: update,
-      });
+      const ws = await withTenantTx(ctx.org.id, (tx) =>
+        tx.workspace.update({
+          where: { id: workspaceId },
+          data: update,
+        })
+      );
 
       // Drop the cache so the next forWorkspace() picks up new creds.
       nexarFactory.invalidate(workspaceId);
@@ -316,15 +325,17 @@ export async function registerWorkspaceRoutes(
       const ctx = req.ctx!;
       const { workspaceId } = req.params as { workspaceId: string };
 
-      const existing = await prisma.workspace.findUnique({
-        where: { id: workspaceId },
-      });
+      const existing = await withTenantTx(ctx.org.id, (tx) =>
+        tx.workspace.findUnique({ where: { id: workspaceId } })
+      );
       if (!existing || existing.orgId !== ctx.org.id) {
         reply.code(404);
         return { error: "not_found" };
       }
 
-      await prisma.workspace.delete({ where: { id: workspaceId } });
+      await withTenantTx(ctx.org.id, (tx) =>
+        tx.workspace.delete({ where: { id: workspaceId } })
+      );
       nexarFactory.invalidate(workspaceId);
 
       await writeAuditLog({

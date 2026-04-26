@@ -22,7 +22,7 @@
  * defense in depth.)
  */
 
-import type { PrismaClient } from "@altium-mcp/db";
+import type { Prisma, PrismaClient } from "@altium-mcp/db";
 import {
   KNOWN_METRICS,
   priceMapFromEnv,
@@ -52,7 +52,7 @@ export interface BuildUsageReportDeps {
 }
 
 export async function buildUsageReport(
-  prisma: PrismaClient,
+  prisma: PrismaClient | Prisma.TransactionClient,
   orgId: string,
   deps: BuildUsageReportDeps = {}
 ): Promise<UsageReport> {

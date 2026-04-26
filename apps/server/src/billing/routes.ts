@@ -36,7 +36,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { prisma } from "@altium-mcp/db";
+import { withTenantTx } from "../db/tenant-tx.js";
 import type { AuthProvider } from "@altium-mcp/auth";
 import {
   type BillingProvider,
@@ -188,10 +188,12 @@ export async function registerBillingRoutes(
 
       // Pull existing customer id (if any) so Stripe can reuse the
       // saved cards / billing addresses. Empty on first checkout.
-      const org = await prisma.organization.findUnique({
-        where: { id: ctx.org.id },
-        select: { billingCustomerId: true },
-      });
+      const org = await withTenantTx(ctx.org.id, (tx) =>
+        tx.organization.findUnique({
+          where: { id: ctx.org.id },
+          select: { billingCustomerId: true },
+        })
+      );
 
       try {
         const session = await deps.billing.createCheckoutSession({
@@ -266,10 +268,12 @@ export async function registerBillingRoutes(
       // first Checkout completes. Pre-checkout orgs have no customer
       // record on Stripe's side, so the portal call would fail; we
       // return a distinct 409 the SPA can map to "Subscribe first".
-      const org = await prisma.organization.findUnique({
-        where: { id: ctx.org.id },
-        select: { billingCustomerId: true },
-      });
+      const org = await withTenantTx(ctx.org.id, (tx) =>
+        tx.organization.findUnique({
+          where: { id: ctx.org.id },
+          select: { billingCustomerId: true },
+        })
+      );
       if (!org?.billingCustomerId) {
         reply.code(409);
         return { error: "not_yet_subscribed" };

@@ -34,7 +34,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { prisma } from "@altium-mcp/db";
+import { withTenantTx } from "../db/tenant-tx.js";
 import type { AuthProvider } from "@altium-mcp/auth";
 import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
@@ -126,29 +126,37 @@ export async function registerApiKeyRoutes(
 
       // If the caller asked to bind a default workspace, validate
       // it belongs to this org. Cross-tenant collapse to 404 keeps
-      // the behavior consistent with the workspace routes.
-      if (parsed.data.defaultWorkspaceId) {
-        const ws = await prisma.workspace.findUnique({
-          where: { id: parsed.data.defaultWorkspaceId },
-          select: { orgId: true },
-        });
-        if (!ws || ws.orgId !== ctx.org.id) {
-          reply.code(404);
-          return { error: "workspace_not_in_org" };
-        }
-      }
-
+      // the behavior consistent with the workspace routes. Both the
+      // validate and the create run inside the same withTenantTx so
+      // the workspace check is RLS-bounded too.
       const generated = generateApiKey();
-      const created = await prisma.apiKey.create({
-        data: {
-          orgId: ctx.org.id,
-          name: parsed.data.name,
-          hashedKey: generated.hash,
-          scopes: parsed.data.scopes.join(" "),
-          expiresAt: parsed.data.expiresAt ?? null,
-          defaultWorkspaceId: parsed.data.defaultWorkspaceId ?? null,
-        },
+      const result = await withTenantTx(ctx.org.id, async (tx) => {
+        if (parsed.data.defaultWorkspaceId) {
+          const ws = await tx.workspace.findUnique({
+            where: { id: parsed.data.defaultWorkspaceId },
+            select: { orgId: true },
+          });
+          if (!ws || ws.orgId !== ctx.org.id) {
+            return { kind: "workspace_not_in_org" } as const;
+          }
+        }
+        const created = await tx.apiKey.create({
+          data: {
+            orgId: ctx.org.id,
+            name: parsed.data.name,
+            hashedKey: generated.hash,
+            scopes: parsed.data.scopes.join(" "),
+            expiresAt: parsed.data.expiresAt ?? null,
+            defaultWorkspaceId: parsed.data.defaultWorkspaceId ?? null,
+          },
+        });
+        return { kind: "ok", created } as const;
       });
+      if (result.kind === "workspace_not_in_org") {
+        reply.code(404);
+        return { error: "workspace_not_in_org" };
+      }
+      const created = result.created;
 
       await writeAuditLog({
         orgId: ctx.org.id,
@@ -194,38 +202,51 @@ export async function registerApiKeyRoutes(
         reply.code(403);
         return { error: "forbidden" };
       }
-      const existing = await prisma.apiKey.findUnique({
-        where: { id: keyId },
-        select: { id: true, orgId: true, name: true, revokedAt: true },
+      const result = await withTenantTx(ctx.org.id, async (tx) => {
+        const existing = await tx.apiKey.findUnique({
+          where: { id: keyId },
+          select: { id: true, orgId: true, name: true, revokedAt: true },
+        });
+        if (!existing || existing.orgId !== ctx.org.id) {
+          return { kind: "not_found" } as const;
+        }
+        // Don't let an operator silently re-arm a revoked key by
+        // patching it. Revoke → rotate is the documented flow; PATCH
+        // on revoked rows stays an explicit 409.
+        if (existing.revokedAt) {
+          return { kind: "api_key_already_revoked" } as const;
+        }
+
+        // Validate the new workspace (when set) belongs to this org.
+        if (parsed.data.defaultWorkspaceId !== null) {
+          const ws = await tx.workspace.findUnique({
+            where: { id: parsed.data.defaultWorkspaceId },
+            select: { orgId: true },
+          });
+          if (!ws || ws.orgId !== ctx.org.id) {
+            return { kind: "workspace_not_in_org" } as const;
+          }
+        }
+
+        const updated = await tx.apiKey.update({
+          where: { id: keyId },
+          data: { defaultWorkspaceId: parsed.data.defaultWorkspaceId },
+        });
+        return { kind: "ok", existing, updated } as const;
       });
-      if (!existing || existing.orgId !== ctx.org.id) {
+      if (result.kind === "not_found") {
         reply.code(404);
         return { error: "not_found" };
       }
-      // Don't let an operator silently re-arm a revoked key by
-      // patching it. Revoke → rotate is the documented flow; PATCH
-      // on revoked rows stays an explicit 409.
-      if (existing.revokedAt) {
+      if (result.kind === "api_key_already_revoked") {
         reply.code(409);
         return { error: "api_key_already_revoked" };
       }
-
-      // Validate the new workspace (when set) belongs to this org.
-      if (parsed.data.defaultWorkspaceId !== null) {
-        const ws = await prisma.workspace.findUnique({
-          where: { id: parsed.data.defaultWorkspaceId },
-          select: { orgId: true },
-        });
-        if (!ws || ws.orgId !== ctx.org.id) {
-          reply.code(404);
-          return { error: "workspace_not_in_org" };
-        }
+      if (result.kind === "workspace_not_in_org") {
+        reply.code(404);
+        return { error: "workspace_not_in_org" };
       }
-
-      const updated = await prisma.apiKey.update({
-        where: { id: keyId },
-        data: { defaultWorkspaceId: parsed.data.defaultWorkspaceId },
-      });
+      const { existing, updated } = result;
 
       await writeAuditLog({
         orgId: ctx.org.id,
@@ -254,10 +275,12 @@ export async function registerApiKeyRoutes(
         reply.code(403);
         return { error: "forbidden" };
       }
-      const rows = await prisma.apiKey.findMany({
-        where: { orgId: ctx.org.id },
-        orderBy: { createdAt: "desc" },
-      });
+      const rows = await withTenantTx(ctx.org.id, (tx) =>
+        tx.apiKey.findMany({
+          where: { orgId: ctx.org.id },
+          orderBy: { createdAt: "desc" },
+        })
+      );
       // Listings include revoked rows so the SPA can render history;
       // the SPA filters on `revokedAt === null` for "active" view.
       return { apiKeys: rows.map((r) => serializeApiKey(r)) };
@@ -275,22 +298,31 @@ export async function registerApiKeyRoutes(
         reply.code(403);
         return { error: "forbidden" };
       }
-      const existing = await prisma.apiKey.findUnique({ where: { id: keyId } });
-      if (!existing || existing.orgId !== ctx.org.id) {
+      const result = await withTenantTx(ctx.org.id, async (tx) => {
+        const existing = await tx.apiKey.findUnique({ where: { id: keyId } });
+        if (!existing || existing.orgId !== ctx.org.id) {
+          return { kind: "not_found" } as const;
+        }
+        if (existing.revokedAt) {
+          return { kind: "api_key_already_revoked" } as const;
+        }
+        await tx.apiKey.update({
+          where: { id: keyId },
+          data: { revokedAt: new Date() },
+        });
+        return { kind: "ok", existing } as const;
+      });
+      if (result.kind === "not_found") {
         // Cross-tenant + unknown id collapse to 404 — same defense
         // as workspaces/invites: no enumeration of key ids across orgs.
         reply.code(404);
         return { error: "not_found" };
       }
-      if (existing.revokedAt) {
+      if (result.kind === "api_key_already_revoked") {
         reply.code(409);
         return { error: "api_key_already_revoked" };
       }
-
-      await prisma.apiKey.update({
-        where: { id: keyId },
-        data: { revokedAt: new Date() },
-      });
+      const existing = result.existing;
 
       await writeAuditLog({
         orgId: ctx.org.id,
