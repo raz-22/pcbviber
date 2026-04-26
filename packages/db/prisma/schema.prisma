@@ -46,6 +46,18 @@ model Organization {
   /// configuration; admin UI for self-service connection management
   /// lands in PR 7.3b.
   workosConnectionId String?
+  /// JSON-encoded array of IP / CIDR strings. When non-null and
+  /// non-empty, requests scoped to this org (REST under
+  /// /api/orgs/:orgId/* and the /mcp transport bound via api key)
+  /// are rejected with 403 ip_not_allowed unless the client IP
+  /// matches at least one entry. Defense in depth on top of
+  /// session / api-key auth — even with leaked credentials, an
+  /// off-allowlist source can't reach tenant data.
+  ///
+  /// Format chosen as JSON-in-string for the same reason as
+  /// `Plan.includedQuotas`: cross-DB portability and round-trip
+  /// stability without a structured-JSON column.
+  ipAllowlistJson    String?
   createdAt          DateTime       @default(now())
   deletedAt          DateTime?
 
