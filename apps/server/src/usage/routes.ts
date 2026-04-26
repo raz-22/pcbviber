@@ -17,11 +17,11 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { prisma } from "@altium-mcp/db";
 import type { AuthProvider } from "@altium-mcp/auth";
 import { makeRequireAuth } from "../auth/middleware.js";
 import { makeRequireOrgRole } from "../auth/tenant.js";
 import { can } from "../auth/can.js";
+import { withTenantTx } from "../db/tenant-tx.js";
 import { buildUsageReport } from "./handler.js";
 
 export async function registerUsageRoutes(
@@ -41,7 +41,9 @@ export async function registerUsageRoutes(
         return { error: "forbidden" };
       }
       try {
-        return await buildUsageReport(prisma, ctx.org.id);
+        return await withTenantTx(ctx.org.id, (tx) =>
+          buildUsageReport(tx, ctx.org.id)
+        );
       } catch (err) {
         // The handler throws when the org disappeared mid-request
         // (membership was verified, then the org was deleted before
