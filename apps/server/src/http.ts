@@ -63,6 +63,8 @@ import type { ToolContext } from "./mcp/dispatch.js";
 import { buildApiKeyMeterContext } from "./metering/context.js";
 import type { AdRelay } from "./ad-relay/relay.js";
 import { registerAdRelayRoutes } from "./ad-relay/routes.js";
+import { EdaRelay } from "./eda-relay/relay.js";
+import { registerEdaRelayRoutes } from "./eda-relay/routes.js";
 import * as altium from "./handlers/altium.js";
 
 export async function startHttpServer(opts: {
@@ -280,6 +282,14 @@ export async function startHttpServer(opts: {
 
   // ── AD relay (HTTP long-poll bridge to Altium Designer) ──
   registerAdRelayRoutes(app, relay);
+
+  // ── EasyEDA relay (HTTP long-poll bridge to the in-editor extension) ──
+  // Per-workspace state, mirroring AdRelay's pattern but multi-tenant.
+  // The extension package that consumes these routes lands in PR 9.4c;
+  // Sprint 10+ tools call `edaRelay.execute(workspaceId, ...)` from
+  // EasyedaPlatform once the extension can post results back.
+  const edaRelay = new EdaRelay();
+  registerEdaRelayRoutes(app, edaRelay);
 
   // ── MCP over HTTP (stateless) ──────────────────────────
   // Bearer-token auth gates every /mcp request: the middleware hashes
