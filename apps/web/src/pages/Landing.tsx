@@ -62,8 +62,8 @@ export function LandingPage() {
             body="Connect your Altium 365 workspace and let your AI list projects, walk libraries, and reason about real component metadata you already have."
           />
           <FeatureCard
-            title="Find drop-in alternates"
-            body="When a part is end-of-life or out of stock, get pin-compatible alternatives ranked by lifecycle stage and stock — in one tool call."
+            title="Find alternates fast"
+            body="When a part is end-of-life or out of stock, get description-matched alternatives ranked by lifecycle and availability — in one tool call. Pin-compatible cross-reference matching is on the roadmap."
           />
         </div>
       </section>
@@ -123,7 +123,7 @@ export function LandingPage() {
             blurb="For working teams that ship hardware."
             features={[
               "Unlimited workspaces",
-              "10,000 BOM lookups / month",
+              "5,000 BOM lookups / month",
               "SSO + audit logs",
               "Email support",
             ]}
