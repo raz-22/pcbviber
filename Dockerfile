@@ -27,6 +27,9 @@ COPY --from=build /app/package.json /app/pnpm-workspace.yaml ./
 COPY --from=build /app/apps/server/package.json ./apps/server/
 COPY --from=build /app/apps/server/build ./apps/server/build
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+# eda-script source is read at runtime by /eda-script/pcbviber-easyeda.eext
+# to build the EasyEDA Pro extension archive on first request.
+COPY --from=build /app/eda-script ./eda-script
 COPY --from=build /app/packages/shared/package.json ./packages/shared/
 COPY --from=build /app/packages/shared/src ./packages/shared/src
 COPY --from=build /app/node_modules ./node_modules
