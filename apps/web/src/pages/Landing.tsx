@@ -80,24 +80,20 @@ export function LandingPage() {
               title="Sign up + create a workspace"
               body="Add your Altium 365 URL and Octopart/Nexar credentials. They're encrypted at rest, never returned to the browser."
             />
-            <li className="flex gap-4">
-              <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-semibold text-white">
-                2
-              </span>
-              <div>
-                <p className="font-medium text-slate-900">
-                  Drop the MCP config into your AI tool
-                </p>
-                <p className="mt-1 text-slate-600">
+            <Step
+              n={2}
+              title="Drop the MCP config into your AI tool"
+              body={
+                <>
                   Claude Desktop, Cursor, Continue, Cline — anything
                   that speaks MCP. Copy-paste snippets are in the{" "}
                   <Link to="/docs" className="text-blue-700 underline">
                     docs
                   </Link>
                   .
-                </p>
-              </div>
-            </li>
+                </>
+              }
+            />
             <Step
               n={3}
               title="Ask naturally"
@@ -205,7 +201,7 @@ function Step({
 }: {
   n: number;
   title: string;
-  body: string;
+  body: React.ReactNode;
 }) {
   return (
     <li className="flex gap-4">
