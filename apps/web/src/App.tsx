@@ -14,6 +14,7 @@ import { DpaPage } from "./pages/Legal/Dpa";
 import { SubprocessorsPage } from "./pages/Legal/Subprocessors";
 import { PrivacyPage } from "./pages/Legal/Privacy";
 import { TermsPage } from "./pages/Legal/Terms";
+import { DocsPage } from "./pages/Docs";
 import { useAuth } from "./lib/auth";
 
 /**
@@ -24,6 +25,7 @@ import { useAuth } from "./lib/auth";
  *   /signup                — public, redirects to / when already authed
  *   /parts                 — protected: PartsSearch (workspace-scoped)
  *   /settings/*            — protected: Settings shell, see Settings/index.tsx
+ *   /docs                  — public: quickstart + tool reference
  *   /legal/privacy         — public: privacy policy
  *   /legal/terms           — public: terms of service
  *   /legal/dpa             — public: data processing addendum
@@ -90,6 +92,9 @@ export function App() {
                 </RequireAuth>
               }
             />
+            {/* Public docs — same audience as the marketing landing
+                + linked from registry submission and launch posts. */}
+            <Route path="/docs" element={<DocsPage />} />
             {/* Public legal pages — readable without a session so
                 prospects under procurement review can link directly. */}
             <Route path="/legal/privacy" element={<PrivacyPage />} />

@@ -38,10 +38,10 @@ export function LandingPage() {
               Get started
             </Link>
             <Link
-              to="/login"
+              to="/docs"
               className="rounded-md border border-slate-300 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
-              Log in
+              Read the docs
             </Link>
           </div>
           <p className="mt-4 text-xs text-slate-500">
@@ -83,7 +83,16 @@ export function LandingPage() {
             <Step
               n={2}
               title="Drop the MCP config into your AI tool"
-              body="Claude Desktop, Cursor, Continue, Cline — anything that speaks MCP. Copy the workspace URL + API key from Settings."
+              body={
+                <>
+                  Claude Desktop, Cursor, Continue, Cline — anything
+                  that speaks MCP. Copy-paste snippets are in the{" "}
+                  <Link to="/docs" className="text-blue-700 underline">
+                    docs
+                  </Link>
+                  .
+                </>
+              }
             />
             <Step
               n={3}
@@ -192,7 +201,7 @@ function Step({
 }: {
   n: number;
   title: string;
-  body: string;
+  body: React.ReactNode;
 }) {
   return (
     <li className="flex gap-4">
