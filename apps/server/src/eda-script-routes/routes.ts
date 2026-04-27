@@ -18,12 +18,13 @@
  *
  * Path resolution: at runtime the server is at
  * `<repo>/apps/server/build/eda-script-routes/routes.js`, so the
- * eda-script source lives three directories up. In Docker the
- * Dockerfile copies eda-script/ to `/app/eda-script/` and the
- * server's WORKDIR is `/app/`, making the same relative path
- * (`../../../eda-script`) resolve correctly. Both paths are
- * verified at startup; if neither resolves we log a warning and
- * the route 503s rather than crashing the server.
+ * eda-script source lives four directories up
+ * (eda-script-routes → build → server → apps → repo root). In
+ * Docker the Dockerfile copies eda-script/ to `/app/eda-script/`
+ * with the same nesting (`/app/apps/server/build/...`) so the
+ * same `../../../../eda-script` relative path resolves correctly.
+ * If the source is missing at request time the route 503s with a
+ * stable error code rather than crashing the server.
  */
 
 import { readFile } from "node:fs/promises";
@@ -56,9 +57,9 @@ let cached: Buffer | null = null;
 /**
  * Resolve the repo's `eda-script/` directory. The source layout
  * lives at `<repo>/eda-script/`; the server's compiled output is
- * at `<repo>/apps/server/build/eda-script-routes/`. Three
- * directories up gets us back to the repo root in both dev and
- * Docker.
+ * at `<repo>/apps/server/build/eda-script-routes/`. Four `..`
+ * segments (eda-script-routes → build → server → apps → repo
+ * root) get us back to the repo root in both dev and Docker.
  */
 function resolveEdaScriptDir(): string {
   return join(__dirname, "..", "..", "..", "..", "eda-script");
