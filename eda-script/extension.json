@@ -1,0 +1,42 @@
+{
+  "$comment": "PCBviber EasyEDA Pro extension manifest. Loaded via EasyEDA Pro → Advanced → Extensions → Import. The extension opens a long-poll connection to the PCBviber server's /api/eda-relay/* routes and dispatches commands the server pushes (Sprint 10+ tools).",
+
+  "name": "pcbviber",
+  "uuid": "498778eaeb134e63a68a3edfc029088c",
+  "displayName": "PCBviber",
+  "version": "0.1.0",
+  "publisher": "pcbviber",
+  "description": "Lets Claude / Cursor / any MCP-aware AI assistant control your EasyEDA Pro workspace via the PCBviber server. Component lookup, project introspection, DRC, manufacturing exports.",
+  "license": "MIT",
+  "homepage": "https://[Replace with your-deployment-host]",
+  "repository": "https://github.com/[Replace]/PCBviber",
+  "categories": ["Project", "PCB", "Schematic"],
+  "keywords": ["pcbviber", "mcp", "ai", "claude", "octopart", "lcsc"],
+
+  "$comment_engines": "Pin against an EasyEDA Pro Extension API minor — caret-range so we accept patch upgrades but pause on a minor that might rename methods.",
+  "engines": {
+    "eda": "^2.3.0"
+  },
+
+  "$comment_entry": "Plain JS — no build step. EasyEDA loads src/index.js directly. If we ever grow this enough to need TypeScript, add a build that emits to dist/index.js and bump this path.",
+  "entry": "./src/index",
+
+  "$comment_activation": "Activated on workspace open so the long-poll bridge connects as early as possible — the AI client expects a tool call to resolve in seconds, not after a manual 'enable extension' click.",
+  "activationEvents": [
+    "onStartup"
+  ],
+
+  "$comment_permissions": "ExternalInteractions is required to reach the PCBviber server via SYS_ClientUrl.request. The user must enable it once at install time; without it, the long-poll throws every call and the panel shows 'permission required'.",
+  "permissions": [
+    "ExternalInteractions"
+  ],
+
+  "$comment_panels": "Single status panel docked at the bottom of the editor. Shows connection state + last-checked timestamp so the user can confirm the bridge is alive without opening DevTools.",
+  "panels": [
+    {
+      "id": "pcbviber.status",
+      "title": "PCBviber",
+      "position": "bottom"
+    }
+  ]
+}
