@@ -115,8 +115,15 @@ export function WorkspaceForm({
         nexarClientId: nexarClientId.trim(),
         nexarClientSecret: nexarClientSecret.trim(),
       };
-      if (trimmedUrl) payload.altiumWorkspaceUrl = trimmedUrl;
-      if (tokenFilled) payload.altiumRestToken = altiumRestToken.trim();
+      // Altium-specific fields hide when platform=easyeda, but the
+      // input state persists across toggles. Skip them on the
+      // payload so a user who started on Altium, switched to
+      // EasyEDA, and submitted doesn't accidentally seed an
+      // Altium URL on a non-Altium workspace.
+      if (platform === "altium") {
+        if (trimmedUrl) payload.altiumWorkspaceUrl = trimmedUrl;
+        if (tokenFilled) payload.altiumRestToken = altiumRestToken.trim();
+      }
       return payload;
     }
 
@@ -194,19 +201,27 @@ export function WorkspaceForm({
         )}
       </Field>
 
-      <Field
-        label="Altium 365 workspace URL"
-        hint='Optional — e.g. "https://acme.altium365.com/workspaces/…". Required for library + Altium 365 calls.'
-        error={errors.altiumWorkspaceUrl}
-      >
-        <input
-          className={inputCls}
-          type="url"
-          placeholder="https://acme.altium365.com/workspaces/…"
-          value={altiumWorkspaceUrl}
-          onChange={(e) => setAltiumWorkspaceUrl(e.target.value)}
-        />
-      </Field>
+      {/* Altium-specific fields hide when platform=easyeda — neither
+          the workspace URL nor the REST token has a meaning on
+          EasyEDA. Sprint 9 PR 9.4 adds platform-specific config
+          fields (e.g. EasyEDA extension API key); for now the
+          Nexar/Octopart credentials below are platform-agnostic
+          (BOM tools are shared). */}
+      {platform === "altium" && (
+        <Field
+          label="Altium 365 workspace URL"
+          hint='Optional — e.g. "https://acme.altium365.com/workspaces/…". Required for library + Altium 365 calls.'
+          error={errors.altiumWorkspaceUrl}
+        >
+          <input
+            className={inputCls}
+            type="url"
+            placeholder="https://acme.altium365.com/workspaces/…"
+            value={altiumWorkspaceUrl}
+            onChange={(e) => setAltiumWorkspaceUrl(e.target.value)}
+          />
+        </Field>
+      )}
 
       <fieldset className="space-y-3 rounded-md border border-slate-200 p-4">
         <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500 px-1">
@@ -269,38 +284,40 @@ export function WorkspaceForm({
         </div>
       </fieldset>
 
-      <fieldset className="space-y-3 rounded-md border border-slate-200 p-4">
-        <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500 px-1">
-          Altium REST token
-        </legend>
-        <p className="text-xs text-slate-500">
-          Optional — used for Requirements & Systems Portal calls.
-        </p>
-        <Field label="REST token" error={errors.altiumRestToken}>
-          <input
-            className={inputCls}
-            type="password"
-            value={altiumRestToken}
-            onChange={(e) => setAltiumRestToken(e.target.value)}
-            autoComplete="new-password"
-            placeholder={
-              mode === "edit" && workspace?.hasAltiumRestToken
-                ? "(unchanged)"
-                : ""
-            }
-          />
-        </Field>
-        {mode === "edit" && workspace?.hasAltiumRestToken && (
-          <label className="flex items-center gap-2 text-xs text-slate-600">
+      {platform === "altium" && (
+        <fieldset className="space-y-3 rounded-md border border-slate-200 p-4">
+          <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500 px-1">
+            Altium REST token
+          </legend>
+          <p className="text-xs text-slate-500">
+            Optional — used for Requirements & Systems Portal calls.
+          </p>
+          <Field label="REST token" error={errors.altiumRestToken}>
             <input
-              type="checkbox"
-              checked={clearAltiumRestToken}
-              onChange={(e) => setClearAltiumRestToken(e.target.checked)}
+              className={inputCls}
+              type="password"
+              value={altiumRestToken}
+              onChange={(e) => setAltiumRestToken(e.target.value)}
+              autoComplete="new-password"
+              placeholder={
+                mode === "edit" && workspace?.hasAltiumRestToken
+                  ? "(unchanged)"
+                  : ""
+              }
             />
-            Remove the existing REST token
-          </label>
-        )}
-      </fieldset>
+          </Field>
+          {mode === "edit" && workspace?.hasAltiumRestToken && (
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={clearAltiumRestToken}
+                onChange={(e) => setClearAltiumRestToken(e.target.checked)}
+              />
+              Remove the existing REST token
+            </label>
+          )}
+        </fieldset>
+      )}
 
       {submitError !== undefined && submitError !== null && (
         <p className="text-sm text-red-600" role="alert">
