@@ -110,6 +110,14 @@ model Membership {
 model Workspace {
   id                    String   @id @default(cuid())
   orgId                 String
+  /// EDA platform this workspace targets. "altium" (default) covers
+  /// both Altium 365 and the Altium Designer relay surface;
+  /// "easyeda" is added in Sprint 9 for EasyEDA Pro support.
+  /// String column with runtime-validated allowlist, mirroring the
+  /// pattern used for Membership.role and Organization.billingStatus.
+  /// Adding KiCad/Eagle/Fusion 360 in a later sprint extends the
+  /// allowlist; no schema change.
+  platform              String   @default("altium")
   altiumWorkspaceUrl    String?
   nexarClientIdEnc      String?  // AES-256-GCM via CREDENTIAL_ENCRYPTION_KEY
   nexarClientSecretEnc  String?

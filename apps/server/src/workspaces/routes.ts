@@ -35,6 +35,16 @@ import { csrfOrPassthrough } from "../security/csrf.js";
 
 // ─── Input schemas ────────────────────────────────────────────────────
 
+/**
+ * Allowlist of EDA platforms a Workspace can target. Mirrors the
+ * runtime-validated allowlist pattern used for Membership.role and
+ * Organization.billingStatus — string column at the DB layer, with
+ * the closed set enforced here. Adding a new platform (KiCad, Eagle,
+ * Fusion 360, ...) is one line here + a UI option, no schema change.
+ */
+const PLATFORMS = ["altium", "easyeda"] as const;
+export type WorkspacePlatform = (typeof PLATFORMS)[number];
+
 const CredsBody = z.object({
   nexarClientId: z.string().min(1).max(256),
   nexarClientSecret: z.string().min(1).max(512),
@@ -43,6 +53,11 @@ const CredsBody = z.object({
 const TestConnectionBody = CredsBody;
 
 const CreateWorkspaceBody = z.object({
+  /**
+   * Defaults to "altium" so existing API consumers (and the bulk of
+   * traffic during the EasyEDA rollout) keep working unchanged.
+   */
+  platform: z.enum(PLATFORMS).default("altium"),
   altiumWorkspaceUrl: z.string().url().max(512).optional(),
   nexarClientId: z.string().min(1).max(256),
   nexarClientSecret: z.string().min(1).max(512),
@@ -205,6 +220,7 @@ export async function registerWorkspaceRoutes(
         tx.workspace.create({
           data: {
             orgId: ctx.org.id,
+            platform: data.platform,
             altiumWorkspaceUrl: data.altiumWorkspaceUrl ?? null,
             nexarClientIdEnc: encryptCredential(data.nexarClientId),
             nexarClientSecretEnc: encryptCredential(data.nexarClientSecret),
@@ -222,7 +238,10 @@ export async function registerWorkspaceRoutes(
         target: ws.id,
         ip: clientIp(req),
         userAgent: req.headers["user-agent"],
-        metadata: { altiumWorkspaceUrl: ws.altiumWorkspaceUrl ?? null },
+        metadata: {
+          altiumWorkspaceUrl: ws.altiumWorkspaceUrl ?? null,
+          platform: ws.platform,
+        },
       });
 
       reply.code(201);
@@ -374,6 +393,7 @@ export async function registerWorkspaceRoutes(
 function serializeWorkspace(ws: {
   id: string;
   orgId: string;
+  platform: string;
   altiumWorkspaceUrl: string | null;
   nexarClientIdEnc: string | null;
   nexarClientSecretEnc: string | null;
@@ -383,6 +403,7 @@ function serializeWorkspace(ws: {
   return {
     id: ws.id,
     orgId: ws.orgId,
+    platform: ws.platform,
     altiumWorkspaceUrl: ws.altiumWorkspaceUrl,
     hasNexarCredentials: !!(ws.nexarClientIdEnc && ws.nexarClientSecretEnc),
     hasAltiumRestToken: !!ws.altiumRestTokenEnc,
