@@ -4,6 +4,7 @@ import { BillingBanner } from "./components/BillingBanner";
 import { Footer } from "./components/Footer";
 import { RequireAuth, RedirectIfAuthed } from "./components/RequireAuth";
 import { HomePage } from "./pages/Home";
+import { LandingPage } from "./pages/Landing";
 import { LoginPage } from "./pages/Login";
 import { SignupPage } from "./pages/Signup";
 import { PartsSearch } from "./pages/PartsSearch";
@@ -11,11 +12,12 @@ import { SettingsRoutes } from "./pages/Settings";
 import { AcceptInvitePage } from "./pages/AcceptInvite";
 import { DpaPage } from "./pages/Legal/Dpa";
 import { SubprocessorsPage } from "./pages/Legal/Subprocessors";
+import { useAuth } from "./lib/auth";
 
 /**
  * Top-level router.
  *
- *   /                      — protected: home (org summary + tool links)
+ *   /                      — public Landing for anonymous, in-app HomePage for authed
  *   /login                 — public, redirects to / when already authed
  *   /signup                — public, redirects to / when already authed
  *   /parts                 — protected: PartsSearch (workspace-scoped)
@@ -24,6 +26,15 @@ import { SubprocessorsPage } from "./pages/Legal/Subprocessors";
  *   /legal/subprocessors   — public: subprocessor list
  *   *                      — 404 → /
  */
+function HomeOrLanding() {
+  const { isLoading, isAuthenticated } = useAuth();
+  // While the session is still loading, render nothing — flashing the
+  // marketing landing for ~150ms before redirecting an authed user to
+  // their dashboard looks broken. Nav already shows a "…" placeholder.
+  if (isLoading) return null;
+  return isAuthenticated ? <HomePage /> : <LandingPage />;
+}
+
 export function App() {
   return (
     <BrowserRouter>
@@ -32,14 +43,7 @@ export function App() {
         <BillingBanner />
         <main className="flex-1">
           <Routes>
-            <Route
-              path="/"
-              element={
-                <RequireAuth>
-                  <HomePage />
-                </RequireAuth>
-              }
-            />
+            <Route path="/" element={<HomeOrLanding />} />
             <Route
               path="/login"
               element={
