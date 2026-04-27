@@ -50,14 +50,39 @@
 
   // ── Command-handler registry ──────────────────────────────────────
   // Sprint 10+ adds entries to this map; one entry per cross-platform
-  // tool method declared on `Platform` (server-side). Until then the
-  // map is empty and every command resolves with tool_not_implemented.
+  // tool method declared on `Platform` (server-side). Methods not in
+  // this map fall through to tool_not_implemented at the dispatcher
+  // below.
 
   /** @type {Record<string, (params: Record<string, unknown>) => Promise<unknown>>} */
   const handlers = {
-    // Sprint 10 PR 10.1: 'screenshot' — captures the editor canvas.
-    // Sprint 10 PR 10.2: 'get_active_project' — wraps eda.dmt_Project.
-    // ...
+    /**
+     * Sprint 10 PR 10.1: capture the editor canvas as a PNG and
+     * return `{base64Png, byteLength}`.
+     *
+     * **Stub today.** The PR 9.1 spike confirmed EasyEDA Pro
+     * exposes editor canvas surfaces (eext-pad-fanout reads pads
+     * visually, eext-circuitjs1-simulator embeds an iframe), but
+     * the exact API for capturing a PNG from the active editor
+     * needs hands-on experimentation in a real EasyEDA install.
+     * Until that lands, this handler throws via the relay's
+     * postResult-failure path; the server's
+     * EasyedaPlatform.screenshot() turns that into
+     * `{supported: false, reason: ...}` so the AI client degrades
+     * gracefully rather than seeing an empty PNG.
+     *
+     * Wiring path (when implemented):
+     *   1. Locate the active document's canvas via
+     *      eda.dmt_EditorControl + eda.sys_PanelControl.
+     *   2. Render the canvas to a Blob/DataURL.
+     *   3. Strip the data:image/png;base64, prefix.
+     *   4. Return { base64Png, byteLength }.
+     */
+    screenshot: async function (_params) {
+      throw new Error(
+        "Canvas capture is not yet wired up in the PCBviber EasyEDA extension. The server-side screenshot tool ships in Sprint 10 PR 10.1; the in-editor capture comes in a follow-up after hands-on EasyEDA Pro experimentation."
+      );
+    },
   };
 
   // ── Boot ──────────────────────────────────────────────────────────

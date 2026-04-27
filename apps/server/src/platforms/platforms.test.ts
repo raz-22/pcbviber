@@ -116,6 +116,108 @@ test("PlatformResponse failure shape: supported=false carries a non-empty reason
   }
 });
 
+// ─── EasyedaPlatform.screenshot() — Sprint 10 PR 10.1 ───────────────
+// Now a real impl. Tests pin the relay-dispatch happy path, the
+// no-bridge fallback (so the AI client's degrade-gracefully contract
+// holds), and the result-shape mapping.
+
+import { EdaRelay } from "../eda-relay/relay.js";
+
+test("EasyedaPlatform.screenshot: with relay+workspaceId, returns ok with the extension's payload", async () => {
+  // Real EdaRelay; we feed the result through the broker by polling
+  // the queued command + posting the result back, the same shape as
+  // the extension's HTTP loop.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  // Drive the round-trip in parallel: the platform.screenshot()
+  // promise blocks until postResult resolves it.
+  const pending = platform.screenshot();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("relay should have queued the screenshot command");
+  assert.equal(cmd.method, "screenshot");
+
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { base64Png: "iVBORw0KGgo=", byteLength: 1024 },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.base64Png, "iVBORw0KGgo=");
+    assert.equal(result.data.byteLength, 1024);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.screenshot: with no relay, returns supported:false with NO_BRIDGE reason", async () => {
+  // The "stub" path stays — the AI client should see an
+  // extension-not-connected message, distinct from
+  // "feature not implemented".
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.screenshot();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(
+      result.reason,
+      /extension is not connected/i,
+      "reason must distinguish 'no bridge' from 'method not implemented'"
+    );
+  }
+});
+
+test("EasyedaPlatform.screenshot: when extension reports failure via relay, surfaces as supported:false with extension's message", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.screenshot();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+
+  // Extension says "DOM not ready" — surfaces verbatim through the
+  // PlatformResponse contract rather than throwing.
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: false,
+    error: { message: "Editor canvas not ready", code: "canvas_unavailable" },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /canvas not ready/i);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.screenshot: malformed extension payload (missing base64Png) is treated as supported:false, not a crash", async () => {
+  // Defense in depth: the extension is third-party JS the user
+  // installed. If it ships a future version that returns the wrong
+  // shape, the platform must surface a typed signal — not let the
+  // bad payload reach the AI client unchecked.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.screenshot();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { wrongField: "not a base64Png" },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /base64Png/i);
+  }
+  relay.__resetForTests();
+});
+
 // ─── Helper ─────────────────────────────────────────────────────────
 
 function assertSupportedFalse<T>(
