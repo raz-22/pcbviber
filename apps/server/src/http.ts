@@ -65,6 +65,7 @@ import type { AdRelay } from "./ad-relay/relay.js";
 import { registerAdRelayRoutes } from "./ad-relay/routes.js";
 import { EdaRelay } from "./eda-relay/relay.js";
 import { registerEdaRelayRoutes } from "./eda-relay/routes.js";
+import { registerEdaScriptRoutes } from "./eda-script-routes/routes.js";
 import * as altium from "./handlers/altium.js";
 
 export async function startHttpServer(opts: {
@@ -290,6 +291,13 @@ export async function startHttpServer(opts: {
   // EasyedaPlatform once the extension can post results back.
   const edaRelay = new EdaRelay();
   registerEdaRelayRoutes(app, edaRelay);
+
+  // ── eda-script package serve ───────────────────────────────────
+  // Serves the packaged EasyEDA Pro extension as a `.eext` archive
+  // at /eda-script/pcbviber-easyeda.eext. Public route — the .eext
+  // contains no secrets; the API key is entered by the user inside
+  // EasyEDA at first run.
+  registerEdaScriptRoutes(app);
 
   // ── MCP over HTTP (stateless) ──────────────────────────
   // Bearer-token auth gates every /mcp request: the middleware hashes
