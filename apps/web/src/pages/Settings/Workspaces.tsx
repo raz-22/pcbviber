@@ -27,6 +27,7 @@ import type {
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
   Workspace,
+  WorkspacePlatform,
 } from "../../lib/api";
 
 type ViewState =
@@ -244,9 +245,12 @@ function WorkspaceCard({
     <li className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="font-medium">
-            {ws.altiumWorkspaceUrl ?? <span className="text-slate-400 italic">No Altium 365 URL</span>}
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="font-medium">
+              {ws.altiumWorkspaceUrl ?? <span className="text-slate-400 italic">No Altium 365 URL</span>}
+            </p>
+            <PlatformPill platform={ws.platform} />
+          </div>
           <p className="mt-1 text-xs text-slate-500">
             <code className="font-mono">{ws.id}</code> · created{" "}
             {new Date(ws.createdAt).toLocaleDateString()}
@@ -325,6 +329,22 @@ function Badge({ ok, children }: { ok?: boolean; children: React.ReactNode }) {
       ].join(" ")}
     >
       {children}
+    </span>
+  );
+}
+
+function PlatformPill({ platform }: { platform: WorkspacePlatform }) {
+  // Per-platform color so the AI / human eye picks up the difference
+  // at a glance on a list of mixed workspaces. Altium = blue (matches
+  // the brand we're already showing); EasyEDA = teal.
+  const cls =
+    platform === "easyeda"
+      ? "bg-teal-100 text-teal-800"
+      : "bg-blue-100 text-blue-800";
+  const label = platform === "easyeda" ? "EasyEDA" : "Altium";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>
+      {label}
     </span>
   );
 }

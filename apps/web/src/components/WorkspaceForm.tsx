@@ -24,6 +24,7 @@ import type {
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
   Workspace,
+  WorkspacePlatform,
 } from "../lib/api";
 import { workspaceErrorMessage, useTestWorkspaceConnection } from "../lib/workspaces";
 
@@ -61,6 +62,13 @@ export function WorkspaceForm({
   submitError,
   submitting,
 }: WorkspaceFormProps) {
+  // Platform is set on create only; editing the platform mid-flight
+  // would invalidate stored creds + connected extensions, so we lock
+  // it on the server side too. The pre-loaded value drives the
+  // (read-only) display in edit mode.
+  const [platform, setPlatform] = useState<WorkspacePlatform>(
+    workspace?.platform ?? "altium"
+  );
   const [altiumWorkspaceUrl, setAltiumWorkspaceUrl] = useState(
     workspace?.altiumWorkspaceUrl ?? ""
   );
@@ -103,6 +111,7 @@ export function WorkspaceForm({
 
     if (mode === "create") {
       const payload: CreateWorkspaceInput = {
+        platform,
         nexarClientId: nexarClientId.trim(),
         nexarClientSecret: nexarClientSecret.trim(),
       };
@@ -161,6 +170,30 @@ export function WorkspaceForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+      <Field label="EDA platform" hint="Platform is fixed once a workspace is created — pick the one your team uses.">
+        {mode === "create" ? (
+          <div className="flex gap-2">
+            <PlatformOption
+              selected={platform === "altium"}
+              onClick={() => setPlatform("altium")}
+              title="Altium"
+              subtitle="Altium 365 + Altium Designer relay"
+            />
+            <PlatformOption
+              selected={platform === "easyeda"}
+              onClick={() => setPlatform("easyeda")}
+              title="EasyEDA"
+              subtitle="EasyEDA Pro via in-editor extension"
+            />
+          </div>
+        ) : (
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+            {platform === "easyeda" ? "EasyEDA" : "Altium"}{" "}
+            <span className="text-xs text-slate-500">(locked)</span>
+          </div>
+        )}
+      </Field>
+
       <Field
         label="Altium 365 workspace URL"
         hint='Optional — e.g. "https://acme.altium365.com/workspaces/…". Required for library + Altium 365 calls.'
@@ -323,5 +356,33 @@ function Field({
       <div className="mt-1">{children}</div>
       {error && <span className="mt-1 block text-xs text-red-600">{error}</span>}
     </label>
+  );
+}
+
+function PlatformOption({
+  selected,
+  onClick,
+  title,
+  subtitle,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "flex-1 rounded-md border px-3 py-2 text-left text-sm transition",
+        selected
+          ? "border-blue-500 bg-blue-50 ring-2 ring-blue-100"
+          : "border-slate-300 bg-white hover:bg-slate-50",
+      ].join(" ")}
+    >
+      <span className="block font-medium text-slate-900">{title}</span>
+      <span className="mt-0.5 block text-xs text-slate-500">{subtitle}</span>
+    </button>
   );
 }

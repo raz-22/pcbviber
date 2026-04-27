@@ -686,6 +686,102 @@ test("an org can hold multiple workspaces simultaneously", async () => {
   assert.equal(ids.size, after.json().workspaces.length);
 });
 
+// ─── Platform field (Sprint 9 PR 9.2) ────────────────────────────────
+
+test("POST /workspaces defaults platform to 'altium' when omitted", async () => {
+  // Backwards-compat: every existing API consumer + the bulk of new
+  // traffic during the EasyEDA rollout still posts WITHOUT a platform
+  // field. Server defaults it to "altium" and the response carries it
+  // explicitly so SPA / MCP clients can render the pill correctly.
+  testCredsResult = { ok: true };
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      altiumWorkspaceUrl: "https://default-platform.altium365.com",
+      nexarClientId: "dp",
+      nexarClientSecret: "dp",
+    },
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json().workspace.platform, "altium");
+});
+
+test("POST /workspaces accepts platform=easyeda explicitly", async () => {
+  testCredsResult = { ok: true };
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      platform: "easyeda",
+      nexarClientId: "ee",
+      nexarClientSecret: "ee",
+      // EasyEDA workspaces don't carry an altiumWorkspaceUrl — that
+      // field stays Altium-specific. The server doesn't reject its
+      // absence on platform=easyeda; it's optional regardless of
+      // platform per the existing schema.
+    },
+  });
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json().workspace.platform, "easyeda");
+});
+
+test("POST /workspaces rejects platform values outside the allowlist", async () => {
+  // Defense in depth: the column at the DB layer is just TEXT, so the
+  // Zod allowlist on the API is the gate that stops a typo or a
+  // malicious client from writing 'kicad' before we add KiCad
+  // support. Today the allowlist is {"altium", "easyeda"}; this test
+  // pins the rejection so a future expansion is a deliberate code
+  // change, not a silent acceptance.
+  testCredsResult = { ok: true };
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: {
+      platform: "kicad",
+      nexarClientId: "k",
+      nexarClientSecret: "k",
+    },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json().error, "invalid_input");
+});
+
+test("GET /workspaces returns each row's platform in the serialized response", async () => {
+  // Round-trip: create one of each platform, then list and verify the
+  // serializer surfaces both correctly. Safety net for the SPA's pill
+  // rendering and for any future consumer that filters by platform.
+  testCredsResult = { ok: true };
+  const a = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: { platform: "altium", nexarClientId: "rt-a", nexarClientSecret: "rt-a" },
+  });
+  const e = await app.inject({
+    method: "POST",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+    payload: { platform: "easyeda", nexarClientId: "rt-e", nexarClientSecret: "rt-e" },
+  });
+
+  const list = await app.inject({
+    method: "GET",
+    url: `/api/orgs/${aliceOrgId}/workspaces`,
+    headers: { cookie: aliceCookie },
+  });
+  const items = list
+    .json()
+    .workspaces as Array<{ id: string; platform: string }>;
+  const altium = items.find((w) => w.id === a.json().workspace.id);
+  const easyeda = items.find((w) => w.id === e.json().workspace.id);
+  assert.equal(altium?.platform, "altium");
+  assert.equal(easyeda?.platform, "easyeda");
+});
+
 // ─── helper ──────────────────────────────────────────────────────────
 
 function extractCookie(setCookie: string | string[] | undefined): string | null {

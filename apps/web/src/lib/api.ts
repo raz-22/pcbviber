@@ -211,9 +211,17 @@ export interface LoginResponse extends AuthMe {}
  * in apps/server/src/workspaces/routes.ts — never includes ciphertext,
  * only metadata + booleans for "is configured" UI hints.
  */
+/**
+ * EDA platforms a Workspace can target. Server-side allowlist
+ * mirrors this set; runtime-validated. Adding KiCad / Eagle /
+ * Fusion 360 in a later sprint extends both ends together.
+ */
+export type WorkspacePlatform = "altium" | "easyeda";
+
 export interface Workspace {
   id: string;
   orgId: string;
+  platform: WorkspacePlatform;
   altiumWorkspaceUrl: string | null;
   hasNexarCredentials: boolean;
   hasAltiumRestToken: boolean;
@@ -229,6 +237,11 @@ export interface WorkspaceResponse {
 }
 
 export interface CreateWorkspaceInput {
+  /**
+   * Defaults server-side to "altium" if omitted; included here so
+   * the SPA's create form can pass the user's selection.
+   */
+  platform?: WorkspacePlatform;
   altiumWorkspaceUrl?: string;
   nexarClientId: string;
   nexarClientSecret: string;

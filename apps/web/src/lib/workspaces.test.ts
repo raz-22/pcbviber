@@ -22,6 +22,7 @@ function ws(id: string, hasNexarCredentials = true): Workspace {
   return {
     id,
     orgId: "org-a",
+    platform: "altium",
     altiumWorkspaceUrl: null,
     hasNexarCredentials,
     hasAltiumRestToken: false,
