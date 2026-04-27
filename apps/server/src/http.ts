@@ -385,10 +385,17 @@ export async function startHttpServer(opts: {
       ]);
       return { ok: true, detail: `${Date.now() - start}ms` };
     } catch (err) {
-      return {
-        ok: false,
-        detail: err instanceof Error ? err.message : String(err),
-      };
+      // /api/health is unauthenticated. Raw Prisma errors can include
+      // the DB hostname, the DB name, or auth specifics
+      // ("Can't reach database server at host:5432") — none of which
+      // belong on the wire to anonymous probers. Map to a stable
+      // short code and log the full error server-side.
+      app.log.error({ err }, "/api/health: probeDb failed");
+      const code =
+        err instanceof Error && err.message === "timeout"
+          ? "timeout"
+          : "unreachable";
+      return { ok: false, detail: code };
     }
   }
 
