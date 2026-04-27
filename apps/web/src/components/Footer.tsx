@@ -18,6 +18,10 @@ export function Footer() {
           Docs
         </Link>
         <span aria-hidden>·</span>
+        <Link to="/status" className="hover:text-slate-700 hover:underline">
+          Status
+        </Link>
+        <span aria-hidden>·</span>
         <Link to="/legal/privacy" className="hover:text-slate-700 hover:underline">
           Privacy
         </Link>

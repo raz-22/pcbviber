@@ -367,12 +367,59 @@ export async function startHttpServer(opts: {
   // No-op when SENTRY_DSN is unset.
   Sentry.setupFastifyErrorHandler(app);
 
-  app.get("/api/health", async () => ({
-    ok: true,
-    name: "pcbviber",
-    version: "0.3.0",
-    relay: relay.status().connected ? "connected" : "disconnected",
-  }));
+  // Probe the database with a trivial round-trip. Bounded by a 5s
+  // timeout: warm queries land in <300ms, but Neon cold-start (TLS
+  // + AWS round-trip) can stretch to ~2s on the first call, so
+  // anything below ~3s would falsely flag DB as down for 30s after
+  // a process restart while the SPA's poll loop still showed red.
+  // 5s is generous enough for cold-start while still surfacing a
+  // wedged DB faster than a real query timeout would.
+  async function probeDb(): Promise<{ ok: boolean; detail?: string }> {
+    const start = Date.now();
+    try {
+      await Promise.race([
+        prisma.$queryRaw`SELECT 1`,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), 5000)
+        ),
+      ]);
+      return { ok: true, detail: `${Date.now() - start}ms` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  // /api/health is the public probe. Used by:
+  //   - the SPA's /status page (polls every 30s for green/red dots)
+  //   - external uptime monitors (Better Uptime / Pingdom, when wired)
+  //   - readiness probes if/when this gets containerized in k8s
+  // The shape is intentionally narrow + stable: ok (overall), then a
+  // dependency map. Each dependency is { ok, detail? } so the SPA
+  // can render a green/red dot without parsing free-form text.
+  // Errors are caught per-dependency so one slow check doesn't tank
+  // the whole probe — the response always returns within ~db-timeout.
+  const healthStartedAt = Date.now();
+  app.get("/api/health", async () => {
+    const dbCheck = await probeDb();
+    const relayConnected = relay.status().connected;
+    return {
+      ok: dbCheck.ok,
+      name: "pcbviber",
+      version: "0.3.0",
+      uptimeSeconds: Math.floor((Date.now() - healthStartedAt) / 1000),
+      checkedAt: new Date().toISOString(),
+      dependencies: {
+        database: dbCheck,
+        // Relay is informational, not a service-up indicator: AD is
+        // a per-user local connection. ok=true here means "the relay
+        // bridge is configured", not "every customer has AD running".
+        relay: { ok: true, detail: relayConnected ? "connected" : "no client" },
+      },
+    };
+  });
 
   // ── REST wrappers for AD tools (no MCP protocol required) ────────
   // These call the same handlers the MCP tools use. Useful for curl,

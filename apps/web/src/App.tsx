@@ -15,6 +15,7 @@ import { SubprocessorsPage } from "./pages/Legal/Subprocessors";
 import { PrivacyPage } from "./pages/Legal/Privacy";
 import { TermsPage } from "./pages/Legal/Terms";
 import { DocsPage } from "./pages/Docs";
+import { StatusPage } from "./pages/Status";
 import { useAuth } from "./lib/auth";
 
 /**
@@ -26,6 +27,7 @@ import { useAuth } from "./lib/auth";
  *   /parts                 — protected: PartsSearch (workspace-scoped)
  *   /settings/*            — protected: Settings shell, see Settings/index.tsx
  *   /docs                  — public: quickstart + tool reference
+ *   /status                — public: live API health probe
  *   /legal/privacy         — public: privacy policy
  *   /legal/terms           — public: terms of service
  *   /legal/dpa             — public: data processing addendum
@@ -95,6 +97,8 @@ export function App() {
             {/* Public docs — same audience as the marketing landing
                 + linked from registry submission and launch posts. */}
             <Route path="/docs" element={<DocsPage />} />
+            {/* Public status probe — for customers + uptime monitors. */}
+            <Route path="/status" element={<StatusPage />} />
             {/* Public legal pages — readable without a session so
                 prospects under procurement review can link directly. */}
             <Route path="/legal/privacy" element={<PrivacyPage />} />
