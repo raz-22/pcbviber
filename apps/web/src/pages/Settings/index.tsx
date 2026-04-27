@@ -14,6 +14,7 @@ import { BillingSettingsPage } from "./Billing";
 import { UsageSettingsPage } from "./Usage";
 import { AuditSettingsPage } from "./Audit";
 import { OrganizationSettingsPage } from "./Organization";
+import { ConnectEasyEdaPage } from "./ConnectEasyEda";
 
 interface Tab {
   to: string;
@@ -85,6 +86,10 @@ export function SettingsRoutes() {
       <Route element={<SettingsShell />}>
         <Route index element={<Navigate to="/settings/workspaces" replace />} />
         <Route path="workspaces" element={<WorkspacesSettingsPage />} />
+        <Route
+          path="workspaces/:workspaceId/connect-easyeda"
+          element={<ConnectEasyEdaPage />}
+        />
         <Route path="members" element={<MembersSettingsPage />} />
         <Route path="api-keys" element={<ApiKeysSettingsPage />} />
         <Route path="billing" element={<BillingSettingsPage />} />

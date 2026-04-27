@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../../lib/auth";
 import {
   useCreateWorkspace,
@@ -261,6 +262,16 @@ function WorkspaceCard({
             </Badge>
             {ws.hasAltiumRestToken && <Badge ok>REST token set</Badge>}
           </div>
+          {ws.platform === "easyeda" && (
+            <div className="mt-3 text-xs">
+              <Link
+                to={`/settings/workspaces/${ws.id}/connect-easyeda`}
+                className="text-blue-700 hover:underline"
+              >
+                Connect EasyEDA Pro →
+              </Link>
+            </div>
+          )}
         </div>
         {canEdit && pendingDelete === null && (
           <div className="flex gap-2">
