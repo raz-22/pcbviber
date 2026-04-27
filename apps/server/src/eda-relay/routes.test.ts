@@ -106,6 +106,14 @@ before(async () => {
   edaRelay = new EdaRelay();
   app = Fastify({ logger: false });
   registerEdaRelayRoutes(app, edaRelay);
+  // Install the api-key error handler so 401s reshape into the
+  // {error: "not_authenticated"} body the SPA mapper expects. In
+  // production http.ts installs this once at the end of route
+  // registration; tests that mount routes in isolation do it here.
+  const { installApiKeyErrorHandler } = await import(
+    "../api-keys/middleware.js"
+  );
+  installApiKeyErrorHandler(app);
   await app.ready();
 });
 

@@ -27,10 +27,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "@altium-mcp/db";
-import {
-  installApiKeyErrorHandler,
-  makeRequireApiKey,
-} from "../api-keys/middleware.js";
+import { makeRequireApiKey } from "../api-keys/middleware.js";
 import type { EdaRelay } from "./relay.js";
 
 // Mirrors EdaResultEnvelope from relay.ts but with a Zod schema so the
@@ -181,8 +178,10 @@ export function registerEdaRelayRoutes(
     }
   );
 
-  // The api-key middleware throws `not_authenticated` on auth
-  // failure; reuse the existing reshape so the 401 body matches
-  // the rest of the API surface.
-  installApiKeyErrorHandler(app);
+  // installApiKeyErrorHandler intentionally NOT called here —
+  // http.ts already calls it once at the end of route registration
+  // so 401s from the api-key middleware reshape uniformly across
+  // /mcp, /api/eda-relay/*, and any future bearer-authed endpoints.
+  // Tests that mount these routes in isolation install it
+  // themselves.
 }
