@@ -12,6 +12,8 @@ import { SettingsRoutes } from "./pages/Settings";
 import { AcceptInvitePage } from "./pages/AcceptInvite";
 import { DpaPage } from "./pages/Legal/Dpa";
 import { SubprocessorsPage } from "./pages/Legal/Subprocessors";
+import { PrivacyPage } from "./pages/Legal/Privacy";
+import { TermsPage } from "./pages/Legal/Terms";
 import { useAuth } from "./lib/auth";
 
 /**
@@ -22,6 +24,8 @@ import { useAuth } from "./lib/auth";
  *   /signup                — public, redirects to / when already authed
  *   /parts                 — protected: PartsSearch (workspace-scoped)
  *   /settings/*            — protected: Settings shell, see Settings/index.tsx
+ *   /legal/privacy         — public: privacy policy
+ *   /legal/terms           — public: terms of service
  *   /legal/dpa             — public: data processing addendum
  *   /legal/subprocessors   — public: subprocessor list
  *   *                      — 404 → /
@@ -88,6 +92,8 @@ export function App() {
             />
             {/* Public legal pages — readable without a session so
                 prospects under procurement review can link directly. */}
+            <Route path="/legal/privacy" element={<PrivacyPage />} />
+            <Route path="/legal/terms" element={<TermsPage />} />
             <Route path="/legal/dpa" element={<DpaPage />} />
             <Route
               path="/legal/subprocessors"

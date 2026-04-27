@@ -14,6 +14,14 @@ export function Footer() {
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2">
         <span>© {new Date().getFullYear()} PCBviber</span>
         <span aria-hidden>·</span>
+        <Link to="/legal/privacy" className="hover:text-slate-700 hover:underline">
+          Privacy
+        </Link>
+        <span aria-hidden>·</span>
+        <Link to="/legal/terms" className="hover:text-slate-700 hover:underline">
+          Terms
+        </Link>
+        <span aria-hidden>·</span>
         <Link to="/legal/dpa" className="hover:text-slate-700 hover:underline">
           DPA
         </Link>

@@ -79,6 +79,21 @@ export function SignupPage() {
           </p>
         )}
 
+        <p className="text-xs text-slate-500">
+          By creating an account, you agree to our{" "}
+          <Link to="/legal/terms" className="underline hover:text-slate-700">
+            Terms of Service
+          </Link>{" "}
+          and{" "}
+          <Link
+            to="/legal/privacy"
+            className="underline hover:text-slate-700"
+          >
+            Privacy Policy
+          </Link>
+          .
+        </p>
+
         <button
           type="submit"
           disabled={signup.isPending || !email || !password}
