@@ -79,14 +79,6 @@ export function SignupPage() {
           </p>
         )}
 
-        <button
-          type="submit"
-          disabled={signup.isPending || !email || !password}
-          className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
-        >
-          {signup.isPending ? "Creating account…" : "Create account"}
-        </button>
-
         <p className="text-xs text-slate-500">
           By creating an account, you agree to our{" "}
           <Link to="/legal/terms" className="underline hover:text-slate-700">
@@ -101,6 +93,14 @@ export function SignupPage() {
           </Link>
           .
         </p>
+
+        <button
+          type="submit"
+          disabled={signup.isPending || !email || !password}
+          className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+        >
+          {signup.isPending ? "Creating account…" : "Create account"}
+        </button>
       </form>
     </div>
   );
