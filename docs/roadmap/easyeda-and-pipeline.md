@@ -34,11 +34,32 @@ These shape every sprint below; not negotiable inside the roadmap.
    `offset` + `limit` and returns a `nextOffset`. Avoids blowing the
    AltiumRelay HTTP long-poll budget (~8s per call) and blowing token
    budgets on the AI side.
-4. **Platform-agnostic where the semantics match.** `list_projects(platform)`
-   not `altium_list_projects` + `easyeda_list_projects`. Per-platform
-   tools only when the operation is genuinely platform-specific (e.g.
-   `ad_run_drc` is Altium-only because EasyEDA's DRC has different
-   inputs).
+4. **Cross-platform by default, with validation as a hard PR gate.**
+   Every new tool that touches a concept any EDA platform has
+   (project, schematic, components, BOM, placement, routing,
+   verification, manufacturing, ordering) must work across **every
+   supported platform** — Altium today, EasyEDA on landing, KiCad /
+   Eagle / Fusion 360 if and when they're added. Concrete rules:
+
+   - **Tool surface is platform-agnostic.** Public name is
+     `list_projects(platform)`, never `altium_list_projects` +
+     `easyeda_list_projects`. Per-platform implementations live behind
+     a `Platform` interface (Sprint 9 PR 9.X — pulled forward from
+     the original Sprint 13.5 placement so every subsequent tool is
+     built on it from day one, not retrofitted).
+   - **Every new tool ships with hermetic tests on every supported
+     platform.** A PR that adds `get_components` lands with both an
+     Altium test and an EasyEDA test. Single-platform PRs don't pass
+     review.
+   - **Genuine platform exclusivity is rare and explicit.** If a
+     platform truly cannot support the operation (e.g. an API surface
+     doesn't exist), the tool registers a stub returning
+     `{supported: false, reason: <one sentence>}` so the AI client can
+     degrade gracefully and reason about the limitation. The exception
+     is documented in the tool's docstring AND in `/docs`.
+   - **Forward-compatibility for future EDAs.** Adding KiCad in a
+     future sprint means writing a new `KicadPlatform` implementation
+     — not rewriting any of the existing tool registrations.
 
 ## Where we are today (post-Sprint-8)
 
@@ -106,9 +127,13 @@ would say "this isn't ready for real work yet."
 
 5 sprints. Each follows the existing convention (one PR at a time, hermetic tests, self-review pass before merge).
 
-### Sprint 9 — EasyEDA spike + extension foundation
+### Sprint 9 — EasyEDA spike + Platform interface foundation
 
-Confirm the path, scaffold the extension, plumb the workspace model.
+Confirm the EasyEDA path, plumb the workspace model, **and introduce the
+`Platform` interface** that every subsequent tool registers through.
+Pulled forward from the original Sprint 13.5 placement so every tool
+from Sprint 10 onward is built cross-platform from day one, not
+retrofitted.
 
 - **PR 9.1 — Spike report.** Load EasyEDA Pro, register a hello-world
   extension, exercise the API surface for read (schematic objects +
@@ -119,110 +144,130 @@ Confirm the path, scaffold the extension, plumb the workspace model.
   to `Workspace` schema, migration, tenant tx coverage. Existing
   workspaces default to `"altium"`. SPA shows a platform pill in
   Settings → Workspaces.
-- **PR 9.3 — `eda-script/` scaffolding.** PCBviber EasyEDA extension
-  skeleton: manifest, build, install instructions in
-  `eda-script/README.md`. Long-poll bridge mirroring `ad-relay/relay.ts`
-  on the server side, with a fresh `EdaRelay` class. **No tools
-  registered yet** — just the bridge.
-- **PR 9.4 — SPA install flow.** New "Connect EasyEDA" panel under
+- **PR 9.3 — `Platform` interface + Altium implementation.** New
+  TypeScript `Platform` interface defining the cross-platform surface:
+  `listProjects`, `getProject`, `getComponents`, `moveComponent`,
+  `runDrc`, etc. Each method returns a `PlatformResponse` with either
+  data or `{supported: false, reason}`. Refactor existing AD relay
+  handlers to register through `AltiumPlatform extends Platform`.
+  Existing tool registrations (`ad_*`) keep working — they're just
+  thin adapters over the interface now. All existing hermetic tests
+  must still pass.
+- **PR 9.4 — `eda-script/` scaffolding + `EasyedaPlatform` skeleton.**
+  PCBviber EasyEDA extension skeleton (manifest, build, install
+  instructions in `eda-script/README.md`). Long-poll bridge mirroring
+  `ad-relay/relay.ts`. Server-side `EasyedaPlatform implements Platform`
+  with every method returning `{supported: false, reason: "not yet
+  implemented"}` — Sprint 10 fills these in.
+- **PR 9.5 — SPA install flow.** New "Connect EasyEDA" panel under
   Settings → Workspaces; downloads the extension package and shows the
   load-into-EasyEDA steps. Mirrors AD relay's setup flow.
 
-**Exit**: a workspace declares its platform; the EasyEDA extension is
-loadable; the long-poll bridge connects but speaks no tools yet.
+**Exit**: a workspace declares its platform; the `Platform` interface
+exists with both Altium (real) and EasyEDA (stub) implementations;
+every subsequent tool registers through it.
 
-### Sprint 10 — EasyEDA read tools
+### Sprint 10 — EasyEDA read parity (fill the `EasyedaPlatform` stub)
 
-Parity with the read side of Altium 365 + AD relay, plus the visual-
-verification commitment.
+Sprint 9's `EasyedaPlatform` returns `{supported: false}` for everything.
+Sprint 10's PRs implement the read surface so the platform-agnostic
+tools introduced through `Platform` work on EasyEDA too. Existing
+Altium tests and new EasyEDA tests both pass after every PR.
 
-- **PR 10.1 — `easyeda_screenshot`.** First tool in the new namespace.
-  Architectural commitment: every other EasyEDA tool that lands in
-  this sprint and the next is verified via screenshot in its hermetic
-  test.
-- **PR 10.2 — `easyeda_list_projects` / `easyeda_get_active_project`**
-- **PR 10.3 — `easyeda_get_schematic` / `easyeda_get_pcb`** (paginated)
-- **PR 10.4 — `easyeda_list_library_components`** with LCSC enrichment
-  (cross-reference to Octopart's per-distributor stock)
-- **PR 10.5 — `easyeda_get_messages`** (DRC + ERC outputs from the
-  EasyEDA panel — pattern-match `ad_get_messages`)
+- **PR 10.1 — `screenshot(platform)`.** Single tool, two implementations:
+  `AltiumPlatform.screenshot()` already exists (renamed from
+  `ad_screenshot`); `EasyedaPlatform.screenshot()` is new (extension
+  captures the editor canvas). Cross-platform test asserts both work.
+  **Architectural foundation**: every subsequent layout-modifying tool
+  pair will use this in its test for visual verification.
+- **PR 10.2 — `list_projects(platform)` / `get_active_project(platform)`.**
+- **PR 10.3 — `get_schematic(platform)` / `get_pcb(platform)`** (paginated)
+- **PR 10.4 — `list_library_components(platform)`** with LCSC enrichment
+  on the EasyEDA side (cross-references to Octopart's per-distributor
+  stock).
+- **PR 10.5 — `get_messages(platform)`** (DRC + ERC outputs from the
+  platform's messages panel).
 
-**Exit**: AI client can read an EasyEDA project end-to-end and get the
-same BOM-quality data as on Altium. Every read result can be visually
-spot-checked via `easyeda_screenshot`.
+**Exit**: every read tool the platform abstraction exposes works on
+both Altium and EasyEDA, with hermetic tests on both. Tool reference
+in `/docs` shows one tool per row, not two.
 
-### Sprint 11 — Altium **placement** deep dive
+### Sprint 11 — Placement deep dive (cross-platform)
 
-Closes the 7 placement gaps. This is where "AI assistant for hardware
-engineers" stops being a marketing phrase and becomes a real layout-
-helper surface.
+Closes the 7 placement gaps the research surfaced. Each PR adds a tool
+that works on **both** Altium and EasyEDA, with hermetic tests on both.
+Per-PR scope is sized to land the Altium implementation, the EasyEDA
+implementation, and the screenshot-verified test in a single review.
 
-- **PR 11.1 — `ad_get_components`.** Paginated read. Returns
+- **PR 11.1 — `get_components(platform)`.** Paginated read. Returns
   `[{designator, mpn, footprint, x, y, layer, rotation, locked}, ...]`.
-  Closes the single biggest current gap: today we expose
-  `componentCount` but not per-component placement.
-- **PR 11.2 — `ad_move_component` / `ad_rotate_component` / `ad_lock_component`**
-  Three primitive write tools. Each pairs with `ad_screenshot` in its
-  test.
-- **PR 11.3 — `ad_get_keepouts` / `ad_set_keepout`** (CRUD)
-- **PR 11.4 — `ad_validate_placement`.** Overlap detection + spacing-
-  rule check. Returns structured violations the AI can reason about.
-- **PR 11.5 — `ad_place_by_group`.** LLM-friendly helper: takes a
-  filter (e.g. `"footprint=0402 AND net=VCC*"`) and a strategy
-  (`"near-net-source"`, `"around-component"`, `"on-edge"`). Built on
-  the primitives from 11.1–11.2 — not a new low-level capability,
-  just a useful aggregation.
+  Closes the single biggest current gap (today only `componentCount`
+  is exposed on Altium; nothing on EasyEDA).
+- **PR 11.2 — `move_component` / `rotate_component` / `lock_component`.**
+  Three primitive write tools. Each PR's test asserts: read state →
+  mutate → screenshot → state confirms change.
+- **PR 11.3 — `get_keepouts` / `set_keepout`** (CRUD on both platforms).
+- **PR 11.4 — `validate_placement`.** Overlap + spacing-rule check.
+  Returns structured violations the AI can reason about.
+- **PR 11.5 — `place_by_group`.** LLM-friendly helper: filter
+  (`"footprint=0402 AND net=VCC*"`) + strategy (`"near-net-source"`,
+  `"around-component"`, `"on-edge"`). Built on the primitives from
+  11.1–11.2; one implementation, both platforms covered automatically
+  via the `Platform` interface.
 
-**Exit**: AI can place a board from a netlist with concrete commands,
-not just trigger Altium's auto-placer and hope.
+**Exit**: AI can place a board with concrete commands on both Altium
+and EasyEDA — no platform-conditional prompts, no per-platform tool
+selection.
 
-### Sprint 12 — Altium **routing** deep dive
+### Sprint 12 — Routing deep dive (cross-platform)
 
-Closes the 9 routing gaps. Same architectural pattern as Sprint 11.
+Closes the 9 routing gaps. Same cross-platform pattern as Sprint 11.
 
-- **PR 12.1 — `ad_get_net_routing`.** Per-net read: total length, layer
-  split, via count, list of unrouted segments. Paginated by net.
-- **PR 12.2 — `ad_get_design_rules` / `ad_set_route_rule`.** Net class
-  CRUD + per-class clearance / width / via style.
-- **PR 12.3 — `ad_unroute_net` / `ad_unroute_selection`** with confirm-
-  via-screenshot in each test.
-- **PR 12.4 — `ad_route_diff_pair`.** Wires the GUI command via DXP
-  (Altium's interactive diff-pair-router triggered programmatically).
-- **PR 12.5 — `ad_via_stitch_plane`.** Rule-driven via stitching
-  (target net, density, edge clearance).
-- **PR 12.6 — `ad_xsignals_status`.** **Best-effort.** README flags
-  xSignals as "no scripting surface known"; the agent confirmed.
-  Workaround: read length-tuning state via the Messages panel after
-  triggering a length-tune-summary command. If the surface is truly
-  closed, ship a stub that returns `{supported: false, reason: ...}`
-  so the AI client can degrade gracefully.
+- **PR 12.1 — `get_net_routing(platform)`.** Per-net read: total length,
+  layer split, via count, list of unrouted segments. Paginated by net.
+- **PR 12.2 — `get_design_rules` / `set_route_rule`.** Net class CRUD
+  + per-class clearance / width / via style.
+- **PR 12.3 — `unroute_net` / `unroute_selection`** with screenshot
+  confirmation in each test.
+- **PR 12.4 — `route_diff_pair`.** Altium implementation wires the GUI
+  command via DXP; EasyEDA implementation uses the extension's
+  diff-pair-router invocation. Both tested.
+- **PR 12.5 — `via_stitch_plane`.** Rule-driven via stitching (target
+  net, density, edge clearance) on both platforms.
+- **PR 12.6 — `xsignals_status`.** **Genuine platform exclusivity**:
+  Altium implementation reads length-tuning state via the Messages
+  panel (best-effort workaround per agent research); EasyEDA
+  implementation returns `{supported: false, reason: "EasyEDA does
+  not expose xSignals/length-tuning state"}`. The AI client degrades
+  gracefully via the standard `supported: false` contract.
 
 **Exit**: AI can read routing state, mutate route rules, route diff
-pairs, and unroute — the full primitive set for routing automation.
+pairs, and unroute on both platforms.
 
-### Sprint 13 — EasyEDA write tools + platform abstraction
+### Sprint 13 — Manufacturing + outputs (cross-platform)
 
-Bring EasyEDA up to placement + routing + manufacturing parity, then
-unify the tool surface.
+Closes the manufacturing-output side. The original Sprint 13.5
+("platform abstraction") is gone — abstraction landed in Sprint 9.
 
-- **PR 13.1 — `easyeda_get_components` + write primitives.** Mirror
-  Sprint 11's PRs against the EasyEDA extension API.
-- **PR 13.2 — `easyeda_get_net_routing` + routing primitives.** Mirror
-  Sprint 12.
-- **PR 13.3 — `easyeda_export_outputs`.** Gerber, drill, BOM, P&P via
-  the extension's export API.
-- **PR 13.4 — `easyeda_run_drc` + violation enumeration.**
-- **PR 13.5 — Platform abstraction.** Unify the tool surface where
-  semantics overlap: `list_projects(platform)`, `get_components(platform)`,
-  etc. Per-platform tools (`ad_*`, `easyeda_*`) stay for genuinely
-  platform-specific operations. Per-workspace tool filtering — the AI
-  client only sees tools that work on this workspace's platform.
-- **PR 13.6 — `/docs` update.** Tool reference page is now grouped by
-  pipeline stage, not platform. Platform pills next to each tool.
+- **PR 13.1 — `export_gerbers(platform)` / `export_drill` /
+  `export_bom` / `export_pick_and_place`.** All four cross-platform.
+  Altium uses the existing OutJob runner; EasyEDA uses the extension's
+  export API.
+- **PR 13.2 — `run_drc(platform)` + violation enumeration on both.**
+  Closes the README's long-standing DRC-violation-enumeration gap on
+  Altium (Messages-panel parsing) and adds EasyEDA support via the
+  extension API.
+- **PR 13.3 — `production_readiness_check(platform)`.** Cross-platform
+  DFM helper that runs the export pipeline + DRC + manufacturing-rule
+  checks (drill aspect, copper-near-edge, fiducial presence).
+- **PR 13.4 — `/docs` update.** Tool reference reorganized by
+  pipeline stage instead of category. Each tool shows the platforms
+  it supports as pills (every cross-platform tool shows
+  Altium + EasyEDA; the rare exclusives are flagged).
 
-**Exit**: a customer on EasyEDA gets feature parity with a customer on
-Altium for everything except the AD-specific tools. Tool surface reads
-as one product, not a marriage of two.
+**Exit**: a customer on either platform can carry a project from
+"ready for fab" through manufacturing-output generation. Tool surface
+reads as one product, not a marriage of two.
 
 ---
 
@@ -283,41 +328,45 @@ which makes this sprint cheap relative to the value.
 **Exit**: a user can start from a one-paragraph product description
 and have a runnable project skeleton in their EDA tool of choice.
 
-### Sprint 16 — Cross-platform DFM + verification
+### Sprint 16 — Cross-platform DFM (beyond DRC)
 
-Bridges the "exported Gerbers might still fail at the fab" gap.
-Reuses platform abstraction from Sprint 13.
+Sprint 13 covered DRC enumeration cross-platform. Sprint 16 covers
+**design-for-manufacturability** — the checks fab houses run after
+DRC passes.
 
-- PR 16.1 — `dfm_check(project_id)`. Cross-platform via exported
-  Gerbers + BOM. Checks: minimum trace/space, drill aspect ratio,
-  silkscreen-on-pad, copper-near-edge, fiducials present.
-- PR 16.2 — `ad_enumerate_drc_violations`. The gnarly one — current
-  `ad_run_drc` triggers but doesn't enumerate. Workaround via
-  Messages-panel parsing.
-- PR 16.3 — `easyeda_enumerate_drc_violations` via extension API.
-- PR 16.4 — `design_for_assembly_check`. BOM-vs-LCSC-stock,
-  MOQ-vs-quantity, part-rotation-tolerance, panel-yield estimate.
+- PR 16.1 — `dfm_check(platform, project_id)`. Cross-platform via
+  exported Gerbers + BOM. Checks: minimum trace/space, drill aspect
+  ratio, silkscreen-on-pad, copper-near-edge, fiducials present.
+  Single tool, both platforms tested.
+- PR 16.2 — `design_for_assembly_check(platform, project_id)`.
+  BOM-vs-LCSC-stock, MOQ-vs-quantity, part-rotation-tolerance,
+  panel-yield estimate. Single tool, both platforms tested.
+- PR 16.3 — Pre-flight cross-check that reads JLCPCB's manufacturing
+  capability matrix (Sprint 14 client) and warns about any spec the
+  current design exceeds (e.g. "you have 4-mil traces; JLCPCB 2-layer
+  default is 5-mil"). Cross-platform.
 
-**Exit**: AI can answer "is this ready to send to fab?" with a
-real check, not just "I think so."
+**Exit**: AI can answer "is this ready to send to fab?" with a real
+check on both platforms.
 
 ### Sprint 17 — Bring-up + iteration
 
 Last stage of the pipeline (10 in the table above). Mixed
-LLM-structured + optional hardware-relay work.
+LLM-structured + optional hardware-relay work. Cross-platform
+throughout — every tool tested on both Altium and EasyEDA.
 
-- PR 17.1 — `generate_test_plan(project)` → testpoints + procedures.
-  Pure LLM-structured output; no tool dependency.
-- PR 17.2 — `trace_signal(net, scope)` — best-effort visual trace
-  through layers using `ad_screenshot` / `easyeda_screenshot` +
-  `_get_net_routing`. Helps debug "why isn't this signal where I
-  expect?"
-- PR 17.3 — `propose_iteration(observed_failure, project)` — feedback
-  loop that suggests schematic edits from observed test results. Pure
-  LLM-structured.
+- PR 17.1 — `generate_test_plan(platform, project)` → testpoints +
+  procedures. Pure LLM-structured output.
+- PR 17.2 — `trace_signal(platform, net, scope)` — best-effort visual
+  trace through layers, using `screenshot(platform)` +
+  `get_net_routing(platform)` from earlier sprints. Helps debug
+  "why isn't this signal where I expect?"
+- PR 17.3 — `propose_iteration(platform, observed_failure, project)`
+  — feedback loop that suggests schematic edits from observed test
+  results. Pure LLM-structured.
 - PR 17.4 — **Optional / parking lot**: SCPI relay for benchtop
-  instruments (parallel to AD relay model). `read_voltage`, `set_supply`.
-  Defer if Tier 1 stretches.
+  instruments (parallel to AD relay model). `read_voltage`,
+  `set_supply`. Defer if Tier 1 stretches.
 
 **Exit**: AI can support the engineer through bring-up, not just
 through design.
@@ -326,24 +375,33 @@ through design.
 
 ## Sequencing notes
 
-- **Sprint 9 must finish before any of Sprints 10–13.** Workspace model
-  + extension scaffolding is shared infrastructure.
-- **Sprints 11 + 12 (Altium P&R) and Sprint 13 (EasyEDA write) can
-  partly overlap** since they touch different code surfaces, but the
-  platform-abstraction PR (13.5) needs both placement + routing tools
-  on Altium to be settled first.
-- **Tier 2 sequencing decision**: ordering before ideation. JLCPCB API
-  is concrete and ready; ideation needs design (lots of LLM-prompt
-  iteration). Revenue first, AI-native differentiation second. If
-  budget shifts mid-quarter, Sprints 15 and 16 are independent of
-  Sprint 14 and can swap.
+- **Sprint 9 is the gate for everything.** The `Platform` interface
+  (PR 9.3) is shared infrastructure — every Sprint 10+ PR registers
+  through it. No Sprint 10–17 work starts until 9 is in.
+- **Sprints 11–13 are sequential, not parallel.** Cross-platform
+  validation per PR (each PR adds a tool to both `AltiumPlatform`
+  AND `EasyedaPlatform` with hermetic tests on both) means Sprint 11
+  PRs cannot merge until Sprint 10 has filled in the EasyEDA read
+  primitives those tests depend on.
+- **Tier 2 sequencing decision**: ordering before ideation. JLCPCB
+  API is concrete and ready; ideation needs design (lots of LLM-prompt
+  iteration). Revenue first, AI-native differentiation second. Sprints
+  15 and 16 are independent of Sprint 14 and can swap if budget
+  shifts mid-quarter.
 
 ## Estimate
 
+The cross-platform-by-default rule means each PR in Sprints 11+ does
+~2× the implementation work it would for a single platform — but the
+result is twice the customer-visible value per PR, and the tool
+surface stays unified instead of bifurcated. Sprint length doesn't
+double; PR count per sprint shrinks slightly (4–6 instead of 5–7) and
+each PR is denser.
+
 - Tier 1: 5 sprints × ~1.5 weeks/sprint at the current cadence ≈ **2 months**
 - Tier 2: 4 sprints × ~1.5 weeks/sprint ≈ **1.5 months**
-- **Total: ~3.5 months of engineering** to "ideation → ordered fab" for
-  a single user across both EDA platforms
+- **Total: ~3.5 months of engineering** to "ideation → ordered fab"
+  for a single user across both EDA platforms
 
 This excludes go-to-market (more design partners, more pricing-tier
 work, copy iterations) and the non-engineering items that are still
