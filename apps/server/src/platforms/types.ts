@@ -209,6 +209,32 @@ export interface Keepout {
   raw: unknown;
 }
 
+/**
+ * Sprint 12 PR 12.1: per-net routing summary on the active PCB.
+ * One entry per net; pagination is over nets so dense boards
+ * (1000+ nets) don't blow the relay budget.
+ *
+ * `layers` keys are the cross-platform layer union names ("top",
+ * "bottom", "inner", "unknown") with mm of trace per layer.
+ * `viaCount` and `unroutedSegments` are aggregates: vias on
+ * any layer transition belonging to this net; unrouted ratlines
+ * still pending on this net.
+ *
+ * Sufficient for AI reasoning about routing completeness ("is
+ * this net done? how long is the longest? which still have gaps?")
+ * without dumping per-segment geometry. A future
+ * `get_unrouted_segments` PR can expose the segment-level detail
+ * for specific repair workflows.
+ */
+export interface NetRouting {
+  netName: string;
+  totalLengthMm: number;
+  layers: Record<string, number>;
+  viaCount: number;
+  unroutedSegments: number;
+  raw: unknown;
+}
+
 export interface MutateResult {
   designator: string;
   /** A short human-readable confirmation, e.g. "Moved R1 to (10.5, 20.0)". */
@@ -562,6 +588,23 @@ export interface Platform {
    * EasyEDA-side API is confirmed hands-on.
    */
   getKeepouts(): Promise<PlatformResponse<Keepout[]>>;
+
+  /**
+   * Sprint 12 PR 12.1: paginated per-net routing summary. First
+   * read tool of Sprint 12's routing deep dive — sets up rule
+   * mutation (12.2), unrouting (12.3), and the rest.
+   *
+   * Altium: BoardIterator over eTrackObject + eViaObject +
+   * eRatNestObject, aggregated by net. Coordinates in mm at
+   * the relay boundary; layers normalized to the cross-platform
+   * union via normalizeLayer.
+   * EasyEDA: pcb_Net.getAll() + per-net pcb_PrimitiveLine.getAll
+   * + pcb_PrimitiveVia.getAll + pcb_Net.getNetLength. Defensive
+   * fallback if any accessor is missing.
+   */
+  getNetRouting(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<NetRouting>>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

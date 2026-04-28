@@ -321,6 +321,97 @@
     },
 
     /**
+     * Sprint 12 PR 12.1: per-net routing summary, paginated by net.
+     *
+     * Steps:
+     *   1. eda.pcb_Net.getAll() → list of nets (or namespace check
+     *      → return {unsupported: true} if missing).
+     *   2. Slice by offset/limit, alphabetical (sort applies before
+     *      slicing for stable pagination).
+     *   3. Per net: getNetLength + count primitives via
+     *      pcb_PrimitiveLine.getAll(net), pcb_PrimitiveVia.getAll(net),
+     *      and (if exposed) the unrouted-segment getter.
+     *   4. Aggregate length per layer by walking the trace primitives.
+     *
+     * Each accessor wrapped in its own try/catch so a missing field
+     * on one net doesn't crash the whole call.
+     */
+    get_net_routing: async function (params) {
+      const offset = Math.max(0, Math.floor(params?.offset ?? 0));
+      const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_Net || typeof eda.pcb_Net.getAll !== "function") {
+        return { unsupported: true };
+      }
+      let allNets;
+      try {
+        // eslint-disable-next-line no-undef
+        allNets = await eda.pcb_Net.getAll();
+      } catch (e) {
+        return { unsupported: true };
+      }
+      if (!Array.isArray(allNets)) {
+        return { items: [] };
+      }
+      // Stable sort by net name so pagination is deterministic.
+      const netNames = allNets
+        .map(function (n) {
+          if (typeof n === "string") return n;
+          if (n && typeof n.name === "string") return n.name;
+          return "";
+        })
+        .filter(function (s) { return s.length > 0; })
+        .sort();
+      const total = netNames.length;
+      const slice = netNames.slice(offset, offset + limit);
+      const items = [];
+      for (let i = 0; i < slice.length; i++) {
+        const netName = slice[i];
+        const entry = {
+          netName: netName,
+          totalLengthMm: 0,
+          layers: {},
+          viaCount: 0,
+          unroutedSegments: 0
+        };
+        try {
+          // eslint-disable-next-line no-undef
+          const len = await eda.pcb_Net.getNetLength(netName);
+          if (typeof len === "number" && isFinite(len)) {
+            entry.totalLengthMm = len;
+          }
+        } catch (_) { }
+        try {
+          // eslint-disable-next-line no-undef
+          const lines = await eda.pcb_PrimitiveLine.getAll(netName);
+          if (Array.isArray(lines)) {
+            for (let j = 0; j < lines.length; j++) {
+              const seg = lines[j] || {};
+              const lyr = String(seg.layer || "unknown");
+              const x1 = Number(seg.x1 || 0);
+              const y1 = Number(seg.y1 || 0);
+              const x2 = Number(seg.x2 || 0);
+              const y2 = Number(seg.y2 || 0);
+              const dx = x2 - x1;
+              const dy = y2 - y1;
+              const segLen = Math.sqrt(dx * dx + dy * dy);
+              if (isFinite(segLen)) {
+                entry.layers[lyr] = (entry.layers[lyr] || 0) + segLen;
+              }
+            }
+          }
+        } catch (_) { }
+        try {
+          // eslint-disable-next-line no-undef
+          const vias = await eda.pcb_PrimitiveVia.getAll(netName);
+          if (Array.isArray(vias)) entry.viaCount = vias.length;
+        } catch (_) { }
+        items.push(entry);
+      }
+      return { items: items, total: total };
+    },
+
+    /**
      * Sprint 11 PR 11.3: enumerate keepouts on the active PCB.
      *
      * Per Sprint 9 spike question #4, pcb_PrimitiveRegion is the

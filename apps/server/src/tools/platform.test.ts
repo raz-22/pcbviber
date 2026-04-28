@@ -189,6 +189,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     getKeepouts: async () => ({ supported: false, reason: "stub" }),
     validatePlacement: async () => ({ supported: false, reason: "stub" }),
     placeByGroup: async () => ({ supported: false, reason: "stub" }),
+    getNetRouting: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -293,6 +294,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     getKeepouts: async () => ({ supported: false, reason: "stub" }),
     validatePlacement: async () => ({ supported: false, reason: "stub" }),
     placeByGroup: async () => ({ supported: false, reason: "stub" }),
+    getNetRouting: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -981,6 +983,121 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── get_net_routing tool — Sprint 12 PR 12.1 ────────────────────────
+
+type GetNetRoutingHandler = (args: {
+  offset?: number;
+  limit?: number;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureGetNetRoutingHandler(ctx: ToolContext): GetNetRoutingHandler {
+  let handler: GetNetRoutingHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: GetNetRoutingHandler) => {
+      if (name === "get_net_routing") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `get_net_routing`");
+  return handler;
+}
+
+test("get_net_routing tool: per-line summary with layer breakdown + UNROUTED tag when present", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetNetRoutingHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          netName: "VCC",
+          totalLengthMm: 45.5,
+          layers: { top: 30, inner: 15.5 },
+          viaCount: 2,
+          unroutedSegments: 0,
+        },
+        {
+          netName: "GND",
+          totalLengthMm: 120,
+          layers: { bottom: 120 },
+          viaCount: 0,
+          unroutedSegments: 3,
+        },
+      ],
+      total: 2,
+    },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Net routing 1–2 of 2 \(easyeda\):/);
+  assert.match(text, /VCC: 45\.50mm \(inner: 15\.50, top: 30\.00\), 2 via\(s\)/);
+  // GND has unrouted segments — pin the UNROUTED tag for AI scanning
+  assert.match(text, /GND: 120\.00mm \(bottom: 120\.00\), 0 via\(s\), 3 UNROUTED/);
+  relay.__resetForTests();
+});
+
+test("get_net_routing tool: empty board → 'No nets' caption (not isError)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetNetRoutingHandler(buildToolCtx(platform));
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { items: [] } });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No nets on the active easyeda PCB/);
+  relay.__resetForTests();
+});
+
+test("get_net_routing tool: pagination footer when more pages available", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetNetRoutingHandler(buildToolCtx(platform));
+  const result = (async () => handler({ offset: 0, limit: 200 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  const items = Array.from({ length: 200 }, (_, i) => ({
+    netName: `NET_${String(i).padStart(4, "0")}`,
+    totalLengthMm: 1,
+    layers: { top: 1 },
+    viaCount: 0,
+    unroutedSegments: 0,
+  }));
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items, total: 350 },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /More available — call again with offset=200/);
+  relay.__resetForTests();
+});
+
+test("get_net_routing tool: AD relay disconnected → MCP error result with reason", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureGetNetRoutingHandler(buildToolCtx(platform));
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not read net routing/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── place_by_group tool — Sprint 11 PR 11.5 ─────────────────────────

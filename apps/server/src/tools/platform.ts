@@ -248,6 +248,64 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "get_net_routing",
+    "Read per-net routing summary on the active PCB, paginated. Each entry has total trace length (mm), layer split (mm per layer), via count, and unrouted-segment count. Cross-platform; coordinates aggregated in mm, layers normalized to top/bottom/inner/unknown. Pair with `screenshot` for visual + numeric verification of routing completeness. EasyEDA support depends on the extension's pcb_Net.getAll accessor — surfaces a clear supported:false reason when unavailable.",
+    PaginationShape,
+    async (args) => {
+      const result = await ctx.platform.getNetRouting({
+        offset: args.offset,
+        limit: args.limit,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not read net routing: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const { items, nextOffset, total } = result.data;
+      if (items.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No nets on the active ${ctx.platform.name} PCB.`,
+            },
+          ],
+        };
+      }
+      // Per-line summary: name + total length + layer breakdown +
+      // via count + unrouted count. Compact enough for AI scanning;
+      // raw payload available for finer analysis.
+      const lines = items.map((n) => {
+        const layerParts = Object.entries(n.layers)
+          .filter(([, v]) => v > 0)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => `${k}: ${v.toFixed(2)}`);
+        const layerStr =
+          layerParts.length > 0 ? ` (${layerParts.join(", ")})` : "";
+        const unroutedTag =
+          n.unroutedSegments > 0
+            ? `, ${n.unroutedSegments} UNROUTED`
+            : "";
+        return `- ${n.netName}: ${n.totalLengthMm.toFixed(2)}mm${layerStr}, ${n.viaCount} via(s)${unroutedTag}`;
+      });
+      const totalStr = total !== undefined ? ` of ${total}` : "";
+      const header = `Net routing 1–${items.length}${totalStr} (${ctx.platform.name}):`;
+      const footer =
+        nextOffset !== null
+          ? `\n\nMore available — call again with offset=${nextOffset} to fetch the next page.`
+          : "";
+      return {
+        content: [
+          { type: "text" as const, text: header + "\n" + lines.join("\n") + footer },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "place_by_group",
     "Filter components by an AND-joined `key=value` expression and apply a layout strategy. Filter fields: designator, footprint, mpn, layer (with `*` glob support). Strategies: 'grid' (row-major, good for arrays), 'around-component' (circular ring, good for decoupling caps around an MCU), 'on-edge' (line along board edge, good for connectors). Locked components are obstacles, never moved. Returns matched/moved/skipped designator lists.",
     {

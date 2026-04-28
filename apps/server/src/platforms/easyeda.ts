@@ -42,6 +42,7 @@ import {
   normalizeKeepoutKind,
   normalizeKeepoutLayer,
   normalizeLayer,
+  normalizeNetRouting,
 } from "./altium.js";
 import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.js";
 import {
@@ -53,6 +54,7 @@ import {
   type ListLibraryComponentsParams,
   type MutateResult,
   type Keepout,
+  type NetRouting,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -497,6 +499,60 @@ export class EasyedaPlatform implements Platform {
     params: PlaceByGroupParams
   ): Promise<PlatformResponse<PlaceByGroupResult>> {
     return placeByGroupShared(this, params);
+  }
+
+  async getNetRouting(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<NetRouting>>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "get_net_routing",
+        { offset, limit }
+      );
+      const obj = isRecord(raw) ? raw : {};
+      // Same {unsupported: true} convention as keepouts: extension
+      // signals "API not exposed on this Pro version" cleanly.
+      if (obj.unsupported === true) {
+        return notSupported(
+          "EasyEDA Pro net-routing API is not exposed in this extension version. The pcb_Net.getAll accessor is needed to enumerate nets; tracking as a follow-up spike question."
+        );
+      }
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a get_net_routing result without an `items` array."
+        );
+      }
+      const items: NetRouting[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const netName =
+          typeof entry.netName === "string"
+            ? entry.netName
+            : typeof entry.name === "string"
+              ? entry.name
+              : "";
+        if (!netName) return [];
+        return [normalizeNetRouting(entry, netName)];
+      });
+      const nextOffset =
+        total !== undefined
+          ? offset + items.length < total
+            ? offset + items.length
+            : null
+          : items.length === limit
+            ? offset + items.length
+            : null;
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {

@@ -1743,6 +1743,157 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── getNetRouting — Sprint 12 PR 12.1 ──────────────────────────────
+
+test("AltiumPlatform.getNetRouting: relay round-trip maps full payload + normalizes layer keys", async () => {
+  // The AD relay returns layer keys like "eTopLayer" / "eMidLayer1"
+  // — the platform must normalize them to the cross-platform union
+  // (top/bottom/inner/unknown) AND collapse multiple inner-layer
+  // keys into a single "inner" sum.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      assert.equal(method, "get_net_routing");
+      assert.deepEqual(params, { offset: 0, limit: 200 });
+      return {
+        items: [
+          {
+            netName: "VCC",
+            totalLengthMm: 45.5,
+            layers: {
+              eTopLayer: 30.0,
+              eMidLayer1: 8.0,
+              eMidLayer2: 7.5,
+            },
+            viaCount: 3,
+            unroutedSegments: 0,
+          },
+          {
+            netName: "GND",
+            totalLengthMm: 120.0,
+            layers: { eBottomLayer: 120.0 },
+            viaCount: 0,
+            unroutedSegments: 2,
+          },
+        ],
+        total: 2,
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getNetRouting({});
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 2);
+    const vcc = result.data.items[0];
+    assert.equal(vcc.netName, "VCC");
+    assert.equal(vcc.totalLengthMm, 45.5);
+    // Two AD inner layers must collapse to a single "inner" key
+    assert.equal(vcc.layers.top, 30.0);
+    assert.equal(vcc.layers.inner, 15.5, "8.0 + 7.5 inner-layer collisions sum");
+    const gnd = result.data.items[1];
+    assert.equal(gnd.layers.bottom, 120.0);
+    assert.equal(gnd.unroutedSegments, 2);
+  }
+});
+
+test("AltiumPlatform.getNetRouting: malformed AD result (no items) → actionable supported:false naming AltiumRelay.js", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({ wrong: true }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getNetRouting({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /AltiumRelay\.js/);
+  }
+});
+
+test("AltiumPlatform.getNetRouting: relay disconnected → supported:false RELAY_DISCONNECTED", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getNetRouting({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.getNetRouting: extension reports unsupported:true → supported:false naming the missing accessor", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getNetRouting({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { unsupported: true },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /pcb_Net\.getAll/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getNetRouting: maps extension result with `name` fallback for netName", async () => {
+  // The extension may return entries with `name` instead of
+  // `netName` depending on how pcb_Net surfaces the data.
+  // Pin the fallback wiring.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getNetRouting({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          name: "GND",
+          totalLengthMm: 50,
+          layers: { top: 30, bottom: 20 },
+          viaCount: 2,
+          unroutedSegments: 0,
+        },
+      ],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items[0].netName, "GND");
+    assert.equal(result.data.items[0].totalLengthMm, 50);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getNetRouting: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.getNetRouting({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── Keepouts — Sprint 11 PR 11.3 ───────────────────────────────────
 
 import {

@@ -27,6 +27,7 @@ import {
   type ListLibraryComponentsParams,
   type MutateResult,
   type Keepout,
+  type NetRouting,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -342,6 +343,47 @@ export class AltiumPlatform implements Platform {
     return placeByGroupShared(this, params);
   }
 
+  async getNetRouting(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<NetRouting>>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        "get_net_routing",
+        { offset, limit }
+      );
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "AD relay returned a get_net_routing result without an `items` array. Update AltiumRelay.js to the version shipped with Sprint 12 PR 12.1."
+        );
+      }
+      const items: NetRouting[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const netName = typeof entry.netName === "string" ? entry.netName : "";
+        if (!netName) return [];
+        return [normalizeNetRouting(entry, netName)];
+      });
+      const nextOffset =
+        total !== undefined
+          ? offset + items.length < total
+            ? offset + items.length
+            : null
+          : items.length === limit
+            ? offset + items.length
+            : null;
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {
     if (!this.deps.relay || !this.deps.relay.status().connected) {
       return notSupported(RELAY_DISCONNECTED);
@@ -457,6 +499,48 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Sprint 12 PR 12.1: normalize a raw per-net routing entry from
+ * the relay/extension into the cross-platform NetRouting shape.
+ * Layer keys go through normalizeLayer so AI clients can write
+ * portable rules; numeric fields default to 0 when unparseable.
+ *
+ * Exported because both AltiumPlatform and EasyedaPlatform call
+ * it — keeps the cross-platform contract single-sourced.
+ */
+export function normalizeNetRouting(
+  entry: Record<string, unknown>,
+  netName: string
+): NetRouting {
+  const totalLengthMm =
+    typeof entry.totalLengthMm === "number" ? entry.totalLengthMm : 0;
+  const viaCount =
+    typeof entry.viaCount === "number" ? Math.floor(entry.viaCount) : 0;
+  const unroutedSegments =
+    typeof entry.unroutedSegments === "number"
+      ? Math.floor(entry.unroutedSegments)
+      : 0;
+  // Layers come in as a record keyed by raw layer names. Normalize
+  // each key to the cross-platform union, summing collisions
+  // (multiple inner layers all collapse to a single "inner" key).
+  const layers: Record<string, number> = {};
+  if (isRecord(entry.layers)) {
+    for (const [rawKey, value] of Object.entries(entry.layers)) {
+      if (typeof value !== "number") continue;
+      const normalized = normalizeLayer(rawKey);
+      layers[normalized] = (layers[normalized] ?? 0) + value;
+    }
+  }
+  return {
+    netName,
+    totalLengthMm,
+    layers,
+    viaCount,
+    unroutedSegments,
+    raw: entry,
+  };
 }
 
 /**

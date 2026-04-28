@@ -48,6 +48,7 @@ export type EdaMethod =
   | "rotate_component"
   | "lock_component"
   | "get_keepouts"
+  | "get_net_routing"
   | "run_drc"
   | "get_messages";
 

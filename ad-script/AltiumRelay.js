@@ -147,6 +147,7 @@ function Dispatch(cmd) {
         case "rotate_component":   return CmdRotateComponent(cmd.params);
         case "lock_component":     return CmdLockComponent(cmd.params);
         case "get_keepouts":       return CmdGetKeepouts(cmd.params);
+        case "get_net_routing":    return CmdGetNetRouting(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -900,6 +901,118 @@ function ExtractKeepout(region, idx) {
         }
     } catch (_) { }
     return out;
+}
+
+// Sprint 12 PR 12.1: enumerate routing per net. Single BoardIterator
+// pass over eTrackObject (=3) + eViaObject (=5) + eRatNestObject
+// (=14), aggregating into a net-keyed dictionary. Two-pass for
+// pagination (count nets, then slice). Coordinates in mm at the
+// boundary, matching CmdGetComponents.
+//
+// Per-segment extraction is defensive — accessor variations across
+// AD builds shouldn't drop a whole net's data.
+function CmdGetNetRouting(params) {
+    var offset = Math.max(0, Math.floor((params && params.offset) || 0));
+    var limit = Math.min(500, Math.max(1, Math.floor((params && params.limit) || 200)));
+    var MM_PER_COORD = 0.0000254;
+
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    // Aggregate per net.
+    var byNet = {}; // netName → {totalLengthMm, layers, viaCount, unroutedSegments}
+    function ensureNet(name) {
+        if (!byNet[name]) {
+            byNet[name] = {
+                totalLengthMm: 0,
+                layers: {},
+                viaCount: 0,
+                unroutedSegments: 0
+            };
+        }
+        return byNet[name];
+    }
+
+    // Walk traces (eTrackObject = 3) + vias (eViaObject = 5) + rat
+    // lines (eRatNestObject = 14) in a single iterator pass. Each
+    // object's Net.Name keys the aggregation.
+    var iter = board.BoardIterator_Create();
+    iter.AddFilter_ObjectSet(SetOf([3, 5, 14]));
+    iter.AddFilter_LayerSet(null);
+    iter.AddFilter_Method(null);
+    var obj = iter.FirstPCBObject();
+    while (obj) {
+        var netName = "";
+        try {
+            var net = obj.Net;
+            if (net && net.Name) netName = String(net.Name);
+        } catch (_) { }
+        // Skip orphan objects (no net) — they'd aggregate under "" and
+        // confuse callers.
+        if (netName.length > 0) {
+            var entry = ensureNet(netName);
+            var kind = 0;
+            try { kind = Number(obj.ObjectId); } catch (_) { }
+            if (kind === 3) {
+                // Trace: length = sqrt((x2-x1)^2 + (y2-y1)^2)
+                try {
+                    var dx = (Number(obj.X2) - Number(obj.X1)) * MM_PER_COORD;
+                    var dy = (Number(obj.Y2) - Number(obj.Y1)) * MM_PER_COORD;
+                    var len = Math.sqrt(dx * dx + dy * dy);
+                    if (isFinite(len)) entry.totalLengthMm += len;
+                } catch (_) { }
+                try {
+                    var lyr = obj.Layer;
+                    var lyrStr = lyr && typeof lyr === "object" && lyr.Name
+                        ? String(lyr.Name) : String(lyr);
+                    var dxl = (Number(obj.X2) - Number(obj.X1)) * MM_PER_COORD;
+                    var dyl = (Number(obj.Y2) - Number(obj.Y1)) * MM_PER_COORD;
+                    var lenL = Math.sqrt(dxl * dxl + dyl * dyl);
+                    if (isFinite(lenL)) {
+                        entry.layers[lyrStr] = (entry.layers[lyrStr] || 0) + lenL;
+                    }
+                } catch (_) { }
+            } else if (kind === 5) {
+                entry.viaCount++;
+            } else if (kind === 14) {
+                entry.unroutedSegments++;
+            }
+        }
+        obj = iter.NextPCBObject();
+    }
+    board.BoardIterator_Destroy(iter);
+
+    // Collect into a sorted list (alphabetical by net name) so
+    // pagination is stable across calls.
+    var netNames = [];
+    for (var n in byNet) {
+        if (Object.prototype.hasOwnProperty.call(byNet, n)) netNames.push(n);
+    }
+    netNames.sort();
+    var total = netNames.length;
+    var sliceNames = netNames.slice(offset, offset + limit);
+    var items = [];
+    for (var i = 0; i < sliceNames.length; i++) {
+        var name = sliceNames[i];
+        var d = byNet[name];
+        items.push({
+            netName: name,
+            totalLengthMm: d.totalLengthMm,
+            layers: d.layers,
+            viaCount: d.viaCount,
+            unroutedSegments: d.unroutedSegments
+        });
+    }
+    return { items: items, total: total };
 }
 
 function CmdGetStackup(_params) {
