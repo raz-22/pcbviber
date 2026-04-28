@@ -243,6 +243,82 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "list_library_components",
+    "List components from the workspace's library (parts available to place), paginated. Cross-platform: Altium 365 workspace library via Nexar; EasyEDA Pro via the in-editor extension's lib_Device. EasyEDA results are optionally enriched with Octopart per-distributor stock + pricing (looks up each entry by MPN/LCSC). Each entry has id + name + the platform's raw payload, plus footprint/manufacturer/mpn/lcscId/lifecycle/octopart when available.",
+    {
+      ...PaginationShape,
+      enrichWithLcsc: z
+        .boolean()
+        .optional()
+        .describe(
+          "EasyEDA only: when true (default), cross-reference each result by MPN/LCSC via Nexar/Octopart and merge per-distributor stock into the `octopart` field. Skipped automatically when Nexar isn't configured for this workspace. Set false to skip the enrichment hop and return the platform's native fields only."
+        ),
+    },
+    async (args) => {
+      const result = await ctx.platform.listLibraryComponents({
+        offset: args.offset,
+        limit: args.limit,
+        enrichWithLcsc: args.enrichWithLcsc,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not list library components: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const { items, nextOffset, total } = result.data;
+      if (items.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No components in this ${ctx.platform.name} workspace's library.`,
+            },
+          ],
+        };
+      }
+      // One line per entry: name + (mpn/lcsc) + (id) + an optional
+      // stock summary when octopart enrichment hit. The full raw
+      // payload + per-distributor offers stay in the structured
+      // result for any caller that wants them; the text rendering
+      // stays compact.
+      const lines = items.map((c) => {
+        const parts: string[] = [c.name];
+        if (c.mpn) parts.push(`(${c.mpn})`);
+        else if (c.lcscId) parts.push(`(${c.lcscId})`);
+        if (c.footprint) parts.push(`[${c.footprint}]`);
+        if (c.octopart && c.octopart.offers.length > 0) {
+          const totalStock = c.octopart.offers.reduce(
+            (s, o) => s + (o.stock || 0),
+            0
+          );
+          parts.push(`{${c.octopart.offers.length} dist, ${totalStock} stk}`);
+        }
+        return `- ${parts.join(" ")} id=${c.id}`;
+      });
+      const totalStr = total !== undefined ? ` of ${total}` : "";
+      const header = `Library components 1–${items.length}${totalStr} (${ctx.platform.name}):`;
+      const footer =
+        nextOffset !== null
+          ? `\n\nMore available — call again with offset=${nextOffset} to fetch the next page.`
+          : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n") + footer,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "screenshot",
     "Capture a PNG screenshot of the active EDA editor window. Works across all supported platforms (Altium Designer via local PowerShell capture; EasyEDA Pro via in-editor extension). Returns the image inline so the AI can see it. Pair this with any layout-modifying tool to verify the change visually.",
     {},

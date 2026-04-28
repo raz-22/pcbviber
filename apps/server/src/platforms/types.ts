@@ -153,6 +153,60 @@ export interface PcbComponent {
 }
 
 /**
+ * One entry from the workspace's component library — the universal
+ * basic-catalog shape across both platforms. This isn't a part placed
+ * on a board; it's a part sitting in the user's library, available to
+ * place. Altium: an entry from `desLibrary.nodes` (Nexar workspace
+ * library); EasyEDA: an entry from `eda.lib_Device.search()`.
+ *
+ * `lcscId` and `mpn` are optional — Altium 365 libraries don't always
+ * carry LCSC tags, and EasyEDA's per-entry MPN can be empty for
+ * generic primitives. When `lcscId` IS present and Nexar is
+ * configured, the EasyEDA platform optionally fetches Octopart
+ * per-distributor stock and merges it into `octopart` (per Sprint 10
+ * PR 10.4's enrichment goal).
+ */
+export interface LibraryComponent {
+  id: string;
+  name: string;
+  description?: string;
+  footprint?: string;
+  manufacturer?: string;
+  mpn?: string;
+  lcscId?: string;
+  lifecycle?: string;
+  /**
+   * Octopart per-distributor stock + pricing, populated when
+   * enrichment ran successfully. Undefined when enrichment was
+   * skipped (Nexar not configured, lcscId/mpn missing, or
+   * `enrichWithLcsc: false`) or when the lookup found no match.
+   */
+  octopart?: {
+    mpn: string;
+    manufacturer: string;
+    description?: string;
+    offers: Array<{
+      supplier: string;
+      stock: number;
+      moq: number;
+      sku: string;
+    }>;
+  };
+  /** Platform-specific raw payload, kept for tools that need more fields. */
+  raw: unknown;
+}
+
+export interface ListLibraryComponentsParams {
+  offset?: number;
+  limit?: number;
+  /** When true (default), the EasyEDA platform tries to look up each
+   *  result by MPN/LCSC via Nexar and merges per-distributor stock
+   *  into `LibraryComponent.octopart`. Skipped automatically when
+   *  Nexar isn't configured for the workspace. */
+  enrichWithLcsc?: boolean;
+}
+
+/**
  * Standard pagination wrapper for collection-returning tools.
  * Per the roadmap's "pagination by default" architectural
  * commitment: every list tool takes offset+limit and returns a
@@ -243,6 +297,30 @@ export interface Platform {
   listPcbComponents(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<PcbComponent>>>;
+
+  /**
+   * List entries from the workspace's component library, paginated.
+   * Cross-platform replacement for the legacy Altium-only
+   * `list_library_components` (which was a `tools/components.ts`
+   * Nexar wrapper) — per amendment #50, every read tool the platform
+   * exposes registers through this interface, so the legacy
+   * registration is removed in PR 10.4.
+   *
+   * Altium: wraps `nexar.listComponents(workspaceUrl)`. The Nexar
+   * GraphQL query returns the full library in one shot today;
+   * pagination here is in-memory slice. A future PR can push offset/
+   * limit into the GraphQL when 10k+ part libraries become a problem.
+   *
+   * EasyEDA: calls `eda.lib_Device.search()` through the relay,
+   * deriving the EasyEDA-style page index from offset/limit. When
+   * `enrichWithLcsc` is true (default) AND Nexar is configured for
+   * the workspace, results carrying an MPN or LCSC ID get
+   * cross-referenced via Nexar's supSearchMpn — per-distributor
+   * stock + pricing merge into `LibraryComponent.octopart`.
+   */
+  listLibraryComponents(
+    params: ListLibraryComponentsParams
+  ): Promise<PlatformResponse<Page<LibraryComponent>>>;
 
   /**
    * Capture a PNG screenshot of the platform's editor view.

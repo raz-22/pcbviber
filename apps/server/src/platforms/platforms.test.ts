@@ -758,6 +758,325 @@ test("AltiumPlatform.listPcbComponents: returns supported:false with clear 'foll
   }
 });
 
+// ─── listLibraryComponents — Sprint 10 PR 10.4 ──────────────────────
+
+test("AltiumPlatform.listLibraryComponents: missing nexar → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: "https://acme.altium365.com",
+  });
+  const result = await platform.listLibraryComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /Nexar credentials/);
+  }
+});
+
+test("AltiumPlatform.listLibraryComponents: missing workspaceUrl → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: {} as never,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.listLibraryComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /Altium 365 URL/);
+  }
+});
+
+test("AltiumPlatform.listLibraryComponents: with stub nexar → in-memory paginates the full library", async () => {
+  // Nexar's desLibrary returns the full set in one shot today; the
+  // platform paginates in-memory. Verify the slicing math + that
+  // raw passes through verbatim for callers that need richer
+  // fields.
+  const allComponents = Array.from({ length: 350 }, (_, i) => ({
+    id: `c-${i}`,
+    name: `Part ${i}`,
+    description: `Description ${i}`,
+    designItemId: `di-${i}`,
+    parameters: {},
+    lifecycle: { state: "Active" },
+  }));
+  const nexar = {
+    listProjects: async () => [],
+    listComponents: async (url: string) => {
+      assert.equal(url, "https://acme.altium365.com");
+      return allComponents;
+    },
+  } as unknown as import("../services/nexar.js").NexarService;
+
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar,
+    altiumWorkspaceUrl: "https://acme.altium365.com",
+  });
+  const result = await platform.listLibraryComponents({ offset: 200, limit: 100 });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 100);
+    assert.equal(result.data.items[0].id, "c-200");
+    assert.equal(result.data.total, 350);
+    assert.equal(result.data.nextOffset, 300);
+    // Raw passes through so AI clients can read designItemId etc.
+    const firstRaw = result.data.items[0].raw as { designItemId: string };
+    assert.equal(firstRaw.designItemId, "di-200");
+  }
+});
+
+test("EasyedaPlatform.listLibraryComponents: maps lib_Device entries to LibraryComponent[]", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    // No nexar here — proves the pure-mapping path runs without
+    // enrichment. Enrichment-specific tests below.
+    nexar: null,
+  });
+
+  const pending = platform.listLibraryComponents({ offset: 0, limit: 200 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "list_library_components");
+  // params don't carry enrichWithLcsc — that's a server-side concern
+  // (extension shouldn't know about Nexar).
+  assert.deepEqual(cmd.params, { offset: 0, limit: 200 });
+
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          uuid: "lib-1",
+          name: "ESP32-WROOM-32E",
+          manufacturer: "Espressif",
+          manufacturerPartNumber: "ESP32-WROOM-32E-N4",
+          lcscId: "C701341",
+          footprint: "QFN-48",
+          description: "Wi-Fi+BT module",
+        },
+      ],
+      total: 1,
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 1);
+    const item = result.data.items[0];
+    assert.equal(item.id, "lib-1");
+    assert.equal(item.name, "ESP32-WROOM-32E");
+    assert.equal(item.manufacturer, "Espressif");
+    assert.equal(item.mpn, "ESP32-WROOM-32E-N4");
+    assert.equal(item.lcscId, "C701341");
+    assert.equal(item.footprint, "QFN-48");
+    // No enrichment ran — octopart stays undefined.
+    assert.equal(item.octopart, undefined);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listLibraryComponents: enrichment merges Nexar offers when MPN matches", async () => {
+  // Pin the enrichment contract: each item's mpn (or lcscId) flows
+  // into nexar.searchParts; the first result's offers merge into
+  // LibraryComponent.octopart. This is the core of the LCSC-enrichment
+  // architectural piece called out in the PR scope.
+  const stubNexar = {
+    searchParts: async (query: string, _limit: number) => {
+      assert.equal(query, "ESP32-WROOM-32E-N4");
+      return [
+        {
+          mpn: "ESP32-WROOM-32E-N4",
+          manufacturer: "Espressif",
+          description: "Wi-Fi BT MCU module",
+          category: "Modules",
+          datasheetUrl: "https://datasheet/x.pdf",
+          lifecycle: "Active",
+          offers: [
+            { supplier: "LCSC", sku: "C701341", stock: 50000, moq: 1, prices: [], leadTimeDays: 7 },
+            { supplier: "Digikey", sku: "DK-001", stock: 1200, moq: 1, prices: [], leadTimeDays: 14 },
+          ],
+        },
+      ];
+    },
+  } as unknown as import("../services/nexar.js").NexarService;
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: stubNexar,
+  });
+  const pending = platform.listLibraryComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          uuid: "lib-1",
+          name: "ESP32",
+          manufacturerPartNumber: "ESP32-WROOM-32E-N4",
+        },
+      ],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    const item = result.data.items[0];
+    assert(item.octopart, "octopart should be populated");
+    if (item.octopart) {
+      assert.equal(item.octopart.mpn, "ESP32-WROOM-32E-N4");
+      assert.equal(item.octopart.offers.length, 2);
+      assert.equal(item.octopart.offers[0].supplier, "LCSC");
+      assert.equal(item.octopart.offers[0].stock, 50000);
+      assert.equal(item.octopart.offers[1].supplier, "Digikey");
+    }
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listLibraryComponents: enrichment skipped when Nexar absent", async () => {
+  // The "no nexar" path must NOT try to enrich — silently leaves
+  // octopart undefined. Verified above as part of the basic mapping
+  // test; this test pins the explicit contract: even with an MPN
+  // present, no enrichment happens without Nexar.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: null,
+  });
+  const pending = platform.listLibraryComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [{ uuid: "lib-1", name: "X", manufacturerPartNumber: "MPN-1" }],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items[0].octopart, undefined);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listLibraryComponents: enrichment opt-out via enrichWithLcsc:false", async () => {
+  // Caller-controlled escape hatch: even with Nexar configured,
+  // enrichWithLcsc:false skips the lookup hop. Used when the AI
+  // client wants only the platform's native fields (faster,
+  // cheaper, no Nexar quota burn).
+  let nexarCalled = false;
+  const stubNexar = {
+    searchParts: async () => {
+      nexarCalled = true;
+      return [];
+    },
+  } as unknown as import("../services/nexar.js").NexarService;
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: stubNexar,
+  });
+  const pending = platform.listLibraryComponents({ enrichWithLcsc: false });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [{ uuid: "lib-1", name: "X", manufacturerPartNumber: "MPN-1" }],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  assert.equal(nexarCalled, false, "enrichWithLcsc:false must skip Nexar entirely");
+  if (result.supported) {
+    assert.equal(result.data.items[0].octopart, undefined);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listLibraryComponents: enrichment failure leaves entry without octopart, doesn't fail page", async () => {
+  // Defense in depth: a Nexar throw on one item must not fail the
+  // whole page. The contract is "enrichment is best-effort"; the
+  // base mapping must still surface.
+  const stubNexar = {
+    searchParts: async () => {
+      throw new Error("Nexar 503");
+    },
+  } as unknown as import("../services/nexar.js").NexarService;
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: stubNexar,
+  });
+  const pending = platform.listLibraryComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [{ uuid: "lib-1", name: "X", manufacturerPartNumber: "MPN-1" }],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 1);
+    assert.equal(result.data.items[0].octopart, undefined);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listLibraryComponents: malformed extension result → supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: null,
+  });
+  const pending = platform.listLibraryComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { wrongShape: true },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /items.*array/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listLibraryComponents: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.listLibraryComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── Helper ─────────────────────────────────────────────────────────
 
 function assertSupportedFalse<T>(

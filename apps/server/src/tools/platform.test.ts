@@ -181,6 +181,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     listProjects: async () => ({ supported: false, reason: "stub" }),
     listSchematicComponents: async () => ({ supported: false, reason: "stub" }),
     listPcbComponents: async () => ({ supported: false, reason: "stub" }),
+    listLibraryComponents: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -277,6 +278,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     listProjects: async () => ({ supported: false, reason: "stub" }),
     listSchematicComponents: async () => ({ supported: false, reason: "stub" }),
     listPcbComponents: async () => ({ supported: false, reason: "stub" }),
+    listLibraryComponents: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -567,4 +569,168 @@ test("list_pcb_components tool: Altium platform returns supported:false → MCP 
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /Could not list PCB components/);
   assert.match(text, /AD relay/);
+});
+
+// ─── list_library_components tool ────────────────────────────────────
+
+type ListLibraryHandler = (args: {
+  offset?: number;
+  limit?: number;
+  enrichWithLcsc?: boolean;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureListLibraryComponentsHandler(
+  ctx: ToolContext
+): ListLibraryHandler {
+  let handler: ListLibraryHandler | null = null;
+  const fakeServer = {
+    tool: (
+      name: string,
+      _desc: string,
+      _shape: unknown,
+      fn: ListLibraryHandler
+    ) => {
+      if (name === "list_library_components") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler)
+    throw new Error("registerPlatformTools didn't register `list_library_components`");
+  return handler;
+}
+
+test("list_library_components tool: EasyEDA happy path → caption + one line per entry", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: null,
+  });
+  const handler = captureListLibraryComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({ offset: 0, limit: 2 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          uuid: "lib-1",
+          name: "ESP32-WROOM",
+          manufacturerPartNumber: "ESP32-WROOM-32E-N4",
+          footprint: "QFN-48",
+        },
+        {
+          uuid: "lib-2",
+          name: "10k Resistor",
+          lcscId: "C25804",
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Library components/);
+  assert.match(text, /ESP32-WROOM/);
+  assert.match(text, /ESP32-WROOM-32E-N4/);
+  assert.match(text, /QFN-48/);
+  assert.match(text, /C25804/);
+  assert.doesNotMatch(text, /More available/);
+  relay.__resetForTests();
+});
+
+test("list_library_components tool: octopart enrichment renders stock summary in line", async () => {
+  // Pin the enrichment-visible-in-text contract: when octopart
+  // populates with offers, the text rendering surfaces a {N dist,
+  // K stk} summary so the AI client sees enrichment hit without
+  // having to read the structured payload.
+  const stubNexar = {
+    searchParts: async () => [
+      {
+        mpn: "ESP32-WROOM-32E-N4",
+        manufacturer: "Espressif",
+        description: "Module",
+        category: "Modules",
+        datasheetUrl: undefined,
+        lifecycle: "Active",
+        offers: [
+          { supplier: "LCSC", sku: "C701341", stock: 50000, moq: 1, prices: [] },
+          { supplier: "Digikey", sku: "DK-001", stock: 1200, moq: 1, prices: [] },
+        ],
+      },
+    ],
+  } as unknown as import("../services/nexar.js").NexarService;
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: stubNexar,
+  });
+  const handler = captureListLibraryComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          uuid: "lib-1",
+          name: "ESP32",
+          manufacturerPartNumber: "ESP32-WROOM-32E-N4",
+        },
+      ],
+      total: 1,
+    },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /\{2 dist, 51200 stk\}/);
+  relay.__resetForTests();
+});
+
+test("list_library_components tool: empty library → 'No components in library' caption (not isError)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+    nexar: null,
+  });
+  const handler = captureListLibraryComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items: [], total: 0 },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No components in this easyeda workspace's library/);
+  relay.__resetForTests();
+});
+
+test("list_library_components tool: Altium with no nexar configured → MCP error result", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: "https://acme.altium365.com",
+  });
+  const handler = captureListLibraryComponentsHandler(buildToolCtx(platform));
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not list library components/);
+  assert.match(text, /Nexar credentials/);
 });

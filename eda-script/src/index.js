@@ -214,6 +214,69 @@
       }
       return { items: items, total: total };
     },
+
+    /**
+     * Sprint 10 PR 10.4: paginated workspace-library search.
+     *
+     * Routes to eda.lib_Device.search(key, libraryUuid, classification,
+     * symbolType, itemsOfPage, page).
+     *   - `key`: empty string (return everything; no search this PR)
+     *   - `libraryUuid`: undefined (search across all libraries the
+     *     workspace can see)
+     *   - `classification`/`symbolType`: undefined (no filter)
+     *   - `itemsOfPage`: limit
+     *   - `page`: derived from offset/limit (EasyEDA's API is 1-indexed
+     *     page-based; ours is offset-based)
+     *
+     * Returns:
+     *   { items: Array<lib_Device entry with uuid, name, ...>,
+     *     total: number }
+     *
+     * The server normalizes that shape into Page<LibraryComponent>
+     * — see EasyedaPlatform.listLibraryComponents().
+     */
+    list_library_components: async function (params) {
+      const offset = Math.max(0, Math.floor(params?.offset ?? 0));
+      const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));
+      // EasyEDA uses 1-indexed pages of itemsOfPage. Map our offset
+      // to the page that contains it. When offset isn't a multiple of
+      // limit, we'd skip rows — but list_library_components is
+      // expected to be called with offset = previous nextOffset, so
+      // alignment is preserved.
+      const page = Math.floor(offset / limit) + 1;
+      // eslint-disable-next-line no-undef
+      const result = await eda.lib_Device.search(
+        "",
+        undefined,
+        undefined,
+        undefined,
+        limit,
+        page
+      );
+      // The pro-api types declare a paginated result shape; field
+      // names vary by Pro version. Try the common ones.
+      let items = [];
+      let total;
+      if (Array.isArray(result)) {
+        items = result;
+        total = items.length + offset;
+      } else if (result && typeof result === "object") {
+        items = Array.isArray(result.items)
+          ? result.items
+          : Array.isArray(result.list)
+            ? result.list
+            : Array.isArray(result.data)
+              ? result.data
+              : [];
+        total =
+          typeof result.total === "number"
+            ? result.total
+            : typeof result.totalCount === "number"
+              ? result.totalCount
+              : undefined;
+      }
+      return { items: items, total: total };
+    },
   };
 
   // ── Boot ──────────────────────────────────────────────────────────

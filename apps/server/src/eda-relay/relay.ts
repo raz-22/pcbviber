@@ -42,6 +42,7 @@ export type EdaMethod =
   | "list_projects"
   | "list_schematic_components"
   | "list_pcb_components"
+  | "list_library_components"
   | "run_drc"
   | "get_messages";
 

@@ -368,7 +368,15 @@ export async function startHttpServer(opts: {
     const meterCtx = await buildApiKeyMeterContext(req);
     const platform =
       workspaceRow.platform === "easyeda"
-        ? new EasyedaPlatform({ relay: edaRelay, workspaceId: workspaceRow.id })
+        ? new EasyedaPlatform({
+            relay: edaRelay,
+            workspaceId: workspaceRow.id,
+            // EasyEDA can call Nexar for LCSC/MPN enrichment in
+            // listLibraryComponents. Per-request handle, same one
+            // the metered tools use — when missing, enrichment
+            // silently skips.
+            nexar: perRequestNexar,
+          })
         : new AltiumPlatform({
             relay,
             nexar: perRequestNexar,

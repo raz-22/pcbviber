@@ -23,6 +23,8 @@ import {
   ok,
   type ActiveProject,
   type DrcSummary,
+  type LibraryComponent,
+  type ListLibraryComponentsParams,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -124,6 +126,41 @@ export class AltiumPlatform implements Platform {
     return notSupported(
       "Schematic component listing isn't yet wired up on the Altium side. The AD relay needs a new command for DM_Project / SchDoc introspection; tracking as a Sprint 11 follow-up. The same tool already works on EasyEDA workspaces."
     );
+  }
+
+  async listLibraryComponents(
+    params: ListLibraryComponentsParams
+  ): Promise<PlatformResponse<Page<LibraryComponent>>> {
+    if (!this.deps.nexar) return notSupported(NO_NEXAR);
+    if (!this.deps.altiumWorkspaceUrl) return notSupported(NO_WORKSPACE_URL);
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      // Nexar's desLibrary returns the full library in one shot. We
+      // slice in-memory for pagination — fine for libraries up to a
+      // few thousand parts; pushing offset/limit into the GraphQL is
+      // a future optimization for 10k+-part workspaces.
+      const all = await this.deps.nexar.listComponents(
+        this.deps.altiumWorkspaceUrl
+      );
+      const total = all.length;
+      const slice = all.slice(offset, offset + limit);
+      const items: LibraryComponent[] = slice.map((c) => ({
+        id: c.id,
+        name: c.name,
+        description: c.description,
+        // Altium 365's desLibrary doesn't carry a flat footprint /
+        // mpn / lcscId at this level — those live under designItemId
+        // / parameters. Surface what we have via raw; the EasyEDA
+        // side fills in the richer fields.
+        lifecycle: c.lifecycle?.state,
+        raw: c,
+      }));
+      const nextOffset = offset + items.length < total ? offset + items.length : null;
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
   }
 
   async listPcbComponents(

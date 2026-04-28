@@ -35,11 +35,14 @@
  */
 
 import type { EdaRelay } from "../eda-relay/relay.js";
+import type { NexarService } from "../services/nexar.js";
 import {
   notSupported,
   ok,
   type ActiveProject,
   type DrcSummary,
+  type LibraryComponent,
+  type ListLibraryComponentsParams,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -67,6 +70,15 @@ export interface EasyedaPlatformDeps {
    * cross-tenant traffic from mixing.
    */
   workspaceId: string | null;
+  /**
+   * Optional Nexar handle for cross-platform enrichment. When set
+   * AND `enrichWithLcsc !== false`, `listLibraryComponents` looks up
+   * each EasyEDA library entry's MPN via Nexar's supSearchMpn and
+   * merges per-distributor stock into `LibraryComponent.octopart`.
+   * When null, enrichment is silently skipped (per
+   * `LibraryComponent.octopart`'s "undefined when skipped" contract).
+   */
+  nexar?: NexarService | null;
 }
 
 /**
@@ -317,6 +329,114 @@ export class EasyedaPlatform implements Platform {
     }
   }
 
+  async listLibraryComponents(
+    params: ListLibraryComponentsParams
+  ): Promise<PlatformResponse<Page<LibraryComponent>>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    const enrichWithLcsc = params.enrichWithLcsc ?? true;
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "list_library_components",
+        { offset, limit }
+      );
+      // Extension returns
+      //   { items: Array<lib_Device entry>, total: number }
+      // where each entry's exact field set isn't fully spelled out
+      // in pro-api-types. Defensive extraction mirrors 10.3a/b.
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a list_library_components result without an `items` array."
+        );
+      }
+      const baseItems: LibraryComponent[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const props = isRecord(entry.properties) ? entry.properties : {};
+        const id =
+          typeof entry.uuid === "string"
+            ? entry.uuid
+            : typeof entry.id === "string"
+              ? entry.id
+              : "";
+        if (!id) return [];
+        const name =
+          typeof entry.name === "string" ? entry.name : id || "(unknown)";
+        const description =
+          typeof entry.description === "string" ? entry.description : undefined;
+        const footprint =
+          typeof entry.footprint === "string"
+            ? entry.footprint
+            : typeof props.footprint === "string"
+              ? (props.footprint as string)
+              : undefined;
+        const manufacturer =
+          typeof entry.manufacturer === "string"
+            ? entry.manufacturer
+            : typeof props.manufacturer === "string"
+              ? (props.manufacturer as string)
+              : undefined;
+        const mpn =
+          typeof entry.manufacturerPartNumber === "string"
+            ? entry.manufacturerPartNumber
+            : typeof entry.mpn === "string"
+              ? entry.mpn
+              : typeof props.mpn === "string"
+                ? (props.mpn as string)
+                : undefined;
+        // EasyEDA exposes LCSC IDs under a few key names depending
+        // on entry vintage. Check the common ones; extracted but
+        // not parsed further here.
+        const lcscId =
+          typeof entry.lcscId === "string"
+            ? entry.lcscId
+            : typeof entry.lcsc_id === "string"
+              ? (entry.lcsc_id as string)
+              : typeof props.lcscId === "string"
+                ? (props.lcscId as string)
+                : typeof props.lcsc_id === "string"
+                  ? (props.lcsc_id as string)
+                  : undefined;
+        const lifecycle =
+          typeof entry.lifecycle === "string" ? entry.lifecycle : undefined;
+        return [
+          {
+            id,
+            name,
+            description,
+            footprint,
+            manufacturer,
+            mpn,
+            lcscId,
+            lifecycle,
+            raw: entry,
+          },
+        ];
+      });
+      const items =
+        enrichWithLcsc && this.deps.nexar
+          ? await enrichWithOctopart(this.deps.nexar, baseItems)
+          : baseItems;
+      let nextOffset: number | null;
+      if (total !== undefined) {
+        nextOffset =
+          offset + items.length < total ? offset + items.length : null;
+      } else {
+        nextOffset =
+          items.length === limit ? offset + items.length : null;
+      }
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async screenshot(): Promise<PlatformResponse<ScreenshotResult>> {
     if (!this.deps.relay || !this.deps.workspaceId) {
       // The route layer only constructs an EasyedaPlatform with a
@@ -373,4 +493,63 @@ export class EasyedaPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Cross-reference each LibraryComponent with Octopart via Nexar's
+ * supSearchMpn. Looks up by MPN when present, falls back to LCSC ID
+ * (which EasyEDA Pro entries usually carry as a searchable token).
+ *
+ * Failures are silent — a missing/throwing lookup leaves the entry's
+ * `octopart` undefined rather than failing the whole page. The whole
+ * point of enrichment is "more info if we can get it", not a hard
+ * dependency.
+ *
+ * Concurrency cap: 5 in flight to avoid hammering Nexar on a 200-item
+ * page. Sequential would be too slow (~1s/item × 200 = 3+ minutes,
+ * past the relay's HTTP budget). Unbounded parallel risks Nexar rate
+ * limits + hot-path token refresh.
+ */
+async function enrichWithOctopart(
+  nexar: NexarService,
+  items: LibraryComponent[]
+): Promise<LibraryComponent[]> {
+  const CONCURRENCY = 5;
+  const out: LibraryComponent[] = items.slice();
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < out.length) {
+      const i = cursor++;
+      const entry = out[i];
+      const lookupKey = entry.mpn || entry.lcscId;
+      if (!lookupKey) continue;
+      try {
+        const results = await nexar.searchParts(lookupKey, 1);
+        if (results.length === 0) continue;
+        const r = results[0];
+        out[i] = {
+          ...entry,
+          octopart: {
+            mpn: r.mpn,
+            manufacturer: r.manufacturer,
+            description: r.description,
+            offers: r.offers.map((o) => ({
+              supplier: o.supplier,
+              stock: o.stock,
+              moq: o.moq,
+              sku: o.sku,
+            })),
+          },
+        };
+      } catch {
+        // Lookup failed — leave entry as-is. The contract is
+        // "octopart undefined" → "we couldn't enrich this one",
+        // distinct from "no offers found" which would be
+        // octopart: {... offers: []}.
+      }
+    }
+  }
+  const workers = Array.from({ length: Math.min(CONCURRENCY, out.length) }, worker);
+  await Promise.all(workers);
+  return out;
 }

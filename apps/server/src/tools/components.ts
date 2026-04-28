@@ -5,15 +5,20 @@
  * Tool calls go through `dispatchTool(name, ctx, handler)` so the
  * metered ones (search_parts, check_part_availability,
  * find_alternative_parts) get gated by quota + write a UsageEvent
- * on success. Non-metered tools (list_library_components) skip
- * the meter wrapper at the dispatch layer.
+ * on success.
+ *
+ * Sprint 10 PR 10.4 moved `list_library_components` out of this file
+ * and into the cross-platform `tools/platform.ts` registry — that
+ * version routes through `Platform.listLibraryComponents()`, supports
+ * EasyEDA, and adds optional LCSC/Octopart enrichment. The handler
+ * `listLibraryComponents` in `handlers/components.ts` stays — REST
+ * routes still use it.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   SearchPartsInput,
   CheckAvailabilityInput,
-  ListLibraryComponentsInput,
   FindAlternativePartsInput,
 } from "@altium-mcp/shared";
 import * as h from "../handlers/components.js";
@@ -35,16 +40,6 @@ export function registerComponentTools(server: McpServer, ctx: ToolContext) {
     async (args) =>
       dispatchTool("check_part_availability", ctx, () =>
         h.checkPartAvailability(ctx.nexar, args)
-      )
-  );
-
-  server.tool(
-    "list_library_components",
-    "List all components in an Altium 365 workspace library.",
-    ListLibraryComponentsInput.shape,
-    async (args) =>
-      dispatchTool("list_library_components", ctx, () =>
-        h.listLibraryComponents(ctx.nexar, args)
       )
   );
 
