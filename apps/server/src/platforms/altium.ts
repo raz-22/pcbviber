@@ -25,6 +25,7 @@ import {
   type DrcSummary,
   type Page,
   type PaginationParams,
+  type PcbComponent,
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
@@ -122,6 +123,19 @@ export class AltiumPlatform implements Platform {
     // reason the AI client can render. Sprint 11+ adds it.
     return notSupported(
       "Schematic component listing isn't yet wired up on the Altium side. The AD relay needs a new command for DM_Project / SchDoc introspection; tracking as a Sprint 11 follow-up. The same tool already works on EasyEDA workspaces."
+    );
+  }
+
+  async listPcbComponents(
+    _params: PaginationParams
+  ): Promise<PlatformResponse<Page<PcbComponent>>> {
+    // Same shape as listSchematicComponents above: AltiumRelay.js
+    // needs a new command that walks BoardIterator / eComponentObject
+    // and returns the basic-BOM fields (designator + footprint).
+    // Sprint 11 PR 11.1 (`get_components`) extends this with the full
+    // placement payload and is when the AD relay extension will land.
+    return notSupported(
+      "PCB component listing isn't yet wired up on the Altium side. The AD relay needs a new BoardIterator / eComponentObject walk; Sprint 11 PR 11.1 ships it alongside the placement-data tool. The same tool already works on EasyEDA workspaces."
     );
   }
 

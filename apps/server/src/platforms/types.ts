@@ -136,6 +136,23 @@ export interface SchematicComponent {
 }
 
 /**
+ * One component placed on a PCB — the cross-platform basic-BOM shape.
+ * Just designator + footprint here; placement fields (x/y/layer/
+ * rotation/locked) land in Sprint 11 PR 11.1's `get_components` to
+ * keep the surface focused on what's needed for read-the-BOM use
+ * cases. EasyEDA exposes these via `eda.pcb_PrimitiveComponent.get()`;
+ * spike question #4 (sprint-9-easyeda-spike) flagged that the exact
+ * field names need hands-on confirmation, so extraction is best-
+ * effort and the raw payload preserves the rest.
+ */
+export interface PcbComponent {
+  primitiveId: string;
+  designator: string;
+  footprint: string;
+  raw: unknown;
+}
+
+/**
  * Standard pagination wrapper for collection-returning tools.
  * Per the roadmap's "pagination by default" architectural
  * commitment: every list tool takes offset+limit and returns a
@@ -212,6 +229,20 @@ export interface Platform {
   listSchematicComponents(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<SchematicComponent>>>;
+
+  /**
+   * List components placed on the active PCB, paginated. Returns the
+   * basic-BOM shape (designator + footprint); Sprint 11 PR 11.1
+   * (`get_components`) extends with x/y/layer/rotation/locked.
+   * EasyEDA: `eda.pcb_PrimitiveComponent.getAllPrimitiveId()` +
+   * sliced `get(idsForPage)`.
+   * Altium: stubbed today (PR 10.3b) — the AD relay command for
+   * BoardIterator/eComponentObject walks isn't wired yet; surfaces
+   * as supported:false until a follow-up PR extends AltiumRelay.js.
+   */
+  listPcbComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<PcbComponent>>>;
 
   /**
    * Capture a PNG screenshot of the platform's editor view.

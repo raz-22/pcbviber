@@ -42,6 +42,7 @@ import {
   type DrcSummary,
   type Page,
   type PaginationParams,
+  type PcbComponent,
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
@@ -233,6 +234,75 @@ export class EasyedaPlatform implements Platform {
       //   - If `total` is unknown: full-page result implies more
       //     might follow (caller has to page until they get a
       //     short page). Anything less than `limit` ends.
+      let nextOffset: number | null;
+      if (total !== undefined) {
+        nextOffset =
+          offset + items.length < total ? offset + items.length : null;
+      } else {
+        nextOffset =
+          items.length === limit ? offset + items.length : null;
+      }
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async listPcbComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<PcbComponent>>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "list_pcb_components",
+        { offset, limit }
+      );
+      // Extension returns
+      //   { items: Array<rawComponent>, total: number }
+      // where rawComponent is whatever
+      // `eda.pcb_PrimitiveComponent.get(ids)` returns. Footprint is
+      // the universal cross-platform PCB-side identifier (Altium
+      // calls it Footprint; EasyEDA calls it footprint or
+      // libraryReference). Spike question #4 flagged the exact
+      // field names need hands-on confirmation, so extraction
+      // mirrors schematic — top-level first, then properties
+      // fallback, raw preserved.
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a list_pcb_components result without an `items` array."
+        );
+      }
+      const items: PcbComponent[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const primitiveId =
+          typeof entry.primitiveId === "string" ? entry.primitiveId : "";
+        if (!primitiveId) return [];
+        const props = isRecord(entry.properties) ? entry.properties : {};
+        const designator =
+          typeof entry.designator === "string"
+            ? entry.designator
+            : typeof props.designator === "string"
+              ? (props.designator as string)
+              : "";
+        const footprint =
+          typeof entry.footprint === "string"
+            ? entry.footprint
+            : typeof props.footprint === "string"
+              ? (props.footprint as string)
+              : "";
+        return [{ primitiveId, designator, footprint, raw: entry }];
+      });
+      // Pagination math identical to listSchematicComponents — see
+      // PR 10.3a for the rationale on the total-known vs
+      // total-unknown branches.
       let nextOffset: number | null;
       if (total !== undefined) {
         nextOffset =

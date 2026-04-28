@@ -173,6 +173,47 @@
       }
       return { items: items, total: total };
     },
+
+    /**
+     * Sprint 10 PR 10.3b: paginated PCB-component list.
+     *
+     * Identical shape to list_schematic_components but routes through
+     * eda.pcb_PrimitiveComponent.* instead. The two-call pattern
+     * (getAllPrimitiveId → slice → get) is the same — only the
+     * namespace differs.
+     *
+     * Returns:
+     *   { items: Array<{primitiveId, designator, footprint, ...raw}>,
+     *     total: number }
+     *
+     * The server normalizes that shape into Page<PcbComponent>
+     * — see EasyedaPlatform.listPcbComponents().
+     */
+    list_pcb_components: async function (params) {
+      const offset = Math.max(0, Math.floor(params?.offset ?? 0));
+      const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));
+      // eslint-disable-next-line no-undef
+      const allIds = await eda.pcb_PrimitiveComponent.getAllPrimitiveId();
+      const total = allIds.length;
+      const pageIds = allIds.slice(offset, offset + limit);
+      // eslint-disable-next-line no-undef
+      const details = await eda.pcb_PrimitiveComponent.get(pageIds);
+      // Same array-vs-id-map normalization as the schematic handler;
+      // pro-api version drift can change which shape is returned.
+      let items;
+      if (Array.isArray(details)) {
+        items = details.map(function (d, i) {
+          return Object.assign({ primitiveId: pageIds[i] }, d);
+        });
+      } else if (details && typeof details === "object") {
+        items = pageIds.map(function (id) {
+          return Object.assign({ primitiveId: id }, details[id] ?? {});
+        });
+      } else {
+        items = [];
+      }
+      return { items: items, total: total };
+    },
   };
 
   // ── Boot ──────────────────────────────────────────────────────────

@@ -182,6 +182,67 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "list_pcb_components",
+    "List components placed on the active PCB, paginated. Each entry has primitiveId + designator + footprint + the platform's raw payload. Pass offset+limit to page through dense boards; the response carries `nextOffset` (null when the page is the last). EasyEDA today; Altium ships in a follow-up that extends the AD relay (Sprint 11 PR 11.1's `get_components` adds the placement payload).",
+    PaginationShape,
+    async (args) => {
+      const result = await ctx.platform.listPcbComponents({
+        offset: args.offset,
+        limit: args.limit,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not list PCB components: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const { items, nextOffset, total } = result.data;
+      if (items.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No components on the active ${ctx.platform.name} PCB.`,
+            },
+          ],
+        };
+      }
+      // One line per component: designator + footprint + (id) — the
+      // basic-BOM shape callers need to reason about parts on the
+      // board. PR 11.1 will add a richer tool with x/y/layer/rotation
+      // for placement work; this one stays compact.
+      const lines = items.map((c) => {
+        const parts: string[] = [];
+        if (c.designator) parts.push(c.designator);
+        if (c.footprint) parts.push(`(${c.footprint})`);
+        parts.push(`[${c.primitiveId}]`);
+        return `- ${parts.join(" ")}`;
+      });
+      const totalStr = total !== undefined ? ` of ${total}` : "";
+      const header = `PCB components ${
+        items.length === 0 ? 0 : 1
+      }–${items.length}${totalStr} (${ctx.platform.name}):`;
+      const footer =
+        nextOffset !== null
+          ? `\n\nMore available — call again with offset=${nextOffset} to fetch the next page.`
+          : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n") + footer,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "screenshot",
     "Capture a PNG screenshot of the active EDA editor window. Works across all supported platforms (Altium Designer via local PowerShell capture; EasyEDA Pro via in-editor extension). Returns the image inline so the AI can see it. Pair this with any layout-modifying tool to verify the change visually.",
     {},

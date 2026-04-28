@@ -180,6 +180,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     getActiveProject: async () => ({ supported: false, reason: "stub" }),
     listProjects: async () => ({ supported: false, reason: "stub" }),
     listSchematicComponents: async () => ({ supported: false, reason: "stub" }),
+    listPcbComponents: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -275,6 +276,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     }),
     listProjects: async () => ({ supported: false, reason: "stub" }),
     listSchematicComponents: async () => ({ supported: false, reason: "stub" }),
+    listPcbComponents: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -446,5 +448,123 @@ test("list_schematic_components tool: Altium platform returns supported:false �
   assert.equal(res.isError, true);
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /Could not list schematic components/);
+  assert.match(text, /AD relay/);
+});
+
+// ─── list_pcb_components tool ────────────────────────────────────────
+
+function captureListPcbComponentsHandler(
+  ctx: ToolContext
+): ListSchematicComponentsHandler {
+  // Same handler signature as schematic — both take {offset?, limit?}.
+  // Reuse the type rather than introducing a parallel one that would
+  // drift over time.
+  let handler: ListSchematicComponentsHandler | null = null;
+  const fakeServer = {
+    tool: (
+      name: string,
+      _desc: string,
+      _shape: unknown,
+      fn: ListSchematicComponentsHandler
+    ) => {
+      if (name === "list_pcb_components") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler)
+    throw new Error("registerPlatformTools didn't register `list_pcb_components`");
+  return handler;
+}
+
+test("list_pcb_components tool: EasyEDA happy path → caption + one line per component", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureListPcbComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({ offset: 0, limit: 2 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.deepEqual(cmd.params, { offset: 0, limit: 2 });
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { primitiveId: "p-1", designator: "R1", footprint: "0402" },
+        { primitiveId: "p-2", designator: "U1", footprint: "QFN-32" },
+      ],
+      total: 2,
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /PCB components/);
+  assert.match(text, /R1/);
+  assert.match(text, /0402/);
+  assert.match(text, /U1/);
+  assert.match(text, /QFN-32/);
+  assert.doesNotMatch(text, /More available/);
+  relay.__resetForTests();
+});
+
+test("list_pcb_components tool: pagination footer when more pages available", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureListPcbComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({ offset: 0, limit: 200 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  const items = Array.from({ length: 200 }, (_, i) => ({
+    primitiveId: `p-${i}`,
+    designator: `R${i}`,
+    footprint: "0402",
+  }));
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items, total: 350 },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /More available — call again with offset=200/);
+  relay.__resetForTests();
+});
+
+test("list_pcb_components tool: empty board → 'No components' caption (not isError)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureListPcbComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items: [], total: 0 },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No components on the active easyeda PCB/);
+  relay.__resetForTests();
+});
+
+test("list_pcb_components tool: Altium platform returns supported:false → MCP error result", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureListPcbComponentsHandler(buildToolCtx(platform));
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not list PCB components/);
   assert.match(text, /AD relay/);
 });

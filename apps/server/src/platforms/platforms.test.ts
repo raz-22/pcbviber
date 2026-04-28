@@ -607,6 +607,157 @@ test("AltiumPlatform.listSchematicComponents: returns supported:false with clear
   }
 });
 
+// ─── EasyedaPlatform.listPcbComponents — Sprint 10 PR 10.3b ────────
+
+test("EasyedaPlatform.listPcbComponents: maps extension {items,total} to a Page", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.listPcbComponents({ offset: 0, limit: 200 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "list_pcb_components");
+  assert.deepEqual(cmd.params, { offset: 0, limit: 200 });
+
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { primitiveId: "p-1", designator: "R1", footprint: "0402" },
+        { primitiveId: "p-2", designator: "U1", footprint: "QFN-32" },
+      ],
+      total: 2,
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 2);
+    assert.equal(result.data.items[0].designator, "R1");
+    assert.equal(result.data.items[0].footprint, "0402");
+    assert.equal(result.data.items[1].footprint, "QFN-32");
+    assert.equal(result.data.total, 2);
+    assert.equal(result.data.nextOffset, null, "page exhausts collection");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listPcbComponents: nextOffset advances when total > items returned", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listPcbComponents({ offset: 0, limit: 200 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+
+  const items = Array.from({ length: 200 }, (_, i) => ({
+    primitiveId: `p-${i}`,
+    designator: `R${i}`,
+    footprint: "0402",
+  }));
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items, total: 350 },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 200);
+    assert.equal(result.data.total, 350);
+    assert.equal(result.data.nextOffset, 200);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listPcbComponents: extracts designator/footprint from properties when top-level keys missing", async () => {
+  // Pin the same fallback shape as the schematic side: pro-api-types
+  // doesn't strongly type per-component fields, so some footprints
+  // come through under entry.properties.footprint depending on the
+  // component class.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listPcbComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { primitiveId: "p-1", properties: { designator: "U7", footprint: "BGA-256" } },
+      ],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items[0].designator, "U7");
+    assert.equal(result.data.items[0].footprint, "BGA-256");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listPcbComponents: malformed result (no items array) → supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listPcbComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { wrongShape: true },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /items.*array/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listPcbComponents: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.listPcbComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
+// ─── AltiumPlatform.listPcbComponents — stub for now ───────────────
+
+test("AltiumPlatform.listPcbComponents: returns supported:false with clear 'follow-up' reason", async () => {
+  // Same stub pattern as listSchematicComponents — the AD relay
+  // needs a new BoardIterator command. Sprint 11 PR 11.1 ships it
+  // alongside the placement-data tool. The reason must name the
+  // platform, the missing piece, and hint EasyEDA works.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.listPcbComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /Altium/, "reason should name the platform");
+    assert.match(
+      result.reason,
+      /AD relay/,
+      "reason should explain WHAT'S blocked"
+    );
+    assert.match(
+      result.reason,
+      /EasyEDA/,
+      "reason should hint the EasyEDA half works"
+    );
+  }
+});
+
 // ─── Helper ─────────────────────────────────────────────────────────
 
 function assertSupportedFalse<T>(
