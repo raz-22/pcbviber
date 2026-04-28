@@ -216,6 +216,61 @@
     },
 
     /**
+     * Sprint 10 PR 10.5: read DRC + ERC outputs from EasyEDA Pro.
+     *
+     * Altium's `Messages` panel accumulates state across runs;
+     * EasyEDA Pro doesn't expose that. So we ACTIVELY run both
+     * DRC engines (sch + pcb) on each call, merge results, tag
+     * `source` so the AI can tell which side flagged what.
+     *
+     * Each engine is independent — if no schematic is open,
+     * sch_Drc.check throws; we catch and continue with pcb. Same
+     * vice versa. The contract is "best-effort: return what we
+     * could collect", not "fail on first engine that errors".
+     *
+     * `includeVerboseError=true` per the spike — without it the
+     * return is summary-only. Strict + ui both off (ui=false
+     * stops the editor from blocking on a modal).
+     */
+    get_messages: async function () {
+      const merged = [];
+      try {
+        // eslint-disable-next-line no-undef
+        const schResult = await eda.sch_Drc.check(false, false, true);
+        const schList = Array.isArray(schResult)
+          ? schResult
+          : schResult && Array.isArray(schResult.messages)
+            ? schResult.messages
+            : [];
+        for (let i = 0; i < schList.length; i++) {
+          const entry = schList[i] || {};
+          merged.push(
+            Object.assign({ source: "schematic" }, entry)
+          );
+        }
+      } catch (e) {
+        // Schematic DRC unavailable — likely no schematic open.
+        // Don't surface as a top-level failure; just skip.
+      }
+      try {
+        // eslint-disable-next-line no-undef
+        const pcbResult = await eda.pcb_Drc.check(false, false, true);
+        const pcbList = Array.isArray(pcbResult)
+          ? pcbResult
+          : pcbResult && Array.isArray(pcbResult.messages)
+            ? pcbResult.messages
+            : [];
+        for (let i = 0; i < pcbList.length; i++) {
+          const entry = pcbList[i] || {};
+          merged.push(Object.assign({ source: "pcb" }, entry));
+        }
+      } catch (e) {
+        // PCB DRC unavailable — same handling as above.
+      }
+      return { messages: merged };
+    },
+
+    /**
      * Sprint 10 PR 10.4: paginated workspace-library search.
      *
      * Routes to eda.lib_Device.search(key, libraryUuid, classification,

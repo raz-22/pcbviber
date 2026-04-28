@@ -1077,6 +1077,104 @@ test("EasyedaPlatform.listLibraryComponents: no relay → supported:false NO_BRI
   }
 });
 
+// ─── EasyedaPlatform.getMessages — Sprint 10 PR 10.5 ────────────────
+
+test("EasyedaPlatform.getMessages: maps {messages:[...]} to PlatformMessage[] with severity coercion", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.getMessages();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "get_messages");
+
+  // Pin a few flavors the EasyEDA DRC engine actually emits:
+  //   - "warn" (gets coerced to "warning" — the platform contract
+  //     uses the "warning" spelling)
+  //   - bare "Error" (different case)
+  //   - source/document tagging from the extension's merge
+  //   - text under both `message` and `description` keys
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      messages: [
+        {
+          severity: "Error",
+          source: "schematic",
+          message: "Floating pin on U1.3",
+          document: "main.esch",
+        },
+        {
+          level: "warn",
+          source: "pcb",
+          description: "Trace width below clearance rule",
+        },
+        {
+          type: "info",
+          source: "pcb",
+          message: "Auto-routed 23 nets",
+        },
+      ],
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.length, 3);
+    assert.equal(result.data[0].severity, "error");
+    assert.equal(result.data[0].source, "schematic");
+    assert.equal(result.data[0].text, "Floating pin on U1.3");
+    assert.equal(result.data[0].document, "main.esch");
+    // "warn" → "warning" coercion contract
+    assert.equal(result.data[1].severity, "warning");
+    assert.equal(result.data[1].text, "Trace width below clearance rule");
+    assert.equal(result.data[2].severity, "info");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getMessages: empty messages array → supported:true with [] data", async () => {
+  // A clean design with no DRC violations is a valid state, NOT
+  // a tool failure. Distinct from "extension failed" — let the
+  // tool wrapper render "no messages" rather than an error.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getMessages();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { messages: [] } });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) assert.equal(result.data.length, 0);
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getMessages: malformed result (no messages array) → supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getMessages();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { wrong: true } });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /messages.*array/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getMessages: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.getMessages();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── Helper ─────────────────────────────────────────────────────────
 
 function assertSupportedFalse<T>(

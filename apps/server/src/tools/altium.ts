@@ -15,7 +15,6 @@ import {
   NewProjectParams,
   SaveProjectParams,
   ListDocumentsParams,
-  GetMessagesParams,
   GetBoardInfoParams,
   GetStackupParams,
   AuditProjectParams,
@@ -118,12 +117,9 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
     async (args) => toMcpResponse(() => h.pcbviberAuditProject(relay, args))
   );
 
-  server.tool(
-    "ad_get_messages",
-    "Return the current contents of Altium's Messages panel as structured entries (class, document, source, message, time) with severity counts. Supports filtering by min severity and source. Does NOT re-run any build.",
-    GetMessagesParams.shape,
-    async (args) => toMcpResponse(() => h.adGetMessages(relay, args))
-  );
+  // Sprint 10 PR 10.5 moved this to the cross-platform `get_messages`
+  // tool registered in `tools/platform.ts`. The handler `adGetMessages`
+  // stays — `AltiumPlatform.getMessages()` calls it.
 
   server.tool(
     "ad_debug_introspect_messages",

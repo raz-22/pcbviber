@@ -734,3 +734,141 @@ test("list_library_components tool: Altium with no nexar configured → MCP erro
   assert.match(text, /Could not list library components/);
   assert.match(text, /Nexar credentials/);
 });
+
+// ─── get_messages tool ───────────────────────────────────────────────
+
+type GetMessagesHandler = (args: {
+  minSeverity?: "info" | "warning" | "error";
+  limit?: number;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureGetMessagesHandler(ctx: ToolContext): GetMessagesHandler {
+  let handler: GetMessagesHandler | null = null;
+  const fakeServer = {
+    tool: (
+      name: string,
+      _desc: string,
+      _shape: unknown,
+      fn: GetMessagesHandler
+    ) => {
+      if (name === "get_messages") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler)
+    throw new Error("registerPlatformTools didn't register `get_messages`");
+  return handler;
+}
+
+test("get_messages tool: severity-counts header + one line per message, default minSeverity=warning drops info", async () => {
+  // Default filter is 'warning' so info-class noise drops. Pin the
+  // header shape (counts of what's left) and the per-line tagging.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetMessagesHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      messages: [
+        { severity: "error", source: "pcb", message: "Short on VCC" },
+        { severity: "warning", source: "pcb", message: "Tight clearance R3↔R4" },
+        { severity: "info", source: "pcb", message: "Routed 12 nets" },
+      ],
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Messages \(easyeda\): 1 error\(s\), 1 warning\(s\)\./);
+  assert.match(text, /\[ERROR\] \(pcb\) Short on VCC/);
+  assert.match(text, /\[WARNING\] \(pcb\) Tight clearance/);
+  // Info dropped by the default filter
+  assert.doesNotMatch(text, /Routed 12 nets/);
+  relay.__resetForTests();
+});
+
+test("get_messages tool: minSeverity=info keeps everything; counts include info", async () => {
+  // Opt-in path: AI clients that want the full picture (e.g. compile
+  // chatter, info-class DRC entries) pass minSeverity:'info'.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetMessagesHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({ minSeverity: "info" }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      messages: [
+        { severity: "error", source: "pcb", message: "Short" },
+        { severity: "info", source: "pcb", message: "Note" },
+      ],
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /1 error\(s\), 1 info/);
+  assert.match(text, /\[INFO\] \(pcb\) Note/);
+  relay.__resetForTests();
+});
+
+test("get_messages tool: clean design (no messages) → 'No messages on the active platform project' (not isError)", async () => {
+  // No DRC issues is a happy state — should NOT surface as a tool
+  // error. The text differs from the "filtered everything out" case
+  // (covered by the next test) so the AI client can tell them apart.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetMessagesHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { messages: [] } });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No messages on the active easyeda project/);
+  relay.__resetForTests();
+});
+
+test("get_messages tool: all entries below threshold → 'No messages at or above severity X' (distinct from clean state)", async () => {
+  // Defense in depth: an info-only result with default filter drops
+  // everything. The user should see WHY there's nothing — "below
+  // threshold, hidden" — not the same caption as a genuinely
+  // clean design.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetMessagesHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      messages: [
+        { severity: "info", source: "pcb", message: "x" },
+        { severity: "info", source: "pcb", message: "y" },
+      ],
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No messages at or above severity 'warning'/);
+  assert.match(text, /2 below-threshold entries hidden/);
+  relay.__resetForTests();
+});

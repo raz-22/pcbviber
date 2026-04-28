@@ -487,7 +487,76 @@ export class EasyedaPlatform implements Platform {
   }
 
   async getMessages(): Promise<PlatformResponse<PlatformMessage[]>> {
-    return notSupported(STUB_REASON);
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Semantic note: on Altium, "Messages" is read from the
+      // accumulated Messages-panel state — populated by prior DRC /
+      // ERC / compile runs. EasyEDA Pro doesn't expose that
+      // accumulated state via a single API, so the extension's
+      // get_messages handler ACTIVELY runs sch_Drc.check + pcb_Drc.check
+      // and returns their combined output. AI clients call it the
+      // same way ("what's wrong with this design?") and get the same
+      // logical answer; the latency is higher on EasyEDA because the
+      // DRC engine runs synchronously per call.
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "get_messages",
+        {}
+      );
+      const obj = isRecord(raw) ? raw : {};
+      const list = Array.isArray(obj.messages) ? obj.messages : null;
+      if (!list) {
+        return notSupported(
+          "EasyEDA extension returned a get_messages result without a `messages` array."
+        );
+      }
+      const messages: PlatformMessage[] = list.flatMap(
+        (entry): PlatformMessage[] => {
+          if (!isRecord(entry)) return [];
+          // EasyEDA's DRC engine returns mixed shapes across rule
+          // categories. Best-effort: pull severity from a few common
+          // keys (severity / level / type), normalize to the
+          // PlatformMessage union, fall back to "unknown" rather
+          // than dropping the entry.
+          const sevRaw = String(
+            entry.severity ?? entry.level ?? entry.type ?? "unknown"
+          ).toLowerCase();
+          const severity: PlatformMessage["severity"] =
+            sevRaw === "info" ||
+            sevRaw === "warning" ||
+            sevRaw === "warn" ||
+            sevRaw === "error"
+              ? sevRaw === "warn"
+                ? "warning"
+                : sevRaw
+              : "unknown";
+          return [
+            {
+              severity,
+              source:
+                typeof entry.source === "string" ? entry.source : "",
+              text:
+                typeof entry.message === "string"
+                  ? entry.message
+                  : typeof entry.text === "string"
+                    ? entry.text
+                    : typeof entry.description === "string"
+                      ? entry.description
+                      : "",
+              document:
+                typeof entry.document === "string"
+                  ? entry.document
+                  : undefined,
+            },
+          ];
+        }
+      );
+      return ok(messages);
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
   }
 }
 

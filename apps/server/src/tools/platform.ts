@@ -358,4 +358,97 @@ export function registerPlatformTools(
       };
     }
   );
+
+  server.tool(
+    "get_messages",
+    "Read DRC + ERC + compile output from the platform's messages panel. Cross-platform: Altium reads the Messages panel's accumulated state (populated by prior runs); EasyEDA actively runs sch_Drc.check + pcb_Drc.check and returns their combined output. Same logical answer either way — what's wrong with this design? Defaults filter out info-class noise; pass minSeverity:'info' to see everything.",
+    {
+      minSeverity: z
+        .enum(["info", "warning", "error"])
+        .optional()
+        .describe(
+          "Drop entries below this severity. Defaults to 'warning' — info-class messages are mostly compile/build chatter that rarely helps AI reasoning. Pass 'info' to see everything."
+        ),
+      limit: z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          "Max messages to return after severity filtering. Defaults to 200; capped at 500 to keep the rendered output bounded for chatty boards."
+        ),
+    },
+    async (args) => {
+      const result = await ctx.platform.getMessages();
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not read messages: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const minSeverity = args.minSeverity ?? "warning";
+      const limit = Math.min(500, Math.max(1, Math.floor(args.limit ?? 200)));
+      // Severity ordering: error > warning > info > unknown.
+      // "unknown" never gets filtered out (we don't know what it is —
+      // surface it rather than hide it).
+      const rank: Record<string, number> = {
+        error: 3,
+        warning: 2,
+        info: 1,
+        unknown: 0,
+      };
+      const minRank = rank[minSeverity] ?? 2;
+      const filtered = result.data.filter(
+        (m) => (rank[m.severity] ?? 0) >= minRank || m.severity === "unknown"
+      );
+      const counts = {
+        error: filtered.filter((m) => m.severity === "error").length,
+        warning: filtered.filter((m) => m.severity === "warning").length,
+        info: filtered.filter((m) => m.severity === "info").length,
+        unknown: filtered.filter((m) => m.severity === "unknown").length,
+      };
+      if (filtered.length === 0) {
+        const reason =
+          result.data.length === 0
+            ? `No messages on the active ${ctx.platform.name} project.`
+            : `No messages at or above severity '${minSeverity}'. (${result.data.length} below-threshold entries hidden.)`;
+        return { content: [{ type: "text" as const, text: reason }] };
+      }
+      const truncated = filtered.length > limit;
+      const visible = filtered.slice(0, limit);
+      // Emit the severity-counts header first so the AI can lead
+      // with totals before reading per-entry text.
+      const headerParts: string[] = [];
+      if (counts.error) headerParts.push(`${counts.error} error(s)`);
+      if (counts.warning) headerParts.push(`${counts.warning} warning(s)`);
+      if (counts.info) headerParts.push(`${counts.info} info`);
+      if (counts.unknown) headerParts.push(`${counts.unknown} unknown`);
+      const header = `Messages (${ctx.platform.name}): ${headerParts.join(", ")}.`;
+      // One line per message, severity-tagged so a quick scan groups
+      // by class. source/document tagged inline when present.
+      const lines = visible.map((m) => {
+        const sevTag = `[${m.severity.toUpperCase()}]`;
+        const where = [m.source, m.document].filter(Boolean).join(" / ");
+        const whereStr = where ? ` (${where})` : "";
+        return `${sevTag}${whereStr} ${m.text}`;
+      });
+      const footer = truncated
+        ? `\n\n${filtered.length - limit} more message(s) hidden — call again with limit=${filtered.length} to see all.`
+        : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n") + footer,
+          },
+        ],
+      };
+    }
+  );
 }
