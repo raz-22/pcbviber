@@ -54,6 +54,18 @@ export interface ToolContext {
    * authenticated API keys with a default workspace configured.
    */
   metering: ToolMeteringContext | null;
+  /**
+   * Cross-platform abstraction. /mcp dispatch instantiates the
+   * right `Platform` for the request's workspace (AltiumPlatform
+   * with relay + nexar; EasyedaPlatform with edaRelay + workspaceId).
+   * Stdio gets an AltiumPlatform with whatever local AD relay is
+   * available + the env-loaded nexar.
+   *
+   * Sprint 10+ tools that go through Platform (e.g. the
+   * platform-agnostic `screenshot` tool from PR 10.1b) read this.
+   * Legacy `ad_*` tools keep going through `relay` directly.
+   */
+  platform: import("../platforms/types.js").Platform;
 }
 
 type McpToolResponse = {

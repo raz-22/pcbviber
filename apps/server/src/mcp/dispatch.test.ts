@@ -23,6 +23,15 @@ import {
   type UsageEntry,
 } from "@altium-mcp/metering";
 import { dispatchTool, type ToolContext } from "./dispatch.js";
+import { EasyedaPlatform } from "../platforms/easyeda.js";
+
+/**
+ * Stub platform for dispatch tests — every method returns
+ * supported:false. dispatchTool itself doesn't read ctx.platform
+ * (that's the platform-tools' concern), so the value is irrelevant
+ * to the dispatch contract; it just needs to satisfy the type.
+ */
+const STUB_PLATFORM = new EasyedaPlatform();
 import type { NexarService } from "../services/nexar.js";
 
 // We don't need a real NexarService — the dispatch layer just
@@ -67,6 +76,7 @@ test("non-metered tool runs handler and returns a normal MCP response", async ()
   const recorder = makeUsageRecorder();
   const ctx: ToolContext = {
     nexar: STUB_NEXAR,
+    platform: STUB_PLATFORM,
     metering: {
       meterCtx: makeMeterCtx(),
       store: new InMemoryQuotaStore(),
@@ -92,6 +102,7 @@ test("metered tool: runs through meter(), records UsageEvent, returns result", a
   const store = new InMemoryQuotaStore();
   const ctx: ToolContext = {
     nexar: STUB_NEXAR,
+    platform: STUB_PLATFORM,
     metering: {
       meterCtx: makeMeterCtx(),
       store,
@@ -121,6 +132,7 @@ test("metered tool over quota: returns isError + quota_exceeded body", async () 
 
   const ctx: ToolContext = {
     nexar: STUB_NEXAR,
+    platform: STUB_PLATFORM,
     metering: {
       meterCtx: makeMeterCtx(),
       store,
@@ -149,7 +161,7 @@ test("metered tool over quota: returns isError + quota_exceeded body", async () 
 test("metered tool, no metering ctx (stdio): handler runs, no recording", async () => {
   // Stdio path constructs ToolContext with metering: null. Same
   // codepath the dispatch layer uses for non-metered tools.
-  const ctx: ToolContext = { nexar: STUB_NEXAR, metering: null };
+  const ctx: ToolContext = { nexar: STUB_NEXAR, platform: STUB_PLATFORM, metering: null };
 
   const result = await dispatchTool("search_parts", ctx, async () => [
     { mpn: "STM32F407" },
@@ -167,6 +179,7 @@ test("metered tool: handler throws non-quota error → isError + Error: message"
   const recorder = makeUsageRecorder();
   const ctx: ToolContext = {
     nexar: STUB_NEXAR,
+    platform: STUB_PLATFORM,
     metering: {
       meterCtx: makeMeterCtx(),
       store: new InMemoryQuotaStore(),
@@ -194,6 +207,7 @@ test("metered tool with overage allowed: passes the cap, still records", async (
 
   const ctx: ToolContext = {
     nexar: STUB_NEXAR,
+    platform: STUB_PLATFORM,
     metering: {
       meterCtx: makeMeterCtx({
         plan: {
@@ -219,6 +233,7 @@ test("export tool maps to the export metric", async () => {
   const store = new InMemoryQuotaStore();
   const ctx: ToolContext = {
     nexar: STUB_NEXAR,
+    platform: STUB_PLATFORM,
     metering: {
       meterCtx: makeMeterCtx(),
       store,

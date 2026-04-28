@@ -66,6 +66,8 @@ import { registerAdRelayRoutes } from "./ad-relay/routes.js";
 import { EdaRelay } from "./eda-relay/relay.js";
 import { registerEdaRelayRoutes } from "./eda-relay/routes.js";
 import { registerEdaScriptRoutes } from "./eda-script-routes/routes.js";
+import { AltiumPlatform } from "./platforms/altium.js";
+import { EasyedaPlatform } from "./platforms/easyeda.js";
 import * as altium from "./handlers/altium.js";
 
 export async function startHttpServer(opts: {
@@ -335,6 +337,19 @@ export async function startHttpServer(opts: {
       reply.code(400);
       return reply.send({ error: "api_key_no_workspace" });
     }
+    // Workspace platform decides which Platform impl gets handed to
+    // the per-request ToolContext. The `platform` field is the
+    // single source of truth for cross-platform tool dispatch
+    // (Sprint 9 PR 9.2 added the column; Sprint 10 PR 10.1b — this
+    // PR — wires it into MCP dispatch).
+    const workspaceRow = await prisma.workspace.findUnique({
+      where: { id: apiKey.defaultWorkspaceId },
+      select: { id: true, platform: true },
+    });
+    if (!workspaceRow) {
+      reply.code(400);
+      return reply.send({ error: "api_key_no_workspace" });
+    }
     let perRequestNexar: NexarService;
     try {
       perRequestNexar = await nexarFactory.forWorkspace(
@@ -351,6 +366,10 @@ export async function startHttpServer(opts: {
       });
     }
     const meterCtx = await buildApiKeyMeterContext(req);
+    const platform =
+      workspaceRow.platform === "easyeda"
+        ? new EasyedaPlatform({ relay: edaRelay, workspaceId: workspaceRow.id })
+        : new AltiumPlatform({ relay, nexar: perRequestNexar });
     const toolCtx: ToolContext = {
       nexar: perRequestNexar,
       metering: {
@@ -358,6 +377,7 @@ export async function startHttpServer(opts: {
         store: meteringStore,
         recordUsage: writeUsageEvent,
       },
+      platform,
     };
     const server = buildMcpServer(toolCtx, relay);
     const transport = new StreamableHTTPServerTransport({
