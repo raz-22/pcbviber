@@ -47,7 +47,7 @@ test("EasyedaPlatform: every method returns supported:false with a reason", asyn
 // returns supported:false with a connectivity reason.
 
 test("AltiumPlatform.name is 'altium'", () => {
-  const platform = new AltiumPlatform({ relay: null, nexar: null });
+  const platform = new AltiumPlatform({ relay: null, nexar: null, altiumWorkspaceUrl: null });
   assert.equal(platform.name, "altium");
 });
 
@@ -55,7 +55,7 @@ test("AltiumPlatform: relay-dependent methods return supported:false when relay 
   // null relay simulates "no AD relay configured at all" — distinct
   // from "configured but currently disconnected", which is exercised
   // below.
-  const platform = new AltiumPlatform({ relay: null, nexar: null });
+  const platform = new AltiumPlatform({ relay: null, nexar: null, altiumWorkspaceUrl: null });
 
   const project = await platform.getActiveProject();
   assertSupportedFalse(project, "getActiveProject");
@@ -83,7 +83,7 @@ test("AltiumPlatform: relay-dependent methods return supported:false when relay 
     },
   } as unknown as import("../ad-relay/relay.js").AdRelay;
 
-  const platform = new AltiumPlatform({ relay: stubRelay, nexar: null });
+  const platform = new AltiumPlatform({ relay: stubRelay, nexar: null, altiumWorkspaceUrl: null });
 
   const project = await platform.getActiveProject();
   assertSupportedFalse(project, "getActiveProject");
@@ -300,6 +300,154 @@ test("EasyedaPlatform.getActiveProject: extension reports failure via relay, sur
     assert.match(result.reason, /API method not yet bound/i);
   }
   relay.__resetForTests();
+});
+
+// ─── EasyedaPlatform.listProjects() — Sprint 10 PR 10.2b ────────────
+
+test("EasyedaPlatform.listProjects: with relay+workspaceId, maps extension array to ProjectListEntry[]", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.listProjects();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "list_projects");
+
+  // Extension returns the result of eda.dmt_Project.getProjectInfo()
+  // collected per-uuid: {uuid, name, ...other fields we don't unpack}.
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: [
+      { uuid: "proj-1", name: "Power Monitor", workspaceUrl: "..." },
+      { uuid: "proj-2", name: "DAQ Card" },
+    ],
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.length, 2);
+    assert.equal(result.data[0].id, "proj-1");
+    assert.equal(result.data[0].name, "Power Monitor");
+    // raw passes through verbatim so future tools that need more
+    // fields can read them without another round-trip.
+    assert.equal((result.data[0].raw as { workspaceUrl: string }).workspaceUrl, "...");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listProjects: with no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.listProjects();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.listProjects: extension returns non-array → supported:false (defense in depth)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listProjects();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  // Extension version mismatch: returns an object instead of an
+  // array. Surface as supported:false rather than letting the bad
+  // shape reach the AI client unchecked.
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { uuid: "not-an-array" },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /non-array/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listProjects: empty array → supported:true with empty data", async () => {
+  // A workspace with no projects is a valid state. Distinct from
+  // "extension failed" — return supported:true with an empty array
+  // so the tool wrapper can render "no projects found" rather than
+  // a generic error.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listProjects();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: [] });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) assert.equal(result.data.length, 0);
+  relay.__resetForTests();
+});
+
+// ─── AltiumPlatform.listProjects() — workspace url gate ─────────────
+
+test("AltiumPlatform.listProjects: missing altiumWorkspaceUrl → supported:false with clear reason", async () => {
+  // Nexar's desProjects requires a workspaceUrl. Workspaces created
+  // without one (or env-only stdio without ALTIUM_WORKSPACE_URL)
+  // can't list projects. Surface a clear actionable reason rather
+  // than a Nexar HTTP error.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: {} as never,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.listProjects();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /Altium 365 URL/);
+  }
+});
+
+test("AltiumPlatform.listProjects: missing nexar → supported:false with clear reason", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: "https://acme.altium365.com",
+  });
+  const result = await platform.listProjects();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /Nexar credentials/);
+  }
+});
+
+test("AltiumPlatform.listProjects: with stub nexar + url → maps to ProjectListEntry[]", async () => {
+  // Stub nexar.listProjects to bypass the network. Verifies the
+  // wrapper's shape mapping (Nexar's AltiumProject → our
+  // ProjectListEntry) without standing up a real Nexar mock.
+  const nexar = {
+    listProjects: async (url: string) => {
+      assert.equal(url, "https://acme.altium365.com");
+      return [
+        {
+          id: "p-1",
+          name: "Acme PSU",
+          workspaceUrl: url,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ];
+    },
+  } as unknown as import("../services/nexar.js").NexarService;
+
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar,
+    altiumWorkspaceUrl: "https://acme.altium365.com",
+  });
+  const result = await platform.listProjects();
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.length, 1);
+    assert.equal(result.data[0].id, "p-1");
+    assert.equal(result.data[0].name, "Acme PSU");
+  }
 });
 
 // ─── Helper ─────────────────────────────────────────────────────────

@@ -108,6 +108,19 @@ export interface DrcSummary {
 }
 
 /**
+ * One entry returned by `listProjects()`. Cross-platform shape;
+ * the platform-specific blob lives in `raw` for tools that need
+ * fields beyond id + name. Altium: Nexar's `AltiumProject`;
+ * EasyEDA: the `IDMT_BriefProjectItem` returned by
+ * `eda.dmt_Project.getProjectInfo()`.
+ */
+export interface ProjectListEntry {
+  id: string;
+  name: string;
+  raw: unknown;
+}
+
+/**
  * One entry from the platform's messages panel — DRC violations,
  * ERC errors, compile warnings. Filtering by severity / source is
  * the caller's job.
@@ -137,6 +150,17 @@ export interface Platform {
    * `eda.dmt_Project.getCurrentProjectInfo()`.
    */
   getActiveProject(): Promise<PlatformResponse<ActiveProject>>;
+
+  /**
+   * List every project the platform exposes for this workspace.
+   * Altium: Nexar's `desProjects(workspaceUrl)` (requires the
+   * workspace's Altium 365 URL be configured — returns
+   * supported:false otherwise).
+   * EasyEDA: the in-editor extension's
+   * `eda.dmt_Project.getAllProjectsUuid()` + per-uuid
+   * `getProjectInfo()`.
+   */
+  listProjects(): Promise<PlatformResponse<ProjectListEntry[]>>;
 
   /**
    * Capture a PNG screenshot of the platform's editor view.

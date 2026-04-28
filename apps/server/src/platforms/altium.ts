@@ -26,6 +26,7 @@ import {
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
+  type ProjectListEntry,
   type ScreenshotResult,
 } from "./types.js";
 
@@ -36,10 +37,25 @@ export interface AltiumPlatformDeps {
   relay: AdRelay | null;
   /** Per-workspace Nexar/Octopart client for cloud-side reads. */
   nexar: NexarService | null;
+  /**
+   * The workspace's stored Altium 365 URL. Required for
+   * cloud-only reads like `listProjects` (Nexar's
+   * `desProjects(workspaceUrl)`). Null on the stdio path when
+   * the env doesn't set ALTIUM_WORKSPACE_URL, or on workspaces
+   * that haven't configured one. Methods that need it return
+   * `{supported: false}` with a clear reason rather than throw.
+   */
+  altiumWorkspaceUrl: string | null;
 }
 
 const RELAY_DISCONNECTED =
   "Altium Designer relay is not connected. Open AD with AltiumRelay.js loaded and try again.";
+
+const NO_WORKSPACE_URL =
+  "Workspace has no Altium 365 URL configured. Add one in Settings → Workspaces; this tool reads from Altium 365's cloud API.";
+
+const NO_NEXAR =
+  "Workspace has no Nexar credentials configured. Add them in Settings → Workspaces.";
 
 export class AltiumPlatform implements Platform {
   readonly name = "altium" as const;
@@ -70,6 +86,24 @@ export class AltiumPlatform implements Platform {
             ? String(obj.path)
             : name;
       return ok({ id, name, raw });
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
+  async listProjects(): Promise<PlatformResponse<ProjectListEntry[]>> {
+    // Cloud read — uses Nexar's desProjects(workspaceUrl), no AD
+    // relay needed. The workspace url is stored per-workspace by
+    // Sprint 2 PR 2.2; on stdio it comes from ALTIUM_WORKSPACE_URL.
+    if (!this.deps.nexar) return notSupported(NO_NEXAR);
+    if (!this.deps.altiumWorkspaceUrl) return notSupported(NO_WORKSPACE_URL);
+    try {
+      const projects = await this.deps.nexar.listProjects(
+        this.deps.altiumWorkspaceUrl
+      );
+      return ok(
+        projects.map((p) => ({ id: p.id, name: p.name, raw: p }))
+      );
     } catch (err) {
       return notSupported(errorReason(err));
     }

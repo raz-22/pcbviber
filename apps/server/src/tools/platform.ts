@@ -19,6 +19,53 @@ export function registerPlatformTools(
   ctx: ToolContext
 ): void {
   server.tool(
+    "list_projects",
+    "List every project the workspace exposes — Altium 365 projects via Nexar (requires the workspace's Altium 365 URL be configured) or EasyEDA Pro projects via the in-editor extension. Returns id + name per entry; use `get_active_project` if you want the one currently focused in the editor.",
+    {},
+    async () => {
+      const result = await ctx.platform.listProjects();
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not list projects: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const entries = result.data;
+      if (entries.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No projects found in this ${ctx.platform.name} workspace.`,
+            },
+          ],
+        };
+      }
+      // Compact one-line-per-project output. The AI client gets to
+      // see id + name; if it needs richer fields it can call
+      // get_active_project / future get_project_details.
+      const lines = entries.map(
+        (p) => `- "${p.name}" (id="${p.id}")`
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Found ${entries.length} project(s) in this ${ctx.platform.name} workspace:\n` +
+              lines.join("\n"),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "get_active_project",
     "Return the project currently active in the EDA editor (the schematic/PCB the user is looking at). Works across Altium and EasyEDA. Returns id + name + the platform's raw project payload for tools that need richer fields.",
     {},

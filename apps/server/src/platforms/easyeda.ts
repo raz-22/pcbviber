@@ -43,6 +43,7 @@ import {
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
+  type ProjectListEntry,
   type ScreenshotResult,
 } from "./types.js";
 
@@ -123,6 +124,42 @@ export class EasyedaPlatform implements Platform {
       const name =
         typeof obj.name === "string" ? obj.name : id || "(unknown)";
       return ok({ id: id || name, name, raw });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async listProjects(): Promise<PlatformResponse<ProjectListEntry[]>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // The extension handler returns
+      //   Array<{uuid: string, name: string, ...}>
+      // — that's the shape of `eda.dmt_Project.getProjectInfo(uuid)`
+      // collected per-project from `getAllProjectsUuid()`. We
+      // tolerate non-string fields gracefully because the
+      // pro-api-types shape isn't fully spelled out at the
+      // declaration level.
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "list_projects",
+        {}
+      );
+      if (!Array.isArray(raw)) {
+        return notSupported(
+          "EasyEDA extension returned a non-array list_projects result."
+        );
+      }
+      const entries: ProjectListEntry[] = raw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const id = typeof entry.uuid === "string" ? entry.uuid : "";
+        const name =
+          typeof entry.name === "string" ? entry.name : id || "(unknown)";
+        if (!id && name === "(unknown)") return [];
+        return [{ id: id || name, name, raw: entry }];
+      });
+      return ok(entries);
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }

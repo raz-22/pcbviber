@@ -39,6 +39,7 @@ import { randomUUID } from "node:crypto";
 export type EdaMethod =
   | "screenshot"
   | "get_active_project"
+  | "list_projects"
   | "run_drc"
   | "get_messages";
 

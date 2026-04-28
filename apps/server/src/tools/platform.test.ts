@@ -69,6 +69,10 @@ function captureGetActiveProjectHandler(ctx: ToolContext): CapturedHandler {
   return captureHandler(ctx, "get_active_project");
 }
 
+function captureListProjectsHandler(ctx: ToolContext): CapturedHandler {
+  return captureHandler(ctx, "list_projects");
+}
+
 // ─── EasyEDA: success path ───────────────────────────────────────────
 
 test("screenshot tool: EasyEDA supported:true → MCP image content + platform-named text", async () => {
@@ -143,6 +147,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
   const stubAltium: Platform = {
     name: "altium",
     getActiveProject: async () => ({ supported: false, reason: "stub" }),
+    listProjects: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -164,7 +169,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
 
 test("screenshot tool: Altium supported:false (relay disconnected) → MCP error result", async () => {
   // Real AltiumPlatform with no relay — the existing PR 9.3 path.
-  const platform = new AltiumPlatform({ relay: null, nexar: null });
+  const platform = new AltiumPlatform({ relay: null, nexar: null, altiumWorkspaceUrl: null });
   const handler = captureScreenshotHandler(buildToolCtx(platform));
 
   // `screenshot` on AltiumPlatform tries the local PowerShell path
@@ -236,6 +241,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
       supported: true,
       data: { id: "C:/proj/Acme.PrjPcb", name: "Acme.PrjPcb", raw: {} },
     }),
+    listProjects: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -246,4 +252,69 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /altium/);
   assert.match(text, /Acme\.PrjPcb/);
+});
+
+// ─── list_projects tool ──────────────────────────────────────────────
+
+test("list_projects tool: EasyEDA supported:true → text caption with one line per project", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureListProjectsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler())();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "list_projects");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: [
+      { uuid: "p-1", name: "Power Monitor" },
+      { uuid: "p-2", name: "DAQ Card" },
+    ],
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Found 2 project/);
+  assert.match(text, /easyeda/);
+  assert.match(text, /Power Monitor/);
+  assert.match(text, /DAQ Card/);
+  relay.__resetForTests();
+});
+
+test("list_projects tool: empty result → 'no projects found' (not an error)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureListProjectsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler())();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: [] });
+
+  const res = await result;
+  // Empty list is a normal state, not isError. The AI client
+  // distinguishes "no projects" (action: create one) from
+  // "couldn't list" (action: check connection).
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No projects found/);
+  relay.__resetForTests();
+});
+
+test("list_projects tool: supported:false → MCP error result with platform's reason", async () => {
+  // Common case: Altium workspace without an Altium 365 URL.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: {} as never,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureListProjectsHandler(buildToolCtx(platform));
+  const res = await handler();
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not list projects/);
+  assert.match(text, /Altium 365 URL/);
 });

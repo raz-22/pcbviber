@@ -344,7 +344,7 @@ export async function startHttpServer(opts: {
     // PR — wires it into MCP dispatch).
     const workspaceRow = await prisma.workspace.findUnique({
       where: { id: apiKey.defaultWorkspaceId },
-      select: { id: true, platform: true },
+      select: { id: true, platform: true, altiumWorkspaceUrl: true },
     });
     if (!workspaceRow) {
       reply.code(400);
@@ -369,7 +369,11 @@ export async function startHttpServer(opts: {
     const platform =
       workspaceRow.platform === "easyeda"
         ? new EasyedaPlatform({ relay: edaRelay, workspaceId: workspaceRow.id })
-        : new AltiumPlatform({ relay, nexar: perRequestNexar });
+        : new AltiumPlatform({
+            relay,
+            nexar: perRequestNexar,
+            altiumWorkspaceUrl: workspaceRow.altiumWorkspaceUrl,
+          });
     const toolCtx: ToolContext = {
       nexar: perRequestNexar,
       metering: {
