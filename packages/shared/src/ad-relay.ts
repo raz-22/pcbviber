@@ -31,6 +31,7 @@ export const AdMethod = z.enum([
   "move_component",
   "rotate_component",
   "lock_component",
+  "get_keepouts",
 ]);
 export type AdMethod = z.infer<typeof AdMethod>;
 

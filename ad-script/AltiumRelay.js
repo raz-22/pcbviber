@@ -146,6 +146,7 @@ function Dispatch(cmd) {
         case "move_component":     return CmdMoveComponent(cmd.params);
         case "rotate_component":   return CmdRotateComponent(cmd.params);
         case "lock_component":     return CmdLockComponent(cmd.params);
+        case "get_keepouts":       return CmdGetKeepouts(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -761,6 +762,124 @@ function CmdLockComponent(params) {
         designator: params.designator,
         message: (locked ? "Locked " : "Unlocked ") + params.designator + " on Altium."
     };
+}
+
+// Sprint 11 PR 11.3: enumerate keepouts on the active PCB. Walks
+// BoardIterator filtered to eRegionObject (=11) — keepouts in AD
+// are regions on the keepout layer with `InComponent === false`
+// (board-level keepouts; component-internal keepouts come from the
+// component itself, not the board, and are out of scope).
+//
+// Per-region extraction is defensive: kind/layer/vertices accessors
+// vary across AD builds. Anything we can't read becomes a default
+// rather than dropping the whole keepout. Vertices converted from
+// AD's 1/10000-mil to mm at this boundary, matching CmdGetComponents.
+function CmdGetKeepouts(_params) {
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    var iter = board.BoardIterator_Create();
+    iter.AddFilter_ObjectSet(SetOf([11])); // eRegionObject = 11
+    iter.AddFilter_LayerSet(null);
+    iter.AddFilter_Method(null);
+    var items = [];
+    var idx = 0;
+    var r = iter.FirstPCBObject();
+    while (r) {
+        // Filter to keepout regions only — IsKeepOut on most builds,
+        // fall back to checking the layer name for "keepout".
+        var isKeepout = false;
+        try { isKeepout = Boolean(r.IsKeepOut); } catch (_) { }
+        if (!isKeepout) {
+            try {
+                var lyr = r.Layer;
+                var lyrStr = lyr && typeof lyr === "object" && lyr.Name ? String(lyr.Name) : String(lyr);
+                if (lyrStr.toLowerCase().indexOf("keepout") >= 0) isKeepout = true;
+            } catch (_) { }
+        }
+        if (isKeepout) {
+            items.push(ExtractKeepout(r, idx));
+        }
+        idx++;
+        r = iter.NextPCBObject();
+    }
+    board.BoardIterator_Destroy(iter);
+    return { items: items };
+}
+
+// Pull cross-platform fields off an IPCB_Region instance. Each
+// accessor wrapped in its own try/catch so missing one (across AD
+// builds) doesn't drop the rest of the keepout. Vertices converted
+// to mm.
+function ExtractKeepout(region, idx) {
+    var MM_PER_COORD = 0.0000254;
+    var out = {
+        id: "kpo_" + idx,
+        kind: "all",
+        layer: "all",
+        vertices: []
+    };
+    try {
+        var lyr = region.Layer;
+        if (lyr && typeof lyr === "object" && lyr.Name) {
+            out.layer = String(lyr.Name);
+        } else if (lyr !== null && lyr !== undefined) {
+            out.layer = String(lyr);
+        }
+    } catch (_) { }
+    // Kind: AD exposes `RegionKind` or `KeepoutKind` depending on
+    // build. Both report ePlacementKeepout / eRoutingKeepout / etc.
+    // Server normalizes via normalizeKeepoutKind — we just pass
+    // the raw string through.
+    try {
+        var k = region.RegionKind || region.KeepoutKind;
+        if (k !== null && k !== undefined) out.kind = String(k);
+    } catch (_) { }
+    // Vertices: most builds expose PointCount + PointAt(i). Some
+    // expose GetState_Vertices() returning an array directly.
+    try {
+        if (typeof region.GetState_Vertices === "function") {
+            var arr = region.GetState_Vertices();
+            if (arr && arr.length !== undefined) {
+                for (var i = 0; i < arr.length; i++) {
+                    var v = arr[i];
+                    if (v && v.X !== undefined && v.Y !== undefined) {
+                        out.vertices.push({
+                            x: Number(v.X) * MM_PER_COORD,
+                            y: Number(v.Y) * MM_PER_COORD
+                        });
+                    }
+                }
+            }
+        } else if (typeof region.PointCount === "function" || region.PointCount !== undefined) {
+            var count = typeof region.PointCount === "function"
+                ? region.PointCount()
+                : Number(region.PointCount);
+            for (var j = 0; j < count; j++) {
+                try {
+                    var p = typeof region.PointAt === "function"
+                        ? region.PointAt(j)
+                        : region.Point(j);
+                    if (p && p.X !== undefined && p.Y !== undefined) {
+                        out.vertices.push({
+                            x: Number(p.X) * MM_PER_COORD,
+                            y: Number(p.Y) * MM_PER_COORD
+                        });
+                    }
+                } catch (_) { }
+            }
+        }
+    } catch (_) { }
+    return out;
 }
 
 function CmdGetStackup(_params) {

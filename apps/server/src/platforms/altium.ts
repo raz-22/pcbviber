@@ -26,6 +26,7 @@ import {
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
+  type Keepout,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -286,6 +287,39 @@ export class AltiumPlatform implements Platform {
     }
   }
 
+  async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      const raw = await this.deps.relay.execute<unknown>("get_keepouts", {});
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      if (!itemsRaw) {
+        return notSupported(
+          "AD relay returned a get_keepouts result without an `items` array. Update AltiumRelay.js to the version shipped with Sprint 11 PR 11.3."
+        );
+      }
+      const items: Keepout[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const id = typeof entry.id === "string" ? entry.id : "";
+        if (!id) return [];
+        return [
+          {
+            id,
+            kind: normalizeKeepoutKind(entry.kind),
+            layer: normalizeKeepoutLayer(entry.layer),
+            vertices: extractVertices(entry.vertices),
+            raw: entry,
+          },
+        ];
+      });
+      return ok(items);
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async listPcbComponents(
     _params: PaginationParams
   ): Promise<PlatformResponse<Page<PcbComponent>>> {
@@ -391,6 +425,74 @@ export function makeMutateResult(
       ? raw.message
       : `${verb} ${designator}.`;
   return { designator, message };
+}
+
+/**
+ * Sprint 11 PR 11.3: collapse Altium's `eKeepoutKind_*` enum (and
+ * EasyEDA's keepout-type field, once confirmed) to the four cases
+ * AI clients reason about. Anything we can't recognize is treated
+ * as the most-restrictive `"all"` — defensive default that errs on
+ * the side of NOT silently letting placement/routing through a
+ * keepout we couldn't classify.
+ *
+ * Exported because `EasyedaPlatform.getKeepouts` needs the same
+ * normalization — keeping one helper so the two impls can't drift.
+ */
+export function normalizeKeepoutKind(
+  raw: unknown
+): "placement" | "routing" | "via" | "all" {
+  if (typeof raw !== "string") return "all";
+  const s = raw.toLowerCase();
+  // Order matters: check "via" before the placement/routing
+  // substrings since AD's "eViaRoutingKeepout" includes both
+  // "via" AND "routing" — the via check needs to win.
+  if (s.includes("via")) return "via";
+  if (s.includes("placement") || s.includes("component")) return "placement";
+  if (s.includes("routing") || s.includes("route") || s.includes("track"))
+    return "routing";
+  return "all";
+}
+
+/**
+ * Layer scope for keepouts is similar to PlacedComponent's, but adds
+ * `"all"` for cross-layer keepouts that apply to every signal layer
+ * (common for mech-only no-component zones). Layer naming is fuzzy
+ * across AD builds — we map the obvious cases and fall through to
+ * "all" rather than "unknown" because a keepout we can't classify
+ * is safer to apply broadly than to skip.
+ */
+export function normalizeKeepoutLayer(
+  raw: unknown
+): "top" | "bottom" | "inner" | "all" {
+  if (typeof raw !== "string") return "all";
+  const s = raw.toLowerCase();
+  if (s === "top" || s === "etoplayer" || s === "top_layer") return "top";
+  if (s === "bottom" || s === "ebottomlayer" || s === "bottom_layer")
+    return "bottom";
+  if (s.includes("mid") || s.includes("inner") || s.includes("plane"))
+    return "inner";
+  // "ekeepoutlayer", "all_layers", "multi_layer", anything else →
+  // treat as the broadest scope (defensive default).
+  return "all";
+}
+
+/**
+ * Extract a polygon vertex array from a raw `vertices` field. Each
+ * entry must be an object with numeric x/y; malformed entries get
+ * dropped rather than crashing the whole keepout. Empty array is
+ * a valid result (zero-vertex keepouts are malformed but we
+ * surface them instead of dropping the whole keepout).
+ */
+export function extractVertices(
+  raw: unknown
+): Array<{ x: number; y: number }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((v): Array<{ x: number; y: number }> => {
+    if (typeof v !== "object" || v === null) return [];
+    const obj = v as { x?: unknown; y?: unknown };
+    if (typeof obj.x !== "number" || typeof obj.y !== "number") return [];
+    return [{ x: obj.x, y: obj.y }];
+  });
 }
 
 /**

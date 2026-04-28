@@ -320,6 +320,61 @@
       };
     },
 
+    /**
+     * Sprint 11 PR 11.3: enumerate keepouts on the active PCB.
+     *
+     * Per Sprint 9 spike question #4, pcb_PrimitiveRegion is the
+     * suspected carrier but `[NEEDS HANDS-ON]`. This handler tries
+     * the most likely API paths; if the namespace is missing we
+     * return `{unsupported: true}` so the server surfaces a clean
+     * supported:false with the spike-question reason.
+     *
+     * Read-only this PR — set_keepout lands in 11.3b once we can
+     * confirm the write API hands-on.
+     */
+    get_keepouts: async function () {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_PrimitiveRegion) {
+        return { unsupported: true };
+      }
+      let allIds;
+      try {
+        // eslint-disable-next-line no-undef
+        allIds = await eda.pcb_PrimitiveRegion.getAllPrimitiveId();
+      } catch (e) {
+        // Method exists at the namespace level but throws — likely
+        // a Pro version that hasn't wired the accessor yet.
+        return { unsupported: true };
+      }
+      if (!Array.isArray(allIds) || allIds.length === 0) {
+        return { items: [] };
+      }
+      // eslint-disable-next-line no-undef
+      const details = await eda.pcb_PrimitiveRegion.get(allIds);
+      let entries;
+      if (Array.isArray(details)) {
+        entries = details.map(function (d, i) {
+          return Object.assign({ id: allIds[i] }, d);
+        });
+      } else if (details && typeof details === "object") {
+        entries = allIds.map(function (id) {
+          return Object.assign({ id: id }, details[id] ?? {});
+        });
+      } else {
+        entries = [];
+      }
+      // The spike flagged uncertainty about which fields carry
+      // keepout-vs-fill flags. Filter to entries that smell like
+      // keepouts: a `keepout`/`isKeepOut`/`type` field that includes
+      // "keepout" or matches the keepout enum. Rest get dropped.
+      const keepouts = entries.filter(function (e) {
+        if (e.keepout === true || e.isKeepOut === true) return true;
+        const t = String(e.type || e.kind || "").toLowerCase();
+        return t.indexOf("keepout") >= 0 || t === "placement" || t === "routing" || t === "via";
+      });
+      return { items: keepouts };
+    },
+
     lock_component: async function (params) {
       const designator = String(params?.designator || "");
       const locked = Boolean(params?.locked);

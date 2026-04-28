@@ -1308,6 +1308,215 @@ test("EasyedaPlatform.getComponents: no relay → supported:false NO_BRIDGE", as
   }
 });
 
+// ─── Keepouts — Sprint 11 PR 11.3 ───────────────────────────────────
+
+import {
+  extractVertices,
+  normalizeKeepoutKind,
+  normalizeKeepoutLayer,
+} from "./altium.js";
+
+test("normalizeKeepoutKind: AD enum flavors and EasyEDA variants collapse to the cross-platform union", () => {
+  // Altium: ePlacementKeepout / eRoutingKeepout / etc.
+  assert.equal(normalizeKeepoutKind("eComponentKeepout"), "placement");
+  assert.equal(normalizeKeepoutKind("Placement"), "placement");
+  assert.equal(normalizeKeepoutKind("eRoutingKeepout"), "routing");
+  assert.equal(normalizeKeepoutKind("track"), "routing");
+  assert.equal(normalizeKeepoutKind("via"), "via");
+  // Order-sensitive: "via" must beat "routing" since some AD enums
+  // include both substrings ("eViaRoutingKeepout"). Pin that
+  // explicitly.
+  assert.equal(normalizeKeepoutKind("eViaRoutingKeepout"), "via");
+  // Defensive default: anything unrecognized treated as the
+  // most-restrictive "all" rather than silently letting the AI
+  // place/route through it.
+  assert.equal(normalizeKeepoutKind("MysteryEnum"), "all");
+  assert.equal(normalizeKeepoutKind(undefined), "all");
+});
+
+test("normalizeKeepoutLayer: top/bottom/inner/all collapses with 'all' as defensive default", () => {
+  assert.equal(normalizeKeepoutLayer("eTopLayer"), "top");
+  assert.equal(normalizeKeepoutLayer("Top"), "top");
+  assert.equal(normalizeKeepoutLayer("eBottomLayer"), "bottom");
+  assert.equal(normalizeKeepoutLayer("eMidLayer3"), "inner");
+  // Multi-layer / unknown → "all" (broadest scope) rather than
+  // "unknown" — applying a keepout broadly is safer than skipping
+  // one we can't classify.
+  assert.equal(normalizeKeepoutLayer("eKeepoutLayer"), "all");
+  assert.equal(normalizeKeepoutLayer("MultiLayer"), "all");
+  assert.equal(normalizeKeepoutLayer(undefined), "all");
+});
+
+test("extractVertices: drops malformed entries; preserves valid {x,y} pairs", () => {
+  // Pin the input-validation contract for vertex arrays. AD's
+  // GetState_Vertices() can return mixed arrays across builds —
+  // the helper must drop garbage rather than crash.
+  const vertices = extractVertices([
+    { x: 1, y: 2 },
+    { x: "not a number", y: 0 },
+    null,
+    "junk",
+    { x: 3, y: 4 },
+  ]);
+  assert.deepEqual(vertices, [
+    { x: 1, y: 2 },
+    { x: 3, y: 4 },
+  ]);
+  // Non-array input → empty array, not throw.
+  assert.deepEqual(extractVertices(undefined), []);
+  assert.deepEqual(extractVertices({ wrong: "shape" }), []);
+});
+
+test("AltiumPlatform.getKeepouts: relay round-trip maps full payload + normalizes kind/layer", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      assert.equal(method, "get_keepouts");
+      assert.deepEqual(params, {});
+      return {
+        items: [
+          {
+            id: "kpo_0",
+            kind: "ePlacementKeepout",
+            layer: "eTopLayer",
+            vertices: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+              { x: 10, y: 5 },
+              { x: 0, y: 5 },
+            ],
+          },
+          {
+            id: "kpo_1",
+            kind: "eRoutingKeepout",
+            layer: "eKeepoutLayer",
+            vertices: [],
+          },
+        ],
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getKeepouts();
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.length, 2);
+    const k0 = result.data[0];
+    assert.equal(k0.kind, "placement", "ePlacementKeepout normalizes to placement");
+    assert.equal(k0.layer, "top");
+    assert.equal(k0.vertices.length, 4);
+    const k1 = result.data[1];
+    assert.equal(k1.kind, "routing");
+    assert.equal(k1.layer, "all", "eKeepoutLayer scope normalizes to 'all'");
+    assert.equal(k1.vertices.length, 0, "empty vertex array preserved, not dropped");
+  }
+});
+
+test("AltiumPlatform.getKeepouts: malformed AD result (no items) → actionable supported:false naming AltiumRelay.js", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({ wrong: true }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getKeepouts();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /AltiumRelay\.js/);
+  }
+});
+
+test("AltiumPlatform.getKeepouts: relay disconnected → supported:false RELAY_DISCONNECTED", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getKeepouts();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.getKeepouts: extension reports unsupported:true → supported:false naming spike question", async () => {
+  // The "API doesn't exist on this Pro version" path. Pin that the
+  // reason explicitly references the spike question + names the
+  // EasyEDA-specific symbol so an AI client can route the user
+  // toward the documented-as-unstable surface.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getKeepouts();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { unsupported: true },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /pcb_PrimitiveRegion/);
+    assert.match(result.reason, /spike question/i);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getKeepouts: maps extension result with defensive properties+points fallback", async () => {
+  // Pro version drift: kind/layer/vertices can live under top-level
+  // OR `properties` OR `points` (alias). Pin the fallback wiring.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getKeepouts();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          uuid: "kpo-1",
+          properties: { kind: "routing", layer: "bottom" },
+          points: [
+            { x: 0, y: 0 },
+            { x: 5, y: 5 },
+          ],
+        },
+      ],
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.length, 1);
+    const k = result.data[0];
+    assert.equal(k.id, "kpo-1");
+    assert.equal(k.kind, "routing");
+    assert.equal(k.layer, "bottom");
+    assert.equal(k.vertices.length, 2);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getKeepouts: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.getKeepouts();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── Component mutate tools — Sprint 11 PR 11.2 ─────────────────────
 
 test("AltiumPlatform.moveComponent: forwards designator/x/y to relay; returns confirmation", async () => {

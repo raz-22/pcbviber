@@ -36,7 +36,13 @@
 
 import type { EdaRelay } from "../eda-relay/relay.js";
 import type { NexarService } from "../services/nexar.js";
-import { makeMutateResult, normalizeLayer } from "./altium.js";
+import {
+  extractVertices,
+  makeMutateResult,
+  normalizeKeepoutKind,
+  normalizeKeepoutLayer,
+  normalizeLayer,
+} from "./altium.js";
 import {
   notSupported,
   ok,
@@ -45,6 +51,7 @@ import {
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
+  type Keepout,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -427,6 +434,88 @@ export class EasyedaPlatform implements Platform {
           params.locked ? "Locked" : "Unlocked"
         )
       );
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Per Sprint 9 spike question #4: pcb_PrimitiveRegion is the
+      // suspected carrier for keepouts but the exact field set is
+      // [NEEDS HANDS-ON]. The extension handler tries optimistically
+      // and surfaces api-unavailable as supported:false rather than
+      // crashing. Defensive extraction handles whatever flavor of
+      // payload comes back — kind/layer/vertices keys may live under
+      // top-level or properties depending on Pro version.
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "get_keepouts",
+        {}
+      );
+      const obj = isRecord(raw) ? raw : {};
+      // Treat both `unsupported: true` (extension flagged the API
+      // as missing) and a missing `items` array as supported:false.
+      if (obj.unsupported === true) {
+        return notSupported(
+          "EasyEDA Pro keepout API is not yet exposed in this extension version. Spike question #4 (Sprint 9) is open: pcb_PrimitiveRegion is the suspected carrier but [NEEDS HANDS-ON] confirmation. The Altium half of get_keepouts works today."
+        );
+      }
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a get_keepouts result without an `items` array."
+        );
+      }
+      const items: Keepout[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const props = isRecord(entry.properties) ? entry.properties : {};
+        const id =
+          typeof entry.id === "string"
+            ? entry.id
+            : typeof entry.uuid === "string"
+              ? entry.uuid
+              : "";
+        if (!id) return [];
+        // Kind / layer fields might live under top-level or properties
+        // depending on Pro version. Defensive extraction with
+        // normalization to the cross-platform union.
+        const kindRaw =
+          typeof entry.kind === "string"
+            ? entry.kind
+            : typeof entry.type === "string"
+              ? entry.type
+              : typeof props.kind === "string"
+                ? (props.kind as string)
+                : undefined;
+        const layerRaw =
+          typeof entry.layer === "string"
+            ? entry.layer
+            : typeof props.layer === "string"
+              ? (props.layer as string)
+              : undefined;
+        const verticesRaw =
+          Array.isArray(entry.vertices)
+            ? entry.vertices
+            : Array.isArray(entry.points)
+              ? entry.points
+              : Array.isArray(props.vertices)
+                ? (props.vertices as unknown[])
+                : [];
+        return [
+          {
+            id,
+            kind: normalizeKeepoutKind(kindRaw),
+            layer: normalizeKeepoutLayer(layerRaw),
+            vertices: extractVertices(verticesRaw),
+            raw: entry,
+          },
+        ];
+      });
+      return ok(items);
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }

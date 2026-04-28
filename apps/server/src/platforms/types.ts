@@ -181,6 +181,34 @@ export interface PcbComponent {
  * `getComponents` round-trip. Field set is intentionally minimal —
  * full state lives in `getComponents`.
  */
+/**
+ * Sprint 11 PR 11.3: a 2D keepout region on the active PCB. Polygon
+ * outline + which-thing-is-prohibited + which-layers-it-applies-to.
+ *
+ * Layer scope follows the same `top|bottom|inner` union as
+ * PlacedComponent, plus `"all"` for cross-layer keepouts (e.g.,
+ * mech-only no-component zones).
+ *
+ * `kind` collapses platform-specific enums to the four cases AI
+ * clients reason about: `placement` (no components here), `routing`
+ * (no traces), `via` (no vias), `all` (everything prohibited).
+ * Altium's full `eKeepoutKind_*` set survives in `raw` for tools
+ * that need finer-grained variants (e.g., differential-pair-only).
+ *
+ * Vertices in mm, board-local origin, NOT auto-closed — the last
+ * vertex is the last vertex; AI clients reasoning about polygon
+ * area should close the loop themselves. Empty array means a
+ * zero-vertex region (malformed; surface as supported:true with
+ * an empty `vertices` field rather than dropping the keepout).
+ */
+export interface Keepout {
+  id: string;
+  kind: "placement" | "routing" | "via" | "all";
+  layer: "top" | "bottom" | "inner" | "all";
+  vertices: Array<{ x: number; y: number }>;
+  raw: unknown;
+}
+
 export interface MutateResult {
   designator: string;
   /** A short human-readable confirmation, e.g. "Moved R1 to (10.5, 20.0)". */
@@ -403,6 +431,26 @@ export interface Platform {
     designator: string;
     locked: boolean;
   }): Promise<PlatformResponse<MutateResult>>;
+
+  /**
+   * Sprint 11 PR 11.3: read every keepout on the active PCB.
+   * Cross-platform. Not paginated — keepouts are typically <50
+   * per board, and they're consumed as a complete set by validation
+   * tools (PR 11.4's validate_placement) where pagination would just
+   * complicate the math.
+   *
+   * Altium: BoardIterator over eRegionObject filtered to keepout
+   * layer; per-region kind/layer/vertices extraction with mm
+   * conversion at the relay boundary.
+   * EasyEDA: pcb_PrimitiveRegion is the suspected carrier per the
+   * Sprint 9 spike (`[NEEDS HANDS-ON]` flagged); the impl runs
+   * defensive extraction and surfaces supported:false with the
+   * spike-question reason if the API is unavailable.
+   *
+   * The `set_keepout` write path lands in PR 11.3b once the
+   * EasyEDA-side API is confirmed hands-on.
+   */
+  getKeepouts(): Promise<PlatformResponse<Keepout[]>>;
 
   /**
    * List entries from the workspace's component library, paginated.

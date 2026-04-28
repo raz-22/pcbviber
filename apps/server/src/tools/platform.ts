@@ -248,6 +248,64 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "get_keepouts",
+    "Read every keepout on the active PCB. Returns kind (placement/routing/via/all), layer (top/bottom/inner/all), polygon vertices in mm, and the platform's raw payload. Cross-platform; coordinates are normalized to mm at the relay boundary. Pair with `validate_placement` to check whether components violate any keepout. EasyEDA support depends on the in-editor extension's pcb_PrimitiveRegion API being exposed (open spike question — if unavailable, the tool surfaces a clear supported:false reason).",
+    {},
+    async () => {
+      const result = await ctx.platform.getKeepouts();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not read keepouts: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const items = result.data;
+      if (items.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No keepouts on the active ${ctx.platform.name} PCB.`,
+            },
+          ],
+        };
+      }
+      // Group counts by kind so the AI gets totals first; per-line
+      // rendering shows kind + layer + vertex count + bounding-box
+      // dims (compact summary that's actionable for placement
+      // validation without dumping the full vertex array).
+      const byKind = items.reduce<Record<string, number>>((acc, k) => {
+        acc[k.kind] = (acc[k.kind] ?? 0) + 1;
+        return acc;
+      }, {});
+      const kindParts = Object.entries(byKind)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, n]) => `${n} ${k}`);
+      const header = `Keepouts on ${ctx.platform.name}: ${items.length} total (${kindParts.join(", ")}).`;
+      const lines = items.map((k) => {
+        // Compact bounding-box summary so the AI can reason about
+        // approximate area without enumerating vertices itself.
+        let bboxStr = "(no vertices)";
+        if (k.vertices.length > 0) {
+          const xs = k.vertices.map((v) => v.x);
+          const ys = k.vertices.map((v) => v.y);
+          const w = Math.max(...xs) - Math.min(...xs);
+          const h = Math.max(...ys) - Math.min(...ys);
+          bboxStr = `${w.toFixed(2)}×${h.toFixed(2)}mm bbox, ${k.vertices.length} vertices`;
+        }
+        return `- [${k.kind}] on ${k.layer}: ${bboxStr} (id=${k.id})`;
+      });
+      return {
+        content: [
+          { type: "text" as const, text: header + "\n" + lines.join("\n") },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "move_component",
     "Move a placed component on the active PCB to (x, y) in millimeters (board-local origin). Cross-platform — Altium converts mm to its native 1/10000-mil at the relay boundary; EasyEDA stores mm natively. Refuses to mutate locked components (call `lock_component` first to unlock). Multiple components sharing a designator → error rather than silent first-match. Pair with `screenshot` to verify the change.",
     {

@@ -186,6 +186,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     moveComponent: async () => ({ supported: false, reason: "stub" }),
     rotateComponent: async () => ({ supported: false, reason: "stub" }),
     lockComponent: async () => ({ supported: false, reason: "stub" }),
+    getKeepouts: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -287,6 +288,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     moveComponent: async () => ({ supported: false, reason: "stub" }),
     rotateComponent: async () => ({ supported: false, reason: "stub" }),
     lockComponent: async () => ({ supported: false, reason: "stub" }),
+    getKeepouts: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -975,6 +977,126 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── get_keepouts tool — Sprint 11 PR 11.3 ───────────────────────────
+
+type GetKeepoutsHandler = () => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureGetKeepoutsHandler(ctx: ToolContext): GetKeepoutsHandler {
+  let handler: GetKeepoutsHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: GetKeepoutsHandler) => {
+      if (name === "get_keepouts") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `get_keepouts`");
+  return handler;
+}
+
+test("get_keepouts tool: severity-counts header + bbox-summary line per keepout", async () => {
+  // Pin the rendering shape AI clients see: counts grouped by kind
+  // in the header, then one line per keepout with kind + layer +
+  // bounding-box dims + vertex count + id.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetKeepoutsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler())();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          id: "kpo-1",
+          kind: "placement",
+          layer: "top",
+          vertices: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+            { x: 10, y: 5 },
+            { x: 0, y: 5 },
+          ],
+        },
+        {
+          id: "kpo-2",
+          kind: "routing",
+          layer: "bottom",
+          vertices: [{ x: 100, y: 100 }],
+        },
+      ],
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Keepouts on easyeda: 2 total/);
+  // Counts grouped by kind, alphabetical order
+  assert.match(text, /1 placement/);
+  assert.match(text, /1 routing/);
+  // Per-line bounding-box rendering — 10×5mm for kpo-1, 0×0mm for
+  // single-point kpo-2 (degenerate but rendered, not dropped)
+  assert.match(text, /\[placement\] on top: 10\.00×5\.00mm bbox, 4 vertices \(id=kpo-1\)/);
+  assert.match(text, /\[routing\] on bottom: 0\.00×0\.00mm bbox, 1 vertices \(id=kpo-2\)/);
+  relay.__resetForTests();
+});
+
+test("get_keepouts tool: empty board → 'No keepouts' caption (not isError)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetKeepoutsHandler(buildToolCtx(platform));
+  const result = (async () => handler())();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { items: [] } });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No keepouts on the active easyeda PCB/);
+  relay.__resetForTests();
+});
+
+test("get_keepouts tool: zero-vertex keepout renders '(no vertices)' rather than crashing on Math.max([])", async () => {
+  // Defense in depth: a malformed keepout with empty vertices
+  // shouldn't crash the renderer with NaN bbox. Surface it
+  // explicitly so the AI sees the malformed entry.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetKeepoutsHandler(buildToolCtx(platform));
+  const result = (async () => handler())();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [{ id: "kpo-1", kind: "placement", layer: "top", vertices: [] }],
+    },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /\(no vertices\)/);
+  relay.__resetForTests();
+});
+
+test("get_keepouts tool: AD relay disconnected → MCP error result with actionable reason", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureGetKeepoutsHandler(buildToolCtx(platform));
+  const res = await handler();
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not read keepouts/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── Mutate tools — Sprint 11 PR 11.2 ────────────────────────────────
