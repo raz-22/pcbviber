@@ -11,8 +11,27 @@
  * Sprint 10 PR 10.1b — first registration: `screenshot`.
  */
 
+import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../mcp/dispatch.js";
+
+const PaginationShape = {
+  offset: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Skip the first N components. Defaults to 0."),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Max components to return. Defaults to 200; capped at 500 to stay under relay timeouts."
+    ),
+};
 
 export function registerPlatformTools(
   server: McpServer,
@@ -93,6 +112,69 @@ export function registerPlatformTools(
             // of disappearing into the surrounding sentence.
             text:
               `Active ${ctx.platform.name} project: name="${name}", id="${id}".`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "list_schematic_components",
+    "List components on the active schematic, paginated. Each entry has primitiveId + designator + value + the platform's raw payload. Pass offset+limit to page through long schematics; the response carries `nextOffset` (null when the page is the last). EasyEDA today; Altium ships in a follow-up that extends the AD relay.",
+    PaginationShape,
+    async (args) => {
+      const result = await ctx.platform.listSchematicComponents({
+        offset: args.offset,
+        limit: args.limit,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not list schematic components: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const { items, nextOffset, total } = result.data;
+      if (items.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No components on the active ${ctx.platform.name} schematic.`,
+            },
+          ],
+        };
+      }
+      // One line per component: designator + value + (id) so the
+      // AI client gets enough to reason about the BOM without a
+      // second call. The full raw payload is dropped to keep token
+      // counts sane on big schematics — callers that need it can
+      // ask for a single primitive's details in a future tool.
+      const lines = items.map((c) => {
+        const parts: string[] = [];
+        if (c.designator) parts.push(c.designator);
+        if (c.value) parts.push(`(${c.value})`);
+        parts.push(`[${c.primitiveId}]`);
+        return `- ${parts.join(" ")}`;
+      });
+      const totalStr =
+        total !== undefined ? ` of ${total}` : "";
+      const header = `Schematic components ${
+        items.length === 0 ? 0 : 1
+      }–${items.length}${totalStr} (${ctx.platform.name}):`;
+      const footer =
+        nextOffset !== null
+          ? `\n\nMore available — call again with offset=${nextOffset} to fetch the next page.`
+          : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n") + footer,
           },
         ],
       };

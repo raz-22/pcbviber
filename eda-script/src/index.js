@@ -129,6 +129,50 @@
       }
       return out;
     },
+
+    /**
+     * Sprint 10 PR 10.3a: paginated schematic-component list.
+     *
+     * Two-call shape:
+     *   1. eda.sch_PrimitiveComponent.getAllPrimitiveId() returns
+     *      Promise<Array<string>> of every component's primitive id.
+     *      Cheap call — returns ids only, not full objects.
+     *   2. Slice by params.offset / params.limit, then fetch
+     *      detail for the page via eda.sch_PrimitiveComponent.get(idsForPage).
+     *
+     * Returns:
+     *   { items: Array<{primitiveId, designator, value, properties, ...raw}>,
+     *     total: number }
+     *
+     * The server normalizes that shape into PageOf<SchematicComponent>
+     * — see EasyedaPlatform.listSchematicComponents().
+     */
+    list_schematic_components: async function (params) {
+      const offset = Math.max(0, Math.floor(params?.offset ?? 0));
+      const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));
+      // eslint-disable-next-line no-undef
+      const allIds = await eda.sch_PrimitiveComponent.getAllPrimitiveId();
+      const total = allIds.length;
+      const pageIds = allIds.slice(offset, offset + limit);
+      // eslint-disable-next-line no-undef
+      const details = await eda.sch_PrimitiveComponent.get(pageIds);
+      // `get(ids)` may return either an array (one detail per id)
+      // or an id→detail map depending on EasyEDA Pro version.
+      // Normalize to the array form the server expects.
+      let items;
+      if (Array.isArray(details)) {
+        items = details.map(function (d, i) {
+          return Object.assign({ primitiveId: pageIds[i] }, d);
+        });
+      } else if (details && typeof details === "object") {
+        items = pageIds.map(function (id) {
+          return Object.assign({ primitiveId: id }, details[id] ?? {});
+        });
+      } else {
+        items = [];
+      }
+      return { items: items, total: total };
+    },
   };
 
   // ── Boot ──────────────────────────────────────────────────────────

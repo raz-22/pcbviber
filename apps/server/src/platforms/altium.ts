@@ -23,10 +23,13 @@ import {
   ok,
   type ActiveProject,
   type DrcSummary,
+  type Page,
+  type PaginationParams,
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
   type ProjectListEntry,
+  type SchematicComponent,
   type ScreenshotResult,
 } from "./types.js";
 
@@ -107,6 +110,19 @@ export class AltiumPlatform implements Platform {
     } catch (err) {
       return notSupported(errorReason(err));
     }
+  }
+
+  async listSchematicComponents(
+    _params: PaginationParams
+  ): Promise<PlatformResponse<Page<SchematicComponent>>> {
+    // Altium-side schematic introspection needs a new AD relay
+    // command (and a corresponding handler in AltiumRelay.js) that
+    // walks DM_Project / SchDoc objects. That cross-stack work
+    // didn't fit in PR 10.3a — surfaces as a stable, actionable
+    // reason the AI client can render. Sprint 11+ adds it.
+    return notSupported(
+      "Schematic component listing isn't yet wired up on the Altium side. The AD relay needs a new command for DM_Project / SchDoc introspection; tracking as a Sprint 11 follow-up. The same tool already works on EasyEDA workspaces."
+    );
   }
 
   async screenshot(): Promise<PlatformResponse<ScreenshotResult>> {

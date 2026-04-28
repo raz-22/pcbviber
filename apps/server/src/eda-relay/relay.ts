@@ -40,6 +40,7 @@ export type EdaMethod =
   | "screenshot"
   | "get_active_project"
   | "list_projects"
+  | "list_schematic_components"
   | "run_drc"
   | "get_messages";
 

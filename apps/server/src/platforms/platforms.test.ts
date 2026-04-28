@@ -450,6 +450,163 @@ test("AltiumPlatform.listProjects: with stub nexar + url → maps to ProjectList
   }
 });
 
+// ─── EasyedaPlatform.listSchematicComponents — Sprint 10 PR 10.3a ──
+
+test("EasyedaPlatform.listSchematicComponents: maps extension {items,total} to a Page", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.listSchematicComponents({ offset: 0, limit: 200 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "list_schematic_components");
+  assert.deepEqual(cmd.params, { offset: 0, limit: 200 });
+
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { primitiveId: "p-1", designator: "R1", value: "10k" },
+        { primitiveId: "p-2", designator: "C1", value: "100nF" },
+      ],
+      total: 2,
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 2);
+    assert.equal(result.data.items[0].designator, "R1");
+    assert.equal(result.data.items[0].value, "10k");
+    assert.equal(result.data.total, 2);
+    assert.equal(result.data.nextOffset, null, "page exhausts collection");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listSchematicComponents: nextOffset advances when total > items returned", async () => {
+  // Pin the pagination math: when the extension reports total=350
+  // and we asked for limit=200, nextOffset must be 200 so the AI
+  // client knows to fetch the next page.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listSchematicComponents({ offset: 0, limit: 200 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+
+  // Fake 200 items
+  const items = Array.from({ length: 200 }, (_, i) => ({
+    primitiveId: `p-${i}`,
+    designator: `R${i}`,
+    value: "10k",
+  }));
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items, total: 350 },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 200);
+    assert.equal(result.data.total, 350);
+    assert.equal(result.data.nextOffset, 200);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listSchematicComponents: extracts designator/value from properties when top-level keys missing", async () => {
+  // EasyEDA Pro stores common fields under `properties` for some
+  // symbol types. Best-effort extraction: prefer top-level, fall
+  // back to properties.{designator,value}.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listSchematicComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { primitiveId: "p-1", properties: { designator: "U1", value: "ESP32" } },
+      ],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items[0].designator, "U1");
+    assert.equal(result.data.items[0].value, "ESP32");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listSchematicComponents: malformed result (no items array) → supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.listSchematicComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { wrongShape: true },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /items.*array/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.listSchematicComponents: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.listSchematicComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
+// ─── AltiumPlatform.listSchematicComponents — stub for now ──────────
+
+test("AltiumPlatform.listSchematicComponents: returns supported:false with clear 'follow-up' reason", async () => {
+  // The AD relay needs a new command for schematic introspection;
+  // PR 10.3a stubs the Altium side rather than ship cross-stack
+  // changes. The reason must explain that to the AI client AND
+  // hint that the EasyEDA half does work.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.listSchematicComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(
+      result.reason,
+      /Altium/,
+      "reason should name the platform"
+    );
+    assert.match(
+      result.reason,
+      /AD relay/,
+      "reason should explain WHAT'S blocked"
+    );
+    assert.match(
+      result.reason,
+      /EasyEDA/,
+      "reason should hint that the EasyEDA half works"
+    );
+  }
+});
+
 // ─── Helper ─────────────────────────────────────────────────────────
 
 function assertSupportedFalse<T>(

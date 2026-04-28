@@ -40,10 +40,13 @@ import {
   ok,
   type ActiveProject,
   type DrcSummary,
+  type Page,
+  type PaginationParams,
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
   type ProjectListEntry,
+  type SchematicComponent,
   type ScreenshotResult,
 } from "./types.js";
 
@@ -160,6 +163,85 @@ export class EasyedaPlatform implements Platform {
         return [{ id: id || name, name, raw: entry }];
       });
       return ok(entries);
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async listSchematicComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<SchematicComponent>>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    // Defaults: offset=0, limit=200. The 200 cap matches what
+    // ad_get_messages uses + keeps a single relay round-trip well
+    // under the long-poll's 25s budget on workspaces with thousands
+    // of components. Caller asks for the next page by passing
+    // offset = previous nextOffset.
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "list_schematic_components",
+        { offset, limit }
+      );
+      // Extension returns
+      //   { items: Array<rawComponent>, total: number }
+      // where rawComponent is whatever
+      // `eda.sch_PrimitiveComponent.get(ids)` returns. We extract
+      // primitiveId + best-effort designator + value, preserve
+      // the rest in `raw`.
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a list_schematic_components result without an `items` array."
+        );
+      }
+      const items: SchematicComponent[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const primitiveId =
+          typeof entry.primitiveId === "string" ? entry.primitiveId : "";
+        if (!primitiveId) return [];
+        // Designator + value live under arbitrary property keys
+        // depending on the symbol type. Best-effort:
+        //   - prefer entry.designator / entry.value when set
+        //   - fall back to entry.properties.designator etc.
+        //   - empty strings rather than undefined so the AI
+        //     client renders "" instead of dropping the field
+        const props = isRecord(entry.properties) ? entry.properties : {};
+        const designator =
+          typeof entry.designator === "string"
+            ? entry.designator
+            : typeof props.designator === "string"
+              ? (props.designator as string)
+              : "";
+        const value =
+          typeof entry.value === "string"
+            ? entry.value
+            : typeof props.value === "string"
+              ? (props.value as string)
+              : "";
+        return [{ primitiveId, designator, value, raw: entry }];
+      });
+      // Pagination logic:
+      //   - If `total` is known: nextOffset = next slice when we
+      //     haven't reached the end; null when we have.
+      //   - If `total` is unknown: full-page result implies more
+      //     might follow (caller has to page until they get a
+      //     short page). Anything less than `limit` ends.
+      let nextOffset: number | null;
+      if (total !== undefined) {
+        nextOffset =
+          offset + items.length < total ? offset + items.length : null;
+      } else {
+        nextOffset =
+          items.length === limit ? offset + items.length : null;
+      }
+      return ok({ items, nextOffset, total });
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }

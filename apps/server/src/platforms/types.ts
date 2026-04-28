@@ -121,6 +121,45 @@ export interface ProjectListEntry {
 }
 
 /**
+ * One component on a schematic — designator + value + footprint
+ * reference are the universal shape. EasyEDA exposes these via
+ * `eda.sch_PrimitiveComponent.get()` per primitive id; the spike
+ * called out that field names aren't fully spelled out at the
+ * SDK declaration level, so extraction is best-effort and the
+ * raw payload preserves the rest.
+ */
+export interface SchematicComponent {
+  primitiveId: string;
+  designator: string;
+  value: string;
+  raw: unknown;
+}
+
+/**
+ * Standard pagination wrapper for collection-returning tools.
+ * Per the roadmap's "pagination by default" architectural
+ * commitment: every list tool takes offset+limit and returns a
+ * nextOffset so the AI client can ask for the next page without
+ * juggling state. Boards routinely have thousands of components;
+ * blowing the AltiumRelay HTTP budget on a single mega-response
+ * would silently truncate.
+ *
+ * `nextOffset` is null when this page exhausts the collection.
+ */
+export interface Page<T> {
+  items: T[];
+  nextOffset: number | null;
+  /** Total count of items across all pages. May be undefined when
+   * the platform's API doesn't surface a cheap total. */
+  total?: number;
+}
+
+export interface PaginationParams {
+  offset?: number;
+  limit?: number;
+}
+
+/**
  * One entry from the platform's messages panel — DRC violations,
  * ERC errors, compile warnings. Filtering by severity / source is
  * the caller's job.
@@ -161,6 +200,18 @@ export interface Platform {
    * `getProjectInfo()`.
    */
   listProjects(): Promise<PlatformResponse<ProjectListEntry[]>>;
+
+  /**
+   * List components on the active schematic, paginated.
+   * EasyEDA: `eda.sch_PrimitiveComponent.getAllPrimitiveId()` +
+   * sliced `get(idsForPage)`.
+   * Altium: stubbed today (PR 10.3a) — the AD relay command for
+   * schematic introspection isn't wired yet; surfaces as
+   * supported:false until a follow-up PR extends AltiumRelay.js.
+   */
+  listSchematicComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<SchematicComponent>>>;
 
   /**
    * Capture a PNG screenshot of the platform's editor view.
