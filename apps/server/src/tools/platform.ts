@@ -19,6 +19,40 @@ export function registerPlatformTools(
   ctx: ToolContext
 ): void {
   server.tool(
+    "get_active_project",
+    "Return the project currently active in the EDA editor (the schematic/PCB the user is looking at). Works across Altium and EasyEDA. Returns id + name + the platform's raw project payload for tools that need richer fields.",
+    {},
+    async () => {
+      const result = await ctx.platform.getActiveProject();
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No active project available: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const { id, name } = result.data;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            // Embed the platform name so a multi-platform AI session
+            // can disambiguate which EDA the project lives in. id and
+            // name are quoted so an empty value reads as "" instead
+            // of disappearing into the surrounding sentence.
+            text:
+              `Active ${ctx.platform.name} project: name="${name}", id="${id}".`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "screenshot",
     "Capture a PNG screenshot of the active EDA editor window. Works across all supported platforms (Altium Designer via local PowerShell capture; EasyEDA Pro via in-editor extension). Returns the image inline so the AI can see it. Pair this with any layout-modifying tool to verify the change visually.",
     {},
