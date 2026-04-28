@@ -1308,6 +1308,206 @@ test("EasyedaPlatform.getComponents: no relay → supported:false NO_BRIDGE", as
   }
 });
 
+// ─── Component mutate tools — Sprint 11 PR 11.2 ─────────────────────
+
+test("AltiumPlatform.moveComponent: forwards designator/x/y to relay; returns confirmation", async () => {
+  // Pin the wire format: server passes the full param block through
+  // to AltiumRelay.js's move_component; the relay does the
+  // BoardIterator walk + mm→coord conversion + SetState_* + guard
+  // checks. The platform stays out of designator math.
+  const captured: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      captured.push({ method, params });
+      return { designator: "R1", message: "Moved R1 to (10.50, 20.00) on Altium." };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.moveComponent({ designator: "R1", x: 10.5, y: 20 });
+  assert.equal(captured[0].method, "move_component");
+  assert.deepEqual(captured[0].params, { designator: "R1", x: 10.5, y: 20 });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.designator, "R1");
+    assert.match(result.data.message, /Moved R1/);
+  }
+});
+
+test("AltiumPlatform.moveComponent: relay disconnected → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.moveComponent({ designator: "R1", x: 0, y: 0 });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("AltiumPlatform.moveComponent: relay throws designator-not-found → supported:false carries the reason", async () => {
+  // The "no component" path: the relay throws because
+  // FindComponentByDesignator couldn't match. The platform must
+  // surface the relay's message verbatim — that's the AI's signal
+  // of what went wrong.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => {
+      throw new Error("No component with designator 'XR9' on the active PCB.");
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.moveComponent({ designator: "XR9", x: 0, y: 0 });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /designator 'XR9'/);
+  }
+});
+
+test("AltiumPlatform.rotateComponent + lockComponent: route through correct relay methods", async () => {
+  // One test for the full method-name surface — wire format pin:
+  // every mutate tool must dispatch to the matching relay command.
+  const seen: string[] = [];
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string) => {
+      seen.push(method);
+      return { message: "ok" };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  await platform.rotateComponent({ designator: "R1", rotation: 90 });
+  await platform.lockComponent({ designator: "R1", locked: true });
+  assert.deepEqual(seen, ["rotate_component", "lock_component"]);
+});
+
+test("AltiumPlatform.lockComponent: confirmation message says 'Locked' or 'Unlocked' per the locked flag", async () => {
+  // The verb in the fallback confirmation must reflect the actual
+  // direction. AI clients reading transcripts shouldn't see "Locked
+  // R1" when they just unlocked it.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({}), // no message → fallback path
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const lockResult = await platform.lockComponent({ designator: "R1", locked: true });
+  if (lockResult.supported) {
+    assert.match(lockResult.data.message, /^Locked R1/);
+  }
+  const unlockResult = await platform.lockComponent({ designator: "R1", locked: false });
+  if (unlockResult.supported) {
+    assert.match(unlockResult.data.message, /^Unlocked R1/);
+  }
+});
+
+test("EasyedaPlatform.moveComponent: round-trips via relay; designator/x/y forwarded", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.moveComponent({ designator: "U1", x: 5.5, y: 10 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "move_component");
+  assert.deepEqual(cmd.params, { designator: "U1", x: 5.5, y: 10 });
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { designator: "U1", message: "Moved U1 to (5.50, 10.00) on EasyEDA." },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.match(result.data.message, /Moved U1/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.moveComponent: extension reports designator-not-found → supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.moveComponent({ designator: "XR9", x: 0, y: 0 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: false,
+    error: { message: "No component with designator 'XR9' on the active PCB." },
+  });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /designator 'XR9'/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.rotateComponent + lockComponent: route through correct relay methods", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  // Rotate
+  const rotPending = platform.rotateComponent({ designator: "R1", rotation: 270 });
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "rotate_component");
+  assert.deepEqual(cmd.params, { designator: "R1", rotation: 270 });
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { message: "ok" } });
+  await rotPending;
+  // Lock
+  const lockPending = platform.lockComponent({ designator: "R1", locked: false });
+  cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "lock_component");
+  assert.deepEqual(cmd.params, { designator: "R1", locked: false });
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { message: "ok" } });
+  await lockPending;
+  relay.__resetForTests();
+});
+
+test("Mutate tools: no relay → supported:false NO_BRIDGE for EasyEDA, RELAY_DISCONNECTED for Altium", async () => {
+  // Pin the no-bridge contract for every mutate path so AI clients
+  // get a consistent reason regardless of which tool was attempted.
+  const ed = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const ad = new AltiumPlatform({ relay: null, nexar: null, altiumWorkspaceUrl: null });
+  for (const result of [
+    await ed.moveComponent({ designator: "R1", x: 0, y: 0 }),
+    await ed.rotateComponent({ designator: "R1", rotation: 0 }),
+    await ed.lockComponent({ designator: "R1", locked: true }),
+  ]) {
+    assert.equal(result.supported, false);
+    if (result.supported === false) {
+      assert.match(result.reason, /extension is not connected/i);
+    }
+  }
+  for (const result of [
+    await ad.moveComponent({ designator: "R1", x: 0, y: 0 }),
+    await ad.rotateComponent({ designator: "R1", rotation: 0 }),
+    await ad.lockComponent({ designator: "R1", locked: true }),
+  ]) {
+    assert.equal(result.supported, false);
+    if (result.supported === false) {
+      assert.match(result.reason, /relay is not connected/i);
+    }
+  }
+});
+
 // ─── EasyedaPlatform.getMessages — Sprint 10 PR 10.5 ────────────────
 
 test("EasyedaPlatform.getMessages: maps {messages:[...]} to PlatformMessage[] with severity coercion", async () => {

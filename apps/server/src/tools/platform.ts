@@ -248,6 +248,84 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "move_component",
+    "Move a placed component on the active PCB to (x, y) in millimeters (board-local origin). Cross-platform — Altium converts mm to its native 1/10000-mil at the relay boundary; EasyEDA stores mm natively. Refuses to mutate locked components (call `lock_component` first to unlock). Multiple components sharing a designator → error rather than silent first-match. Pair with `screenshot` to verify the change.",
+    {
+      designator: z.string().min(1).describe("Designator (e.g. 'R1', 'U7'). Cross-platform stable identity."),
+      x: z.coerce.number().describe("Target X in millimeters."),
+      y: z.coerce.number().describe("Target Y in millimeters."),
+    },
+    async (args) => {
+      const result = await ctx.platform.moveComponent({
+        designator: args.designator,
+        x: args.x,
+        y: args.y,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not move component: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
+    "rotate_component",
+    "Rotate a placed component to `rotation` degrees (0–360, normalized). Refuses to mutate locked components — call `lock_component` first. Cross-platform.",
+    {
+      designator: z.string().min(1).describe("Designator (e.g. 'R1', 'U7')."),
+      rotation: z.coerce
+        .number()
+        .describe(
+          "Rotation in degrees, 0–360. Negative inputs get normalized; common values 0/90/180/270."
+        ),
+    },
+    async (args) => {
+      const result = await ctx.platform.rotateComponent({
+        designator: args.designator,
+        rotation: args.rotation,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not rotate component: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
+    "lock_component",
+    "Lock or unlock a placed component. Locked components reject move/rotate calls — this is the way to unlock something so the AI can mutate it.",
+    {
+      designator: z.string().min(1).describe("Designator (e.g. 'R1', 'U7')."),
+      locked: z.boolean().describe("True to lock, false to unlock."),
+    },
+    async (args) => {
+      const result = await ctx.platform.lockComponent({
+        designator: args.designator,
+        locked: args.locked,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not change lock state: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
     "list_pcb_components",
     "List components placed on the active PCB, paginated. Each entry has primitiveId + designator + footprint + the platform's raw payload. Pass offset+limit to page through dense boards; the response carries `nextOffset` (null when the page is the last). EasyEDA today; Altium ships in a follow-up that extends the AD relay (Sprint 11 PR 11.1's `get_components` adds the placement payload).",
     PaginationShape,

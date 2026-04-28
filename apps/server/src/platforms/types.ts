@@ -174,6 +174,19 @@ export interface PcbComponent {
  * Empty string when unset rather than undefined so AI clients render
  * a deterministic value.
  */
+/**
+ * Confirmation envelope returned by the Sprint 11 PR 11.2 mutate
+ * tools. Carries the post-mutation state of the mutated fields so
+ * the AI client can verify the change without a follow-up
+ * `getComponents` round-trip. Field set is intentionally minimal —
+ * full state lives in `getComponents`.
+ */
+export interface MutateResult {
+  designator: string;
+  /** A short human-readable confirmation, e.g. "Moved R1 to (10.5, 20.0)". */
+  message: string;
+}
+
 export interface PlacedComponent {
   primitiveId: string;
   designator: string;
@@ -353,6 +366,43 @@ export interface Platform {
   getComponents(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<PlacedComponent>>>;
+
+  /**
+   * Sprint 11 PR 11.2: place-by-designator primitive write tools.
+   *
+   * All three address components by **designator** (the cross-platform
+   * stable identity per amendment #50): unique within a project,
+   * human-readable, what AI clients naturally produce ("move R1 to
+   * (10, 20)"). Components without a designator can't be addressed —
+   * acceptable since unlabeled components are usually mech-only.
+   *
+   * Multiple-match handling: a project with two components sharing
+   * a designator is malformed; both platforms reject explicitly with
+   * supported:false rather than silently mutating the first hit.
+   *
+   * Locked-guard: move/rotate refuse to mutate a locked component —
+   * the AI must call `lockComponent({locked: false})` first. Forces
+   * explicit intent rather than relying on platform-specific
+   * silent-fail-or-unlock behavior.
+   */
+  moveComponent(params: {
+    designator: string;
+    /** Target X in millimeters, board-local origin. */
+    x: number;
+    /** Target Y in millimeters. */
+    y: number;
+  }): Promise<PlatformResponse<MutateResult>>;
+
+  rotateComponent(params: {
+    designator: string;
+    /** Rotation in degrees, 0–360 normalized. */
+    rotation: number;
+  }): Promise<PlatformResponse<MutateResult>>;
+
+  lockComponent(params: {
+    designator: string;
+    locked: boolean;
+  }): Promise<PlatformResponse<MutateResult>>;
 
   /**
    * List entries from the workspace's component library, paginated.

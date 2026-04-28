@@ -44,6 +44,9 @@ export type EdaMethod =
   | "list_pcb_components"
   | "list_library_components"
   | "get_components"
+  | "move_component"
+  | "rotate_component"
+  | "lock_component"
   | "run_drc"
   | "get_messages";
 

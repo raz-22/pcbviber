@@ -36,7 +36,7 @@
 
 import type { EdaRelay } from "../eda-relay/relay.js";
 import type { NexarService } from "../services/nexar.js";
-import { normalizeLayer } from "./altium.js";
+import { makeMutateResult, normalizeLayer } from "./altium.js";
 import {
   notSupported,
   ok,
@@ -44,6 +44,7 @@ import {
   type DrcSummary,
   type LibraryComponent,
   type ListLibraryComponentsParams,
+  type MutateResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -358,6 +359,74 @@ export class EasyedaPlatform implements Platform {
             ? offset + items.length
             : null;
       return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async moveComponent(params: {
+    designator: string;
+    x: number;
+    y: number;
+  }): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Extension handles designator → primitiveId resolution +
+      // multi-match guard + locked-guard. Server stays out of
+      // designator math so we don't pay an extra round-trip
+      // looking up the primitiveId before the modify call.
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        this.deps.workspaceId,
+        "move_component",
+        params
+      );
+      return ok(makeMutateResult(params.designator, raw, "Moved"));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async rotateComponent(params: {
+    designator: string;
+    rotation: number;
+  }): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        this.deps.workspaceId,
+        "rotate_component",
+        params
+      );
+      return ok(makeMutateResult(params.designator, raw, "Rotated"));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async lockComponent(params: {
+    designator: string;
+    locked: boolean;
+  }): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        this.deps.workspaceId,
+        "lock_component",
+        params
+      );
+      return ok(
+        makeMutateResult(
+          params.designator,
+          raw,
+          params.locked ? "Locked" : "Unlocked"
+        )
+      );
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }

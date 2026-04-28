@@ -143,6 +143,9 @@ function Dispatch(cmd) {
         case "auto_place":         return CmdAutoPlace(cmd.params);
         case "auto_route":         return CmdAutoRoute(cmd.params);
         case "get_components":     return CmdGetComponents(cmd.params);
+        case "move_component":     return CmdMoveComponent(cmd.params);
+        case "rotate_component":   return CmdRotateComponent(cmd.params);
+        case "lock_component":     return CmdLockComponent(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -598,6 +601,166 @@ function ExtractComponent(comp, idx) {
     } catch (_) { }
     try { out.locked = Boolean(comp.Locked); } catch (_) { }
     return out;
+}
+
+// Sprint 11 PR 11.2: shared designator → IPCB_Component lookup. Walks
+// BoardIterator over eComponentObject and returns:
+//   - the matching component when exactly one designator matches
+//   - throws "no component" when zero match
+//   - throws "multiple components" when 2+ match (malformed project —
+//     don't silently mutate the first hit)
+//
+// Caller is responsible for destroying the iterator they pass in
+// (via _iterRef), since an IPCB_Component reference doesn't survive
+// the iterator being destroyed mid-walk on some AD builds.
+function FindComponentByDesignator(board, designator) {
+    var iter = board.BoardIterator_Create();
+    iter.AddFilter_ObjectSet(SetOf([4]));
+    iter.AddFilter_LayerSet(null);
+    iter.AddFilter_Method(null);
+    var match = null;
+    var matchCount = 0;
+    var c = iter.FirstPCBObject();
+    while (c) {
+        var d = "";
+        try { d = String(c.Name || c.LogicalDesignator || c.SourceDesignator || ""); } catch (_) { }
+        if (d === designator) {
+            match = c;
+            matchCount++;
+            if (matchCount > 1) break; // Bail early once ambiguity confirmed.
+        }
+        c = iter.NextPCBObject();
+    }
+    if (matchCount === 0) {
+        board.BoardIterator_Destroy(iter);
+        throw MakeError("No component with designator '" + designator + "' on the active PCB.");
+    }
+    if (matchCount > 1) {
+        board.BoardIterator_Destroy(iter);
+        throw MakeError(
+            "Multiple components with designator '" + designator +
+            "'; refusing to mutate ambiguously."
+        );
+    }
+    // NOTE: caller is responsible for keeping the iterator alive while
+    // they hold the component ref (we can't destroy here without
+    // potentially invalidating the ref). They call DestroyIter() below
+    // after the mutation is complete.
+    return { comp: match, iter: iter };
+}
+
+function DestroyIter(board, ref) {
+    try { board.BoardIterator_Destroy(ref.iter); } catch (_) { }
+}
+
+// Common pre-mutation setup shared by move / rotate / lock. Returns
+// {board, ref} or throws. Centralized so the three commands can't
+// drift on the PCB-resolution / find-by-designator boundary.
+function ResolveTarget(designator) {
+    if (typeof designator !== "string" || designator.length === 0) {
+        throw MakeError("designator is required");
+    }
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+    var ref = FindComponentByDesignator(board, designator);
+    return { board: board, ref: ref };
+}
+
+// Sprint 11 PR 11.2: move a component to (x, y) in mm. Converts
+// mm → AD's native 10000ths-of-a-mil (the inverse of CmdGetComponents'
+// MM_PER_COORD). Refuses to mutate locked components — explicit
+// intent forces the AI to call lock_component(false) first rather
+// than relying on AD's silent-fail-or-unlock behavior.
+function CmdMoveComponent(params) {
+    var t = ResolveTarget(params && params.designator);
+    var x = Number(params.x);
+    var y = Number(params.y);
+    if (!isFinite(x) || !isFinite(y)) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError("x and y must be finite numbers (mm)");
+    }
+    var locked = false;
+    try { locked = Boolean(t.ref.comp.Locked); } catch (_) { }
+    if (locked) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError(
+            "Component '" + params.designator +
+            "' is locked; call lock_component({locked: false}) first to unlock."
+        );
+    }
+    var COORD_PER_MM = 1 / 0.0000254; // inverse of MM_PER_COORD
+    try {
+        t.ref.comp.SetState_XLocation(x * COORD_PER_MM);
+        t.ref.comp.SetState_YLocation(y * COORD_PER_MM);
+    } catch (e) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError("SetState position failed: " + (e.message || e));
+    }
+    DestroyIter(t.board, t.ref);
+    return {
+        designator: params.designator,
+        message: "Moved " + params.designator + " to (" + x.toFixed(2) + ", " + y.toFixed(2) + ") on Altium."
+    };
+}
+
+// Sprint 11 PR 11.2: rotate a component to `rotation` degrees, 0-360.
+// Refuses to mutate locked components, same as move.
+function CmdRotateComponent(params) {
+    var t = ResolveTarget(params && params.designator);
+    var rot = Number(params.rotation);
+    if (!isFinite(rot)) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError("rotation must be a finite number (degrees)");
+    }
+    // Normalize to 0-360 to match what CmdGetComponents reports out.
+    if (rot < 0) rot = ((rot % 360) + 360) % 360;
+    if (rot >= 360) rot = rot % 360;
+    var locked = false;
+    try { locked = Boolean(t.ref.comp.Locked); } catch (_) { }
+    if (locked) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError(
+            "Component '" + params.designator +
+            "' is locked; call lock_component({locked: false}) first to unlock."
+        );
+    }
+    try { t.ref.comp.SetState_Rotation(rot); }
+    catch (e) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError("SetState_Rotation failed: " + (e.message || e));
+    }
+    DestroyIter(t.board, t.ref);
+    return {
+        designator: params.designator,
+        message: "Rotated " + params.designator + " to " + rot.toFixed(0) + "° on Altium."
+    };
+}
+
+// Sprint 11 PR 11.2: lock or unlock. No locked-guard here — this IS
+// the way to unlock something, so refusing-when-locked would create
+// an unrecoverable state.
+function CmdLockComponent(params) {
+    var t = ResolveTarget(params && params.designator);
+    var locked = Boolean(params && params.locked);
+    try { t.ref.comp.SetState_Locked(locked); }
+    catch (e) {
+        DestroyIter(t.board, t.ref);
+        throw MakeError("SetState_Locked failed: " + (e.message || e));
+    }
+    DestroyIter(t.board, t.ref);
+    return {
+        designator: params.designator,
+        message: (locked ? "Locked " : "Unlocked ") + params.designator + " on Altium."
+    };
 }
 
 function CmdGetStackup(_params) {

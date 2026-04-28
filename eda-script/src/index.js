@@ -224,6 +224,115 @@
       return { items: items, total: total };
     },
 
+    /**
+     * Sprint 11 PR 11.2: shared designator → primitiveId lookup.
+     * Walks getAllPrimitiveId + per-id details, matches on designator
+     * (top-level or properties.designator). Returns the primitiveId
+     * string. Throws "no component" / "multiple components" with
+     * messages that match the AD relay's wording so AI clients can
+     * write portable error-reasoning prompts.
+     *
+     * Internal — not exposed as a relay method, just a helper.
+     */
+    __findPrimitiveIdByDesignator: async function (designator) {
+      // eslint-disable-next-line no-undef
+      const allIds = await eda.pcb_PrimitiveComponent.getAllPrimitiveId();
+      // eslint-disable-next-line no-undef
+      const details = await eda.pcb_PrimitiveComponent.get(allIds);
+      const matches = [];
+      const detailFor = function (id, idx) {
+        if (Array.isArray(details)) return details[idx] || {};
+        if (details && typeof details === "object") return details[id] || {};
+        return {};
+      };
+      for (let i = 0; i < allIds.length; i++) {
+        const d = detailFor(allIds[i], i);
+        const props = d && d.properties && typeof d.properties === "object" ? d.properties : {};
+        const dz =
+          typeof d.designator === "string"
+            ? d.designator
+            : typeof props.designator === "string"
+              ? props.designator
+              : "";
+        if (dz === designator) {
+          matches.push({ primitiveId: allIds[i], detail: d });
+          if (matches.length > 1) break;
+        }
+      }
+      if (matches.length === 0) {
+        throw new Error("No component with designator '" + designator + "' on the active PCB.");
+      }
+      if (matches.length > 1) {
+        throw new Error(
+          "Multiple components with designator '" + designator +
+          "'; refusing to mutate ambiguously."
+        );
+      }
+      return matches[0];
+    },
+
+    /**
+     * Sprint 11 PR 11.2: move a component to (x, y) in mm. EasyEDA
+     * Pro stores X/Y in mm natively so no unit conversion. Refuses
+     * to mutate locked components — explicit intent forces the AI
+     * to call lock_component(false) first.
+     */
+    move_component: async function (params) {
+      const designator = String(params?.designator || "");
+      const x = Number(params?.x);
+      const y = Number(params?.y);
+      if (!designator) throw new Error("designator is required");
+      if (!isFinite(x) || !isFinite(y)) throw new Error("x and y must be finite numbers (mm)");
+      const m = await handlers.__findPrimitiveIdByDesignator(designator);
+      if (m.detail && m.detail.locked === true) {
+        throw new Error(
+          "Component '" + designator +
+          "' is locked; call lock_component({locked: false}) first to unlock."
+        );
+      }
+      // eslint-disable-next-line no-undef
+      await eda.pcb_PrimitiveComponent.modify(m.primitiveId, { x: x, y: y });
+      return {
+        designator: designator,
+        message: "Moved " + designator + " to (" + x.toFixed(2) + ", " + y.toFixed(2) + ") on EasyEDA."
+      };
+    },
+
+    rotate_component: async function (params) {
+      const designator = String(params?.designator || "");
+      let rot = Number(params?.rotation);
+      if (!designator) throw new Error("designator is required");
+      if (!isFinite(rot)) throw new Error("rotation must be a finite number (degrees)");
+      if (rot < 0) rot = ((rot % 360) + 360) % 360;
+      if (rot >= 360) rot = rot % 360;
+      const m = await handlers.__findPrimitiveIdByDesignator(designator);
+      if (m.detail && m.detail.locked === true) {
+        throw new Error(
+          "Component '" + designator +
+          "' is locked; call lock_component({locked: false}) first to unlock."
+        );
+      }
+      // eslint-disable-next-line no-undef
+      await eda.pcb_PrimitiveComponent.modify(m.primitiveId, { rotation: rot });
+      return {
+        designator: designator,
+        message: "Rotated " + designator + " to " + rot.toFixed(0) + "° on EasyEDA."
+      };
+    },
+
+    lock_component: async function (params) {
+      const designator = String(params?.designator || "");
+      const locked = Boolean(params?.locked);
+      if (!designator) throw new Error("designator is required");
+      const m = await handlers.__findPrimitiveIdByDesignator(designator);
+      // eslint-disable-next-line no-undef
+      await eda.pcb_PrimitiveComponent.modify(m.primitiveId, { locked: locked });
+      return {
+        designator: designator,
+        message: (locked ? "Locked " : "Unlocked ") + designator + " on EasyEDA."
+      };
+    },
+
     list_pcb_components: async function (params) {
       const offset = Math.max(0, Math.floor(params?.offset ?? 0));
       const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));

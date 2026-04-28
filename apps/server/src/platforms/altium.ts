@@ -25,6 +25,7 @@ import {
   type DrcSummary,
   type LibraryComponent,
   type ListLibraryComponentsParams,
+  type MutateResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -227,6 +228,64 @@ export class AltiumPlatform implements Platform {
     }
   }
 
+  async moveComponent(params: {
+    designator: string;
+    x: number;
+    y: number;
+  }): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      // AltiumRelay.js's move_component does the BoardIterator walk +
+      // designator match + multi-match guard + locked-guard. Server
+      // just relays the params and consumes the confirmation message.
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        "move_component",
+        params
+      );
+      return ok(makeMutateResult(params.designator, raw, "Moved"));
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
+  async rotateComponent(params: {
+    designator: string;
+    rotation: number;
+  }): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        "rotate_component",
+        params
+      );
+      return ok(makeMutateResult(params.designator, raw, "Rotated"));
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
+  async lockComponent(params: {
+    designator: string;
+    locked: boolean;
+  }): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        "lock_component",
+        params
+      );
+      return ok(makeMutateResult(params.designator, raw, params.locked ? "Locked" : "Unlocked"));
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async listPcbComponents(
     _params: PaginationParams
   ): Promise<PlatformResponse<Page<PcbComponent>>> {
@@ -309,6 +368,29 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Build a MutateResult from a relay/extension response. The relay's
+ * payload may carry a custom message ("Moved R1 to (10.5, 20.0)" —
+ * the relay knows the exact coords AD applied after coordinate
+ * conversion); when missing, fall back to a generic verb-prefixed
+ * confirmation. Either way, designator is preserved verbatim.
+ *
+ * Exported because EasyedaPlatform's mutate impls use the same
+ * fallback shape — keeping one helper so the confirmation-message
+ * format can't drift between platforms.
+ */
+export function makeMutateResult(
+  designator: string,
+  raw: unknown,
+  verb: string
+): MutateResult {
+  const message =
+    typeof raw === "object" && raw !== null && "message" in raw && typeof raw.message === "string"
+      ? raw.message
+      : `${verb} ${designator}.`;
+  return { designator, message };
 }
 
 /**

@@ -183,6 +183,9 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     listPcbComponents: async () => ({ supported: false, reason: "stub" }),
     listLibraryComponents: async () => ({ supported: false, reason: "stub" }),
     getComponents: async () => ({ supported: false, reason: "stub" }),
+    moveComponent: async () => ({ supported: false, reason: "stub" }),
+    rotateComponent: async () => ({ supported: false, reason: "stub" }),
+    lockComponent: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -281,6 +284,9 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     listPcbComponents: async () => ({ supported: false, reason: "stub" }),
     listLibraryComponents: async () => ({ supported: false, reason: "stub" }),
     getComponents: async () => ({ supported: false, reason: "stub" }),
+    moveComponent: async () => ({ supported: false, reason: "stub" }),
+    rotateComponent: async () => ({ supported: false, reason: "stub" }),
+    lockComponent: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -969,6 +975,165 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── Mutate tools — Sprint 11 PR 11.2 ────────────────────────────────
+
+type MutateHandler<A> = (args: A) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureToolHandler<A>(
+  ctx: ToolContext,
+  toolName: string
+): MutateHandler<A> {
+  let handler: MutateHandler<A> | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: MutateHandler<A>) => {
+      if (name === toolName) handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error(`registerPlatformTools didn't register \`${toolName}\``);
+  return handler;
+}
+
+test("move_component tool: happy path renders the platform's confirmation verbatim", async () => {
+  // The tool's job is thin — pass through, emit confirmation. Pin
+  // that the platform's message text reaches the AI client unchanged
+  // (so the platform layer's coordinate-formatting decisions are
+  // the ones AI clients see).
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureToolHandler<{ designator: string; x: number; y: number }>(
+    buildToolCtx(platform),
+    "move_component"
+  );
+
+  const result = (async () =>
+    handler({ designator: "R1", x: 10.5, y: 20 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { designator: "R1", message: "Moved R1 to (10.50, 20.00) on EasyEDA." },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.equal(text, "Moved R1 to (10.50, 20.00) on EasyEDA.");
+  relay.__resetForTests();
+});
+
+test("move_component tool: supported:false → MCP error result with reason", async () => {
+  // The reason should reach the AI client tagged so it's readable
+  // ("Could not move component: ...") — distinct from the
+  // confirmation-message format on success.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureToolHandler<{ designator: string; x: number; y: number }>(
+    buildToolCtx(platform),
+    "move_component"
+  );
+  const res = await handler({ designator: "R1", x: 0, y: 0 });
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not move component/);
+  assert.match(text, /relay is not connected/i);
+});
+
+test("rotate_component tool: passes rotation through; renders confirmation", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureToolHandler<{ designator: string; rotation: number }>(
+    buildToolCtx(platform),
+    "rotate_component"
+  );
+  const result = (async () => handler({ designator: "U1", rotation: 90 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.deepEqual(cmd.params, { designator: "U1", rotation: 90 });
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { designator: "U1", message: "Rotated U1 to 90° on EasyEDA." },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.equal(text, "Rotated U1 to 90° on EasyEDA.");
+  relay.__resetForTests();
+});
+
+test("lock_component tool: locked=true and locked=false both render the platform's verb", async () => {
+  // Verifies the boolean argument round-trips correctly, AND that
+  // the confirmation message reflects the actual direction.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureToolHandler<{ designator: string; locked: boolean }>(
+    buildToolCtx(platform),
+    "lock_component"
+  );
+
+  // lock=true
+  let pending = (async () => handler({ designator: "R1", locked: true }))();
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.deepEqual(cmd.params, { designator: "R1", locked: true });
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { designator: "R1", message: "Locked R1 on EasyEDA." },
+  });
+  let res = await pending;
+  assert.match((res.content[0] as unknown as { text: string }).text, /^Locked R1/);
+
+  // lock=false
+  pending = (async () => handler({ designator: "R1", locked: false }))();
+  cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.deepEqual(cmd.params, { designator: "R1", locked: false });
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { designator: "R1", message: "Unlocked R1 on EasyEDA." },
+  });
+  res = await pending;
+  assert.match((res.content[0] as unknown as { text: string }).text, /^Unlocked R1/);
+
+  relay.__resetForTests();
+});
+
+test("rotate_component + lock_component tools: supported:false → tagged error text per tool", async () => {
+  // Pin the per-tool error wrapping so the AI client can scan for
+  // "Could not move/rotate/lock" to categorize what failed.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const rotateHandler = captureToolHandler<{ designator: string; rotation: number }>(
+    buildToolCtx(platform),
+    "rotate_component"
+  );
+  const lockHandler = captureToolHandler<{ designator: string; locked: boolean }>(
+    buildToolCtx(platform),
+    "lock_component"
+  );
+  const rotateRes = await rotateHandler({ designator: "R1", rotation: 0 });
+  assert.equal(rotateRes.isError, true);
+  assert.match(
+    (rotateRes.content[0] as unknown as { text: string }).text,
+    /Could not rotate component/
+  );
+  const lockRes = await lockHandler({ designator: "R1", locked: true });
+  assert.equal(lockRes.isError, true);
+  assert.match(
+    (lockRes.content[0] as unknown as { text: string }).text,
+    /Could not change lock state/
+  );
 });
 
 test("get_components tool: AD relay disconnected → MCP error result with actionable reason", async () => {
