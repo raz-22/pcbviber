@@ -248,6 +248,68 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "validate_placement",
+    "Check the active PCB for component overlap and spacing-rule violations. Returns structured violations the AI can reason about: type (overlap/spacing), the two designators, distance/overlap depth in mm, and a human-readable message that includes lock status + approximate-bbox flags. Cross-platform; results are identical across Altium and EasyEDA. Default spacing rule is 0.2mm (typical IPC-7351 hand-placed). Pairs where both components are locked are skipped (user-intentional placement).",
+    {
+      spacingMm: z.coerce
+        .number()
+        .min(0)
+        .optional()
+        .describe(
+          "Minimum edge-to-edge clearance in mm between component bodies. Defaults to 0.2 (typical IPC-7351 hand-placed). Pass 0 to check overlap only."
+        ),
+    },
+    async (args) => {
+      const result = await ctx.platform.validatePlacement({
+        spacingMm: args.spacingMm,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not validate placement: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const { violations, totalChecked, pairsExamined, approximateBboxCount } =
+        result.data;
+      if (violations.length === 0) {
+        const approxNote =
+          approximateBboxCount > 0
+            ? ` (${approximateBboxCount} component(s) had no bounding box; result is approximate.)`
+            : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No placement violations on ${ctx.platform.name}. ${totalChecked} components checked across ${pairsExamined} pair(s).${approxNote}`,
+            },
+          ],
+        };
+      }
+      const overlapCount = violations.filter((v) => v.type === "overlap").length;
+      const spacingCount = violations.filter((v) => v.type === "spacing").length;
+      const summaryParts: string[] = [];
+      if (overlapCount > 0) summaryParts.push(`${overlapCount} overlap`);
+      if (spacingCount > 0) summaryParts.push(`${spacingCount} spacing`);
+      const approxNote =
+        approximateBboxCount > 0
+          ? ` (${approximateBboxCount} component(s) used heuristic bbox)`
+          : "";
+      const header = `${violations.length} violation(s) on ${ctx.platform.name} (${summaryParts.join(", ")}). Checked ${totalChecked} components across ${pairsExamined} pair(s)${approxNote}.`;
+      const lines = violations.map((v) => `- [${v.type.toUpperCase()}] ${v.message}`);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n"),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "get_keepouts",
     "Read every keepout on the active PCB. Returns kind (placement/routing/via/all), layer (top/bottom/inner/all), polygon vertices in mm, and the platform's raw payload. Cross-platform; coordinates are normalized to mm at the relay boundary. Pair with `validate_placement` to check whether components violate any keepout. EasyEDA support depends on the in-editor extension's pcb_PrimitiveRegion API being exposed (open spike question — if unavailable, the tool surfaces a clear supported:false reason).",
     {},

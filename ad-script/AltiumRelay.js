@@ -569,7 +569,13 @@ function ExtractComponent(comp, idx) {
         y: 0,
         layer: "unknown",
         rotation: 0,
-        locked: false
+        locked: false,
+        // Sprint 11 PR 11.4: bounding box in mm for validatePlacement.
+        // Both stay 0 if BoundingRectangle isn't accessible — the
+        // server treats 0 as "missing" and falls back to a 1mm
+        // heuristic, tagging the result as approximate.
+        width: 0,
+        height: 0
     };
     try { out.designator = String(comp.Name || comp.LogicalDesignator || comp.SourceDesignator || ""); } catch (_) { }
     // AD's `Comment` field is the conventional home for MPN — not
@@ -601,6 +607,20 @@ function ExtractComponent(comp, idx) {
         out.rotation = rot;
     } catch (_) { }
     try { out.locked = Boolean(comp.Locked); } catch (_) { }
+    // Sprint 11 PR 11.4: bounding box for placement validation.
+    // BoundingRectangleNoNameComment excludes the silkscreen labels
+    // (just the body), which is what placement-validation needs.
+    // BoundingRectangle is the fallback for AD builds that don't
+    // expose the no-name variant.
+    try {
+        var rect = null;
+        try { rect = comp.BoundingRectangleNoNameComment(); } catch (_) { }
+        if (!rect) { try { rect = comp.BoundingRectangle(); } catch (_) { } }
+        if (rect && rect.Right !== undefined && rect.Left !== undefined) {
+            out.width = (Number(rect.Right) - Number(rect.Left)) * MM_PER_COORD;
+            out.height = (Number(rect.Top) - Number(rect.Bottom)) * MM_PER_COORD;
+        }
+    } catch (_) { }
     return out;
 }
 

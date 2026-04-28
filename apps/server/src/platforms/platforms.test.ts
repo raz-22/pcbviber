@@ -1308,6 +1308,177 @@ test("EasyedaPlatform.getComponents: no relay → supported:false NO_BRIDGE", as
   }
 });
 
+// ─── validatePlacement wiring — Sprint 11 PR 11.4 ───────────────────
+
+test("AltiumPlatform.validatePlacement: pages getComponents + runs shared validator", async () => {
+  // Wire-format pin: validatePlacement's job is to page through
+  // getComponents (calling the AD relay's get_components) and feed
+  // the result into the shared validateComponents. Mocked relay
+  // returns two overlapping parts in a single page.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string) => {
+      assert.equal(method, "get_components");
+      return {
+        items: [
+          {
+            primitiveId: "p_R1",
+            designator: "R1",
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            layer: "eTopLayer",
+            rotation: 0,
+            locked: false,
+          },
+          {
+            primitiveId: "p_R2",
+            designator: "R2",
+            x: 0.3,
+            y: 0,
+            width: 1,
+            height: 1,
+            layer: "eTopLayer",
+            rotation: 0,
+            locked: false,
+          },
+        ],
+        total: 2,
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.validatePlacement({});
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.violations.length, 1);
+    assert.equal(result.data.violations[0].type, "overlap");
+    assert.equal(result.data.totalChecked, 2);
+    assert.equal(result.data.approximateBboxCount, 0, "real bbox provided, no heuristic");
+  }
+});
+
+test("AltiumPlatform.validatePlacement: passes through getComponents supported:false", async () => {
+  // When the relay can't run getComponents, validatePlacement must
+  // surface the same supported:false reason rather than throw or
+  // mask it. AI clients see "relay is not connected" rather than
+  // a confusing "validation failed".
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.validatePlacement({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.validatePlacement: pages getComponents + flags missing bbox as approximate", async () => {
+  // EasyEDA path with components missing width/height — exercise
+  // both the wiring AND the heuristic-bbox flag. Two parts at the
+  // same coords with no bbox data → heuristic 1mm boxes overlap
+  // → overlap violation tagged as approximate.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.validatePlacement({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p_R1",
+          designator: "R1",
+          x: 0,
+          y: 0,
+          // no width/height
+          layer: "top",
+          rotation: 0,
+        },
+        {
+          primitiveId: "p_R2",
+          designator: "R2",
+          x: 0,
+          y: 0,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.violations.length, 1);
+    assert.equal(result.data.approximateBboxCount, 2);
+    assert.match(result.data.violations[0].message, /approximate/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fallback", async () => {
+  // Pin the bbox-fallback chain pin from Sprint 11 PR 11.4: when
+  // top-level width/height are missing, fall back to
+  // boundingBox: {width, height} and bbox: {w, h}.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p_R1",
+          designator: "R1",
+          x: 0,
+          y: 0,
+          layer: "top",
+          rotation: 0,
+          // top-level width/height absent — uses boundingBox
+          boundingBox: { width: 2, height: 1.5 },
+        },
+        {
+          primitiveId: "p_R2",
+          designator: "R2",
+          x: 0,
+          y: 0,
+          layer: "top",
+          rotation: 0,
+          // alias path: bbox.w / bbox.h
+          bbox: { w: 0.5, h: 0.25 },
+        },
+      ],
+      total: 2,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items[0].width, 2);
+    assert.equal(result.data.items[0].height, 1.5);
+    assert.equal(result.data.items[1].width, 0.5);
+    assert.equal(result.data.items[1].height, 0.25);
+  }
+  relay.__resetForTests();
+});
+
 // ─── Keepouts — Sprint 11 PR 11.3 ───────────────────────────────────
 
 import {

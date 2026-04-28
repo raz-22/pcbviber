@@ -229,7 +229,61 @@ export interface PlacedComponent {
   /** Rotation in degrees, 0-360 normalized. */
   rotation: number;
   locked: boolean;
+  /**
+   * Sprint 11 PR 11.4: bounding-box width in mm. Optional —
+   * `0` means the relay/extension couldn't extract a bounding
+   * box for this entry. `validatePlacement` uses these to compute
+   * edge-to-edge clearance; missing values trigger heuristic
+   * fallback (1mm placeholder + tagged "approximate" in the
+   * violation message). Axis-aligned in v1 — rotation-aware
+   * bbox is a future PR.
+   */
+  width: number;
+  /** Bounding-box height in mm. See `width`. */
+  height: number;
   raw: unknown;
+}
+
+/**
+ * Sprint 11 PR 11.4: a single placement violation found by
+ * `validatePlacement`. Two kinds, distinguished by `type`:
+ *
+ *   - `overlap`: bounding boxes overlap (negative gap).
+ *     `overlapMm` = positive depth of penetration.
+ *   - `spacing`: bounding boxes are within `spacingMm` of each
+ *     other but not overlapping. `distanceMm` = gap, in mm.
+ *
+ * `componentA` and `componentB` are designators (the cross-platform
+ * stable identity per amendment #50). Order is deterministic —
+ * sorted lexicographically — so a pair (R1, R2) renders the same
+ * way regardless of iteration order.
+ *
+ * `message` is human-readable, suitable for direct emission to AI
+ * clients. It includes lock status and approximate-bbox flags so
+ * the AI can reason about which violations are actionable.
+ */
+export interface PlacementViolation {
+  type: "overlap" | "spacing";
+  componentA: string;
+  componentB: string;
+  /** Edge-to-edge gap in mm (always > 0 on spacing violations). */
+  distanceMm?: number;
+  /** Penetration depth in mm (always > 0 on overlap violations). */
+  overlapMm?: number;
+  message: string;
+}
+
+export interface ValidatePlacementResult {
+  violations: PlacementViolation[];
+  /** Number of components that participated in the check. */
+  totalChecked: number;
+  /** Number of unique pairs examined. Equals C(totalChecked, 2)
+   *  unless the same-layer filter dropped some pairs. */
+  pairsExamined: number;
+  /** Number of components for which a bounding box was missing
+   *  (zero width/height). Indicates how much of the result depends
+   *  on the heuristic 1mm-placeholder fallback. */
+  approximateBboxCount: number;
 }
 
 /**
@@ -451,6 +505,28 @@ export interface Platform {
    * EasyEDA-side API is confirmed hands-on.
    */
   getKeepouts(): Promise<PlatformResponse<Keepout[]>>;
+
+  /**
+   * Sprint 11 PR 11.4: check the active PCB for component overlap
+   * and spacing-rule violations. Computed locally from
+   * `getComponents` per the spike — both platforms run the same
+   * shared algorithm in `placement-validation.ts` so results are
+   * identical across Altium and EasyEDA.
+   *
+   * The `spacingMm` argument is the minimum edge-to-edge clearance
+   * between component bodies. Default of 0.2mm matches typical
+   * IPC-7351 hand-placed boards. Pairs where both components are
+   * locked are skipped (user-intentional placement).
+   *
+   * Components without a bounding box (width or height = 0) get a
+   * 1mm × 1mm heuristic placeholder; the violation tags
+   * "(approximate)" so AI clients know the result depends on
+   * incomplete sizing data.
+   */
+  validatePlacement(params: {
+    /** Minimum edge-to-edge clearance in mm. Default 0.2. */
+    spacingMm?: number;
+  }): Promise<PlatformResponse<ValidatePlacementResult>>;
 
   /**
    * List entries from the workspace's component library, paginated.

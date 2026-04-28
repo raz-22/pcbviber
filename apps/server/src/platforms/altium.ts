@@ -37,7 +37,9 @@ import {
   type ProjectListEntry,
   type SchematicComponent,
   type ScreenshotResult,
+  type ValidatePlacementResult,
 } from "./types.js";
+import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.js";
 
 export interface AltiumPlatformDeps {
   /** Local Altium Designer relay (HTTP long-poll bridge). Optional —
@@ -211,6 +213,12 @@ export class AltiumPlatform implements Platform {
             rotation:
               typeof entry.rotation === "number" ? entry.rotation : 0,
             locked: entry.locked === true,
+            // Sprint 11 PR 11.4: bounding box for validatePlacement.
+            // 0 means the AD relay couldn't extract — the validator
+            // falls back to a 1mm heuristic and flags the result as
+            // approximate.
+            width: typeof entry.width === "number" ? entry.width : 0,
+            height: typeof entry.height === "number" ? entry.height : 0,
             raw: entry,
           },
         ];
@@ -285,6 +293,44 @@ export class AltiumPlatform implements Platform {
     } catch (err) {
       return notSupported(errorReason(err));
     }
+  }
+
+  async validatePlacement(params: {
+    spacingMm?: number;
+  }): Promise<PlatformResponse<ValidatePlacementResult>> {
+    // Read state via getComponents — validation is purely server-side
+    // from there, so any platform that implements getComponents
+    // automatically supports validatePlacement. Surfaces the
+    // upstream supported:false reason verbatim when getComponents
+    // can't run.
+    const components = await this.getAllComponentsForValidation();
+    if (!components.supported) return components;
+    const spacingMm = params.spacingMm ?? DEFAULT_SPACING_MM;
+    return ok(validateComponents(components.data, spacingMm));
+  }
+
+  /**
+   * Helper: page through getComponents until exhausted, returning
+   * the full set. Validation needs every component on the board,
+   * not just one page. Caps at 5000 components to avoid pathological
+   * cases — at that point validation latency dwarfs paging cost,
+   * and an O(n²) check on 5000 parts is 12.5M pairs.
+   */
+  private async getAllComponentsForValidation(): Promise<
+    PlatformResponse<PlacedComponent[]>
+  > {
+    const all: PlacedComponent[] = [];
+    let offset = 0;
+    const limit = 500;
+    const HARD_CAP = 5000;
+    while (all.length < HARD_CAP) {
+      const page = await this.getComponents({ offset, limit });
+      if (!page.supported) return page;
+      all.push(...page.data.items);
+      if (page.data.nextOffset === null) break;
+      offset = page.data.nextOffset;
+    }
+    return ok(all);
   }
 
   async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {

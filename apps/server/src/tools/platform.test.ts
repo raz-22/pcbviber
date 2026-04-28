@@ -187,6 +187,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     rotateComponent: async () => ({ supported: false, reason: "stub" }),
     lockComponent: async () => ({ supported: false, reason: "stub" }),
     getKeepouts: async () => ({ supported: false, reason: "stub" }),
+    validatePlacement: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -289,6 +290,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     rotateComponent: async () => ({ supported: false, reason: "stub" }),
     lockComponent: async () => ({ supported: false, reason: "stub" }),
     getKeepouts: async () => ({ supported: false, reason: "stub" }),
+    validatePlacement: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -977,6 +979,104 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── validate_placement tool — Sprint 11 PR 11.4 ─────────────────────
+
+type ValidatePlacementHandler = (args: {
+  spacingMm?: number;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureValidatePlacementHandler(ctx: ToolContext): ValidatePlacementHandler {
+  let handler: ValidatePlacementHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: ValidatePlacementHandler) => {
+      if (name === "validate_placement") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `validate_placement`");
+  return handler;
+}
+
+test("validate_placement tool: violations rendered with type tag + summary header + approximate-bbox note", async () => {
+  // End-to-end render pin: header with grouped counts, per-line
+  // "[OVERLAP]/[SPACING]" tagging, approximate-bbox note when
+  // some entries used the heuristic.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureValidatePlacementHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        // R1 vs R2: overlap, real bbox
+        { primitiveId: "p1", designator: "R1", x: 0, y: 0, width: 1, height: 1, layer: "top", rotation: 0 },
+        { primitiveId: "p2", designator: "R2", x: 0.5, y: 0, width: 1, height: 1, layer: "top", rotation: 0 },
+        // R7 vs R8 on the same board, far apart but missing bbox
+        // → heuristic kicks in. Place close enough to flag spacing.
+        { primitiveId: "p7", designator: "R7", x: 50, y: 50, layer: "top", rotation: 0 },
+        { primitiveId: "p8", designator: "R8", x: 51.05, y: 50, layer: "top", rotation: 0 },
+      ],
+      total: 4,
+    },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  // Header carries violation counts and approximate-bbox flag
+  assert.match(text, /violation\(s\) on easyeda/);
+  assert.match(text, /1 overlap/);
+  assert.match(text, /heuristic bbox/);
+  // Per-line type tagging
+  assert.match(text, /\[OVERLAP\] R1 ↔ R2:/);
+  relay.__resetForTests();
+});
+
+test("validate_placement tool: clean board → 'No placement violations' caption (not isError)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureValidatePlacementHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { primitiveId: "p1", designator: "R1", x: 0, y: 0, width: 1, height: 1, layer: "top", rotation: 0 },
+        { primitiveId: "p2", designator: "R2", x: 50, y: 50, width: 1, height: 1, layer: "top", rotation: 0 },
+      ],
+      total: 2,
+    },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No placement violations on easyeda/);
+  assert.match(text, /2 components checked across 1 pair/);
+  relay.__resetForTests();
+});
+
+test("validate_placement tool: AD relay disconnected → MCP error with reason", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureValidatePlacementHandler(buildToolCtx(platform));
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not validate placement/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── get_keepouts tool — Sprint 11 PR 11.3 ───────────────────────────

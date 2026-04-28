@@ -43,6 +43,7 @@ import {
   normalizeKeepoutLayer,
   normalizeLayer,
 } from "./altium.js";
+import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.js";
 import {
   notSupported,
   ok,
@@ -62,6 +63,7 @@ import {
   type ProjectListEntry,
   type SchematicComponent,
   type ScreenshotResult,
+  type ValidatePlacementResult,
 } from "./types.js";
 
 export interface EasyedaPlatformDeps {
@@ -342,6 +344,32 @@ export class EasyedaPlatform implements Platform {
             ? entry.rotation
             : 0;
         const locked = entry.locked === true;
+        // Sprint 11 PR 11.4: bounding box for validatePlacement.
+        // EasyEDA Pro stores size under several names depending on
+        // entry vintage. Common: width/height top-level, or
+        // boundingBox: {width, height}, or bbox: {w, h}. Defensive
+        // fallback chain.
+        const bbox = isRecord(entry.boundingBox)
+          ? entry.boundingBox
+          : isRecord(entry.bbox)
+            ? entry.bbox
+            : null;
+        const width =
+          typeof entry.width === "number"
+            ? entry.width
+            : bbox && typeof bbox.width === "number"
+              ? bbox.width
+              : bbox && typeof bbox.w === "number"
+                ? bbox.w
+                : 0;
+        const height =
+          typeof entry.height === "number"
+            ? entry.height
+            : bbox && typeof bbox.height === "number"
+              ? bbox.height
+              : bbox && typeof bbox.h === "number"
+                ? bbox.h
+                : 0;
         return [
           {
             primitiveId,
@@ -353,6 +381,8 @@ export class EasyedaPlatform implements Platform {
             layer: normalizeLayer(entry.layer),
             rotation,
             locked,
+            width,
+            height,
             raw: entry,
           },
         ];
@@ -437,6 +467,27 @@ export class EasyedaPlatform implements Platform {
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async validatePlacement(params: {
+    spacingMm?: number;
+  }): Promise<PlatformResponse<ValidatePlacementResult>> {
+    // Mirror of AltiumPlatform.validatePlacement — same shared
+    // helper drives identical results across both platforms per
+    // the spike's "computed locally from getComponents" intent.
+    const all: PlacedComponent[] = [];
+    let offset = 0;
+    const limit = 500;
+    const HARD_CAP = 5000;
+    while (all.length < HARD_CAP) {
+      const page = await this.getComponents({ offset, limit });
+      if (!page.supported) return page;
+      all.push(...page.data.items);
+      if (page.data.nextOffset === null) break;
+      offset = page.data.nextOffset;
+    }
+    const spacingMm = params.spacingMm ?? DEFAULT_SPACING_MM;
+    return ok(validateComponents(all, spacingMm));
   }
 
   async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {
