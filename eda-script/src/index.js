@@ -83,6 +83,26 @@
         "Canvas capture is not yet wired up in the PCBviber EasyEDA extension. The server-side screenshot tool ships in Sprint 10 PR 10.1; the in-editor capture comes in a follow-up after hands-on EasyEDA Pro experimentation."
       );
     },
+
+    /**
+     * Sprint 10 PR 10.2: return the active project's metadata.
+     *
+     * Wires to `eda.dmt_Project.getCurrentProjectInfo()` (per the
+     * PR 9.1 spike). The SDK's TypeScript types declare it as
+     * `Promise<IDMT_ProjectItem | undefined>` — fields aren't
+     * fully spelled out, but `uuid` + `name` are stable per the
+     * docs. We pass the raw return through; the server's
+     * EasyedaPlatform.getActiveProject() handles the "no active
+     * project" (undefined) branch and the field extraction.
+     *
+     * Lightweight handler — no error-translation work needed.
+     * The dmt_Project.* methods don't throw on "no project
+     * open"; they return undefined.
+     */
+    get_active_project: async function (_params) {
+      // eslint-disable-next-line no-undef -- `eda` is the EasyEDA Pro global
+      return await eda.dmt_Project.getCurrentProjectInfo();
+    },
   };
 
   // ── Boot ──────────────────────────────────────────────────────────

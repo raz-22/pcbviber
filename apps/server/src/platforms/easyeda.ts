@@ -95,7 +95,37 @@ export class EasyedaPlatform implements Platform {
   ) {}
 
   async getActiveProject(): Promise<PlatformResponse<ActiveProject>> {
-    return notSupported(STUB_REASON);
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // The extension's `get_active_project` handler should call
+      // `eda.dmt_Project.getCurrentProjectInfo()` and return its
+      // payload. Per the PR 9.1 spike: that returns an
+      // `IDMT_ProjectItem | undefined` whose exact field set isn't
+      // typed at the SDK level — we extract `uuid` + `name`
+      // best-effort, mirroring the AltiumPlatform path.
+      const raw = await this.deps.relay.execute<{
+        uuid?: unknown;
+        name?: unknown;
+      }>(this.deps.workspaceId, "get_active_project", {});
+      // No active project: extension can return null/undefined when
+      // the editor has no project loaded. Distinct from "extension
+      // failed" — surface as supported:false with a clear reason
+      // so the AI client doesn't think the tool is broken.
+      if (raw === null || raw === undefined) {
+        return notSupported(
+          "No active project in EasyEDA Pro. Open a project first."
+        );
+      }
+      const obj = isRecord(raw) ? raw : {};
+      const id = typeof obj.uuid === "string" ? obj.uuid : "";
+      const name =
+        typeof obj.name === "string" ? obj.name : id || "(unknown)";
+      return ok({ id: id || name, name, raw });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async screenshot(): Promise<PlatformResponse<ScreenshotResult>> {
@@ -150,4 +180,8 @@ export class EasyedaPlatform implements Platform {
   async getMessages(): Promise<PlatformResponse<PlatformMessage[]>> {
     return notSupported(STUB_REASON);
   }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }

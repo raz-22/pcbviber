@@ -218,6 +218,90 @@ test("EasyedaPlatform.screenshot: malformed extension payload (missing base64Png
   relay.__resetForTests();
 });
 
+// ─── EasyedaPlatform.getActiveProject() — Sprint 10 PR 10.2 ─────────
+// Same shape as the screenshot tests above: relay round-trip happy
+// path, no-bridge fallback, extension-failure surfaces as
+// supported:false. Plus the "no active project loaded" branch the
+// extension can hit when the editor has no project open.
+
+test("EasyedaPlatform.getActiveProject: with relay+workspaceId, returns ok with extracted id+name", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.getActiveProject();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("relay should have queued the command");
+  assert.equal(cmd.method, "get_active_project");
+
+  // EasyEDA Pro's dmt_Project.getCurrentProjectInfo() returns a
+  // shape with `uuid` + `name` (per the PR 9.1 spike).
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { uuid: "proj-acme-123", name: "Acme PSU" },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.id, "proj-acme-123");
+    assert.equal(result.data.name, "Acme PSU");
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getActiveProject: with no relay, returns supported:false with NO_BRIDGE reason", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.getActiveProject();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.getActiveProject: extension returning null → 'no active project' supported:false", async () => {
+  // The editor can have no project loaded. Distinct from
+  // "extension failed" — surface as supported:false with a
+  // human-readable instruction so the AI tells the user to open
+  // a project rather than reporting a generic tool failure.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.getActiveProject();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: null });
+
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /no active project/i);
+    assert.match(result.reason, /open a project/i);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getActiveProject: extension reports failure via relay, surfaces as supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.getActiveProject();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: false,
+    error: { message: "API method not yet bound", code: "method_unavailable" },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /API method not yet bound/i);
+  }
+  relay.__resetForTests();
+});
+
 // ─── Helper ─────────────────────────────────────────────────────────
 
 function assertSupportedFalse<T>(

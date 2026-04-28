@@ -44,7 +44,7 @@ type CapturedHandler = () => Promise<{
   isError?: boolean;
 }>;
 
-function captureScreenshotHandler(ctx: ToolContext): CapturedHandler {
+function captureHandler(ctx: ToolContext, toolName: string): CapturedHandler {
   let handler: CapturedHandler | null = null;
   const fakeServer = {
     tool: (
@@ -53,12 +53,20 @@ function captureScreenshotHandler(ctx: ToolContext): CapturedHandler {
       _shape: unknown,
       fn: CapturedHandler
     ) => {
-      if (name === "screenshot") handler = fn;
+      if (name === toolName) handler = fn;
     },
   } as unknown as McpServer;
   registerPlatformTools(fakeServer, ctx);
-  if (!handler) throw new Error("registerPlatformTools didn't register `screenshot`");
+  if (!handler) throw new Error(`registerPlatformTools didn't register \`${toolName}\``);
   return handler;
+}
+
+function captureScreenshotHandler(ctx: ToolContext): CapturedHandler {
+  return captureHandler(ctx, "screenshot");
+}
+
+function captureGetActiveProjectHandler(ctx: ToolContext): CapturedHandler {
+  return captureHandler(ctx, "get_active_project");
 }
 
 // ─── EasyEDA: success path ───────────────────────────────────────────
@@ -177,4 +185,65 @@ test("screenshot tool: Altium supported:false (relay disconnected) → MCP error
     // Workstation with PowerShell + System.Drawing available.
     assert.equal(res.content[1]?.type, "image");
   }
+});
+
+// ─── get_active_project tool ─────────────────────────────────────────
+
+test("get_active_project tool: EasyEDA supported:true → text caption with name + id", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetActiveProjectHandler(buildToolCtx(platform));
+
+  const result = (async () => handler())();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "get_active_project");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { uuid: "proj-acme-123", name: "Acme PSU" },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  assert.equal(res.content.length, 1);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /easyeda/);
+  assert.match(text, /Acme PSU/);
+  assert.match(text, /proj-acme-123/);
+  relay.__resetForTests();
+});
+
+test("get_active_project tool: supported:false → MCP error result, not thrown", async () => {
+  // No bridge → returns supported:false. Tool wrapper surfaces the
+  // platform's reason so the AI client knows what went wrong.
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const handler = captureGetActiveProjectHandler(buildToolCtx(platform));
+  const res = await handler();
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No active project available/);
+  assert.match(text, /not connected/i);
+});
+
+test("get_active_project tool: stubbed Altium Platform supported:true → 'altium' caption", async () => {
+  // Mirror the cross-platform-validation rule: every tool must
+  // have an Altium-side test. Stub a Platform that returns success
+  // with an Altium-shaped payload.
+  const stubAltium: Platform = {
+    name: "altium",
+    getActiveProject: async () => ({
+      supported: true,
+      data: { id: "C:/proj/Acme.PrjPcb", name: "Acme.PrjPcb", raw: {} },
+    }),
+    screenshot: async () => ({ supported: false, reason: "stub" }),
+    runDrc: async () => ({ supported: false, reason: "stub" }),
+    getMessages: async () => ({ supported: false, reason: "stub" }),
+  };
+  const handler = captureGetActiveProjectHandler(buildToolCtx(stubAltium));
+  const res = await handler();
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /altium/);
+  assert.match(text, /Acme\.PrjPcb/);
 });
