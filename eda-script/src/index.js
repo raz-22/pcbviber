@@ -103,6 +103,32 @@
       // eslint-disable-next-line no-undef -- `eda` is the EasyEDA Pro global
       return await eda.dmt_Project.getCurrentProjectInfo();
     },
+
+    /**
+     * Sprint 10 PR 10.2b: list every project the EasyEDA Pro
+     * editor has access to.
+     *
+     * Two-call shape per the PR 9.1 spike:
+     *   - eda.dmt_Project.getAllProjectsUuid() returns
+     *     Promise<Array<string>> of project uuids.
+     *   - eda.dmt_Project.getProjectInfo(uuid) returns the
+     *     IDMT_BriefProjectItem for one. We fan out per uuid
+     *     and return the array. Per-uuid lookups are sequential
+     *     to keep memory low on workspaces with hundreds of
+     *     projects; if profiling shows latency, switch to
+     *     Promise.all batching here.
+     */
+    list_projects: async function (_params) {
+      // eslint-disable-next-line no-undef
+      const uuids = await eda.dmt_Project.getAllProjectsUuid();
+      const out = [];
+      for (const uuid of uuids) {
+        // eslint-disable-next-line no-undef
+        const info = await eda.dmt_Project.getProjectInfo(uuid);
+        if (info) out.push(info);
+      }
+      return out;
+    },
   };
 
   // ── Boot ──────────────────────────────────────────────────────────

@@ -106,7 +106,16 @@ async function main() {
     // nexar. EasyEDA isn't reachable via stdio because the bridge
     // needs an HTTP server for the extension to long-poll against;
     // operators who want EasyEDA tools run --transport=http.
-    const platform = new AltiumPlatform({ relay, nexar });
+    const platform = new AltiumPlatform({
+      relay,
+      nexar,
+      // Stdio reads from env. ALTIUM_WORKSPACE_URL is loaded by
+      // loadConfig() above as `altium365WorkspaceUrl`. Tools that
+      // don't need it (e.g. screenshot, get_active_project) work
+      // without; tools that do (listProjects, getSchematic) return
+      // supported:false with a clear reason when the env var is unset.
+      altiumWorkspaceUrl: config.altium365WorkspaceUrl ?? null,
+    });
     const toolCtx: ToolContext = { nexar, metering: null, platform };
     const server = buildMcpServer(toolCtx, relay);
     const stdio = new StdioServerTransport();
