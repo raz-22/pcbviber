@@ -188,6 +188,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     lockComponent: async () => ({ supported: false, reason: "stub" }),
     getKeepouts: async () => ({ supported: false, reason: "stub" }),
     validatePlacement: async () => ({ supported: false, reason: "stub" }),
+    placeByGroup: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -291,6 +292,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     lockComponent: async () => ({ supported: false, reason: "stub" }),
     getKeepouts: async () => ({ supported: false, reason: "stub" }),
     validatePlacement: async () => ({ supported: false, reason: "stub" }),
+    placeByGroup: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -979,6 +981,103 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── place_by_group tool — Sprint 11 PR 11.5 ─────────────────────────
+
+type PlaceByGroupHandler = (args: {
+  filter: string;
+  strategy: "grid" | "around-component" | "on-edge";
+  grid?: { originX: number; originY: number; spacingMm?: number; columns?: number };
+  around?: { target: string; radiusMm?: number };
+  edge?: { side: "top" | "bottom" | "left" | "right"; offsetMm?: number };
+  obstacleClearanceMm?: number;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function capturePlaceByGroupHandler(ctx: ToolContext): PlaceByGroupHandler {
+  let handler: PlaceByGroupHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: PlaceByGroupHandler) => {
+      if (name === "place_by_group") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `place_by_group`");
+  return handler;
+}
+
+test("place_by_group tool: missing strategy params → MCP error before any platform call", async () => {
+  // Pin the per-strategy validation: zod can't enforce the
+  // discriminated-union at the MCP-arg level cleanly, so the tool
+  // checks at the handler. Verify it short-circuits with a clear
+  // message before reaching the platform.
+  let platformCalled = false;
+  const stubPlatform = {
+    name: "easyeda" as const,
+    placeByGroup: async () => {
+      platformCalled = true;
+      return { supported: false as const, reason: "should not be called" };
+    },
+  } as unknown as Platform;
+  const handler = capturePlaceByGroupHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ filter: "designator=R*", strategy: "grid" });
+  assert.equal(res.isError, true);
+  assert.equal(platformCalled, false);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /strategy='grid' requires `grid:/);
+});
+
+test("place_by_group tool: rendering shows summary + moved + skipped sections", async () => {
+  // Pin the multi-line render shape AI clients see. Includes
+  // truncation behavior when moved/skipped are large.
+  const stubPlatform = {
+    name: "easyeda" as const,
+    placeByGroup: async () => ({
+      supported: true as const,
+      data: {
+        matched: ["R1", "R2", "R3"],
+        moved: ["R1", "R2"],
+        skipped: [{ designator: "R3", reason: "no valid position" }],
+        strategy: "grid",
+        message: "Placed 2/3 component(s) using strategy 'grid'; 1 skipped.",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = capturePlaceByGroupHandler(buildToolCtx(stubPlatform));
+  const res = await handler({
+    filter: "designator=R*",
+    strategy: "grid",
+    grid: { originX: 0, originY: 0 },
+  });
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  // Summary line
+  assert.match(text, /Placed 2\/3 component/);
+  // Moved section
+  assert.match(text, /Moved: R1, R2/);
+  // Skipped section with reasons
+  assert.match(text, /Skipped \(1\):/);
+  assert.match(text, /R3: no valid position/);
+});
+
+test("place_by_group tool: supported:false → MCP error result with reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    placeByGroup: async () => ({
+      supported: false as const,
+      reason: "Altium Designer relay is not connected.",
+    }),
+  } as unknown as Platform;
+  const handler = capturePlaceByGroupHandler(buildToolCtx(stubPlatform));
+  const res = await handler({
+    filter: "designator=R*",
+    strategy: "grid",
+    grid: { originX: 0, originY: 0 },
+  });
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not place by group/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── validate_placement tool — Sprint 11 PR 11.4 ─────────────────────

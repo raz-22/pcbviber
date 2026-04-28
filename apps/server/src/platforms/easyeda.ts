@@ -63,8 +63,11 @@ import {
   type ProjectListEntry,
   type SchematicComponent,
   type ScreenshotResult,
+  type PlaceByGroupParams,
+  type PlaceByGroupResult,
   type ValidatePlacementResult,
 } from "./types.js";
+import { placeByGroupShared } from "./place-by-group.js";
 
 export interface EasyedaPlatformDeps {
   /**
@@ -488,6 +491,12 @@ export class EasyedaPlatform implements Platform {
     }
     const spacingMm = params.spacingMm ?? DEFAULT_SPACING_MM;
     return ok(validateComponents(all, spacingMm));
+  }
+
+  async placeByGroup(
+    params: PlaceByGroupParams
+  ): Promise<PlatformResponse<PlaceByGroupResult>> {
+    return placeByGroupShared(this, params);
   }
 
   async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {

@@ -273,6 +273,63 @@ export interface PlacementViolation {
   message: string;
 }
 
+/**
+ * Sprint 11 PR 11.5: input shape for `place_by_group`. The
+ * filter is an AND-joined `key=value` expression with glob
+ * support; the strategy is a discriminated union of three
+ * layout planners.
+ *
+ * Filter fields supported in v1: `designator`, `footprint`,
+ * `mpn`, `layer`. Net-based filtering returns when per-pin net
+ * data lands (post-Sprint 12).
+ */
+export type PlaceByGroupParams = {
+  /** Filter expression. Example: "footprint=0402 AND designator=R*". */
+  filter: string;
+  /** Avoid placing within this many mm of locked components.
+   *  Default 0.5mm. */
+  obstacleClearanceMm?: number;
+} & (
+  | {
+      strategy: "grid";
+      grid: {
+        originX: number;
+        originY: number;
+        spacingMm?: number;
+        columns?: number;
+      };
+    }
+  | {
+      strategy: "around-component";
+      around: {
+        target: string;
+        radiusMm?: number;
+      };
+    }
+  | {
+      strategy: "on-edge";
+      edge: {
+        side: "top" | "bottom" | "left" | "right";
+        offsetMm?: number;
+      };
+    }
+);
+
+export interface PlaceByGroupResult {
+  /** Designators that matched the filter. */
+  matched: string[];
+  /** Designators successfully moved to a planned position. */
+  moved: string[];
+  /** Designators the strategy couldn't place — locked components,
+   *  no valid position, or move-call failure. Each entry has a
+   *  human-readable reason. */
+  skipped: Array<{ designator: string; reason: string }>;
+  /** Echoed for the AI to confirm what ran. */
+  strategy: string;
+  /** One-sentence summary suitable for direct AI emission. */
+  message: string;
+}
+
 export interface ValidatePlacementResult {
   violations: PlacementViolation[];
   /** Number of components that participated in the check. */
@@ -527,6 +584,22 @@ export interface Platform {
     /** Minimum edge-to-edge clearance in mm. Default 0.2. */
     spacingMm?: number;
   }): Promise<PlatformResponse<ValidatePlacementResult>>;
+
+  /**
+   * Sprint 11 PR 11.5: filter components by an AND-joined
+   * key=value expression and apply a layout strategy. Pure
+   * orchestration — uses getComponents to read state, plans
+   * placements respecting locked components as obstacles, then
+   * iterates moveComponent for each target.
+   *
+   * Closes the LLM-friendly placement workflow per the roadmap:
+   * one tool that takes a natural filter + strategy and lands
+   * coherent placements without the AI having to enumerate
+   * components manually.
+   */
+  placeByGroup(
+    params: PlaceByGroupParams
+  ): Promise<PlatformResponse<PlaceByGroupResult>>;
 
   /**
    * List entries from the workspace's component library, paginated.

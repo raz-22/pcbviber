@@ -248,6 +248,149 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "place_by_group",
+    "Filter components by an AND-joined `key=value` expression and apply a layout strategy. Filter fields: designator, footprint, mpn, layer (with `*` glob support). Strategies: 'grid' (row-major, good for arrays), 'around-component' (circular ring, good for decoupling caps around an MCU), 'on-edge' (line along board edge, good for connectors). Locked components are obstacles, never moved. Returns matched/moved/skipped designator lists.",
+    {
+      filter: z
+        .string()
+        .min(1)
+        .describe(
+          "AND-joined filter, e.g. 'footprint=0402 AND designator=R*'. Fields: designator, footprint, mpn, layer. Use `*` for glob."
+        ),
+      strategy: z
+        .enum(["grid", "around-component", "on-edge"])
+        .describe("Layout strategy. See tool description for what each does."),
+      // Strategy-specific params. zod doesn't enforce the discriminated
+      // union at the MCP-arg level cleanly (the SDK wants a flat shape),
+      // so we accept all three as optional and validate which one is
+      // present at the platform layer.
+      grid: z
+        .object({
+          originX: z.coerce.number(),
+          originY: z.coerce.number(),
+          spacingMm: z.coerce.number().min(0).optional(),
+          columns: z.coerce.number().int().min(1).optional(),
+        })
+        .optional()
+        .describe("Required when strategy='grid'."),
+      around: z
+        .object({
+          target: z.string().min(1),
+          radiusMm: z.coerce.number().min(0).optional(),
+        })
+        .optional()
+        .describe("Required when strategy='around-component'."),
+      edge: z
+        .object({
+          side: z.enum(["top", "bottom", "left", "right"]),
+          offsetMm: z.coerce.number().min(0).optional(),
+        })
+        .optional()
+        .describe("Required when strategy='on-edge'."),
+      obstacleClearanceMm: z.coerce
+        .number()
+        .min(0)
+        .optional()
+        .describe(
+          "Avoid placing within this many mm of locked components. Default 0.5."
+        ),
+    },
+    async (args) => {
+      // Validate strategy-specific params at this layer rather than
+      // pushing into the platform — gives a clearer error to the AI
+      // than a generic "missing params" deeper in the stack.
+      let typedParams;
+      if (args.strategy === "grid") {
+        if (!args.grid) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "place_by_group with strategy='grid' requires `grid: {originX, originY, ...}`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+        typedParams = {
+          filter: args.filter,
+          strategy: "grid" as const,
+          grid: args.grid,
+          obstacleClearanceMm: args.obstacleClearanceMm,
+        };
+      } else if (args.strategy === "around-component") {
+        if (!args.around) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "place_by_group with strategy='around-component' requires `around: {target, radiusMm?}`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+        typedParams = {
+          filter: args.filter,
+          strategy: "around-component" as const,
+          around: args.around,
+          obstacleClearanceMm: args.obstacleClearanceMm,
+        };
+      } else {
+        if (!args.edge) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "place_by_group with strategy='on-edge' requires `edge: {side, offsetMm?}`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+        typedParams = {
+          filter: args.filter,
+          strategy: "on-edge" as const,
+          edge: args.edge,
+          obstacleClearanceMm: args.obstacleClearanceMm,
+        };
+      }
+      const result = await ctx.platform.placeByGroup(typedParams);
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not place by group: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const { matched, moved, skipped, message } = result.data;
+      // Show the summary first, then up to 10 moved + up to 10
+      // skipped (with reasons) to keep the rendered output bounded
+      // even on dense placements.
+      const lines: string[] = [message];
+      if (moved.length > 0) {
+        const head = moved.slice(0, 10).join(", ");
+        const tail = moved.length > 10 ? `, ... +${moved.length - 10} more` : "";
+        lines.push(`Moved: ${head}${tail}`);
+      }
+      if (skipped.length > 0) {
+        lines.push(`Skipped (${skipped.length}):`);
+        for (const s of skipped.slice(0, 10)) {
+          lines.push(`  - ${s.designator}: ${s.reason}`);
+        }
+        if (skipped.length > 10) {
+          lines.push(`  ... +${skipped.length - 10} more`);
+        }
+      }
+      if (matched.length === 0) {
+        lines.push("No components matched the filter.");
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
+  );
+
+  server.tool(
     "validate_placement",
     "Check the active PCB for component overlap and spacing-rule violations. Returns structured violations the AI can reason about: type (overlap/spacing), the two designators, distance/overlap depth in mm, and a human-readable message that includes lock status + approximate-bbox flags. Cross-platform; results are identical across Altium and EasyEDA. Default spacing rule is 0.2mm (typical IPC-7351 hand-placed). Pairs where both components are locked are skipped (user-intentional placement).",
     {

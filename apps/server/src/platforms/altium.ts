@@ -37,9 +37,12 @@ import {
   type ProjectListEntry,
   type SchematicComponent,
   type ScreenshotResult,
+  type PlaceByGroupParams,
+  type PlaceByGroupResult,
   type ValidatePlacementResult,
 } from "./types.js";
 import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.js";
+import { placeByGroupShared } from "./place-by-group.js";
 
 export interface AltiumPlatformDeps {
   /** Local Altium Designer relay (HTTP long-poll bridge). Optional —
@@ -331,6 +334,12 @@ export class AltiumPlatform implements Platform {
       offset = page.data.nextOffset;
     }
     return ok(all);
+  }
+
+  async placeByGroup(
+    params: PlaceByGroupParams
+  ): Promise<PlatformResponse<PlaceByGroupResult>> {
+    return placeByGroupShared(this, params);
   }
 
   async getKeepouts(): Promise<PlatformResponse<Keepout[]>> {

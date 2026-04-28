@@ -1308,6 +1308,270 @@ test("EasyedaPlatform.getComponents: no relay → supported:false NO_BRIDGE", as
   }
 });
 
+// ─── place_by_group wiring — Sprint 11 PR 11.5 ──────────────────────
+
+test("EasyedaPlatform.placeByGroup: filter → grid plan → moveComponent dispatched per target", async () => {
+  // End-to-end pin: server pages getComponents, applies the filter,
+  // runs the grid planner, then issues moveComponent for each
+  // matching designator. Verify the moves dispatch with the planned
+  // coords.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const placePending = platform.placeByGroup({
+    filter: "footprint=0402 AND designator=R*",
+    strategy: "grid",
+    grid: { originX: 100, originY: 200, spacingMm: 10, columns: 2 },
+  });
+
+  // Step 1: server calls getComponents
+  const getCmd = await relay.nextCommand("ws-a", 0);
+  if (!getCmd) throw new Error("expected get_components command");
+  assert.equal(getCmd.method, "get_components");
+  relay.postResult("ws-a", {
+    id: getCmd.id,
+    ok: true,
+    result: {
+      items: [
+        // Two matching parts
+        {
+          primitiveId: "p1",
+          designator: "R1",
+          footprint: "0402",
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 0.5,
+          layer: "top",
+          rotation: 0,
+        },
+        {
+          primitiveId: "p2",
+          designator: "R2",
+          footprint: "0402",
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 0.5,
+          layer: "top",
+          rotation: 0,
+        },
+        // Non-matching part (different footprint)
+        {
+          primitiveId: "p3",
+          designator: "R3",
+          footprint: "0805",
+          x: 0,
+          y: 0,
+          width: 2,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 3,
+    },
+  });
+
+  // Step 2: server issues moveComponent for R1 and R2 (in that order).
+  // Use a 200ms long-poll because the orchestrator's continuation
+  // runs on a microtask after the postResult above — 0ms poll
+  // would race the orchestrator and return null.
+  const moves: Array<{ designator: string; x: number; y: number }> = [];
+  for (let i = 0; i < 2; i++) {
+    const moveCmd = await relay.nextCommand("ws-a", 200);
+    if (!moveCmd) throw new Error("expected move_component command");
+    assert.equal(moveCmd.method, "move_component");
+    const params = moveCmd.params as { designator: string; x: number; y: number };
+    moves.push({ designator: params.designator, x: params.x, y: params.y });
+    relay.postResult("ws-a", {
+      id: moveCmd.id,
+      ok: true,
+      result: { designator: params.designator, message: "ok" },
+    });
+  }
+
+  const result = await placePending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.deepEqual(result.data.matched, ["R1", "R2"]);
+    assert.deepEqual(result.data.moved, ["R1", "R2"]);
+    assert.equal(result.data.skipped.length, 0);
+    // Pin the planned coords: 2-column grid starting at (100, 200)
+    // with 10mm spacing → R1 at (100,200), R2 at (110,200).
+    assert.deepEqual(moves[0], { designator: "R1", x: 100, y: 200 });
+    assert.deepEqual(moves[1], { designator: "R2", x: 110, y: 200 });
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.placeByGroup: failed move → recorded in skipped[] with platform's reason, doesn't abort the rest", async () => {
+  // Defense in depth: a failed move (e.g., locked target appeared
+  // mid-batch) shouldn't kill the whole place_by_group call.
+  // Subsequent moves should still dispatch and the failed one ends
+  // up in skipped[] with the upstream reason.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.placeByGroup({
+    filter: "designator=R*",
+    strategy: "grid",
+    grid: { originX: 0, originY: 0 },
+  });
+  // get_components
+  const getCmd = await relay.nextCommand("ws-a", 0);
+  if (!getCmd) throw new Error("expected get_components");
+  relay.postResult("ws-a", {
+    id: getCmd.id,
+    ok: true,
+    result: {
+      items: ["R1", "R2"].map((d) => ({
+        primitiveId: `p_${d}`,
+        designator: d,
+        footprint: "0402",
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 0.5,
+        layer: "top",
+        rotation: 0,
+      })),
+      total: 2,
+    },
+  });
+  // First move: succeeds. 200ms poll — orchestrator continuation
+  // runs on a microtask after the get_components postResult above.
+  const m1 = await relay.nextCommand("ws-a", 200);
+  if (!m1) throw new Error("expected move 1");
+  relay.postResult("ws-a", { id: m1.id, ok: true, result: { message: "ok" } });
+  // Second move: fails
+  const m2 = await relay.nextCommand("ws-a", 200);
+  if (!m2) throw new Error("expected move 2");
+  relay.postResult("ws-a", {
+    id: m2.id,
+    ok: false,
+    error: { message: "Component R2 was locked by a concurrent edit." },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.deepEqual(result.data.moved, ["R1"]);
+    assert.equal(result.data.skipped.length, 1);
+    assert.equal(result.data.skipped[0].designator, "R2");
+    assert.match(result.data.skipped[0].reason, /locked by a concurrent edit/);
+  }
+  relay.__resetForTests();
+});
+
+test("AltiumPlatform.placeByGroup: malformed filter → supported:false WITHOUT calling getComponents", async () => {
+  // Fail-fast pin: bad filter input must not pay the
+  // getComponents round-trip. The platform stub throws if execute
+  // is called, so this test fails loudly if the orchestrator
+  // forgets to validate before paging.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => {
+      throw new Error("execute called when filter parse should have short-circuited");
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.placeByGroup({
+    filter: "no_equals_sign",
+    strategy: "grid",
+    grid: { originX: 0, originY: 0 },
+  });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /missing '='/);
+  }
+});
+
+test("AltiumPlatform.placeByGroup: around-component target not found → supported:false", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({
+      items: [
+        {
+          primitiveId: "p1",
+          designator: "R1",
+          footprint: "0402",
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 0.5,
+          layer: "eTopLayer",
+          rotation: 0,
+        },
+      ],
+      total: 1,
+    }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.placeByGroup({
+    filter: "designator=R*",
+    strategy: "around-component",
+    around: { target: "DOES_NOT_EXIST" },
+  });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /DOES_NOT_EXIST/);
+    assert.match(result.reason, /not found/);
+  }
+});
+
+test("EasyedaPlatform.placeByGroup: zero matches → empty result, NO move calls dispatched", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.placeByGroup({
+    filter: "footprint=NOTHING_MATCHES",
+    strategy: "grid",
+    grid: { originX: 0, originY: 0 },
+  });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p1",
+          designator: "R1",
+          footprint: "0402",
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 0.5,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.matched.length, 0);
+    assert.equal(result.data.moved.length, 0);
+  }
+  // No move command was queued — relay queue should be empty.
+  // (A nextCommand call with a 0ms timeout returns null when nothing
+  //  is queued, distinguishing "queue empty" from "test deadlock".)
+  const noCmd = await relay.nextCommand("ws-a", 0);
+  assert.equal(noCmd, null, "no move_component should have been queued");
+  relay.__resetForTests();
+});
+
 // ─── validatePlacement wiring — Sprint 11 PR 11.4 ───────────────────
 
 test("AltiumPlatform.validatePlacement: pages getComponents + runs shared validator", async () => {
