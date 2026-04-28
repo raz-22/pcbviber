@@ -26,9 +26,11 @@ import { registerComponentTools } from "./tools/components.js";
 import { registerProjectTools } from "./tools/projects.js";
 import { registerManufacturingTools } from "./tools/manufacturing.js";
 import { registerAltiumTools } from "./tools/altium.js";
+import { registerPlatformTools } from "./tools/platform.js";
 import { registerPcbFlowPrompts } from "./prompts/pcb-flow.js";
 import { startHttpServer } from "./http.js";
 import { AdRelay } from "./ad-relay/relay.js";
+import { AltiumPlatform } from "./platforms/altium.js";
 import type { ToolContext } from "./mcp/dispatch.js";
 import type { AltiumConfig } from "@altium-mcp/shared";
 
@@ -83,6 +85,7 @@ export function buildMcpServer(toolCtx: ToolContext, relay: AdRelay): McpServer 
   registerProjectTools(server, toolCtx);
   registerManufacturingTools(server, toolCtx);
   registerAltiumTools(server, relay);
+  registerPlatformTools(server, toolCtx);
   registerPcbFlowPrompts(server);
   return server;
 }
@@ -98,7 +101,13 @@ async function main() {
     // metering bypassed (the dispatch layer treats `metering: null`
     // as "run handler directly"). Operators on a local machine using
     // stdio aren't billed; this matches existing behavior pre-5.4.
-    const toolCtx: ToolContext = { nexar, metering: null };
+    //
+    // Platform: AltiumPlatform with the local AD relay + env-loaded
+    // nexar. EasyEDA isn't reachable via stdio because the bridge
+    // needs an HTTP server for the extension to long-poll against;
+    // operators who want EasyEDA tools run --transport=http.
+    const platform = new AltiumPlatform({ relay, nexar });
+    const toolCtx: ToolContext = { nexar, metering: null, platform };
     const server = buildMcpServer(toolCtx, relay);
     const stdio = new StdioServerTransport();
     await server.connect(stdio);
