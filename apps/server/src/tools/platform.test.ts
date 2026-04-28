@@ -182,6 +182,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     listSchematicComponents: async () => ({ supported: false, reason: "stub" }),
     listPcbComponents: async () => ({ supported: false, reason: "stub" }),
     listLibraryComponents: async () => ({ supported: false, reason: "stub" }),
+    getComponents: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -279,6 +280,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     listSchematicComponents: async () => ({ supported: false, reason: "stub" }),
     listPcbComponents: async () => ({ supported: false, reason: "stub" }),
     listLibraryComponents: async () => ({ supported: false, reason: "stub" }),
+    getComponents: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -840,6 +842,147 @@ test("get_messages tool: clean design (no messages) → 'No messages on the acti
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No messages on the active easyeda project/);
   relay.__resetForTests();
+});
+
+// ─── get_components tool ─────────────────────────────────────────────
+
+function captureGetComponentsHandler(
+  ctx: ToolContext
+): ListSchematicComponentsHandler {
+  // Reuses the schematic handler signature — both take {offset?,
+  // limit?} and the return shape matches the rest of the tool tests.
+  let handler: ListSchematicComponentsHandler | null = null;
+  const fakeServer = {
+    tool: (
+      name: string,
+      _desc: string,
+      _shape: unknown,
+      fn: ListSchematicComponentsHandler
+    ) => {
+      if (name === "get_components") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler)
+    throw new Error("registerPlatformTools didn't register `get_components`");
+  return handler;
+}
+
+test("get_components tool: caption + one line per placement, fields rendered with units", async () => {
+  // Pin the rendered shape AI clients see — it's the contract for
+  // anyone reasoning about placement decisions from text output.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({ offset: 0, limit: 2 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p-1",
+          designator: "R1",
+          mpn: "RC0402-10K",
+          footprint: "0402",
+          x: 10.5,
+          y: 20.25,
+          layer: "top",
+          rotation: 0,
+          locked: false,
+        },
+        {
+          primitiveId: "p-2",
+          designator: "U1",
+          footprint: "QFN-48",
+          x: 5.123456,
+          y: 5,
+          layer: "bottom",
+          rotation: 90,
+          locked: true,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  // Header carries platform + range
+  assert.match(text, /Placed components 1–2 of 2 \(easyeda\):/);
+  // Per-line: designator, footprint, mm-rounded coords, layer,
+  // rotation°, mpn (when present), [LOCKED] (when set)
+  assert.match(text, /R1 \(0402\) @ \(10\.50, 20\.25\) top 0° mpn=RC0402-10K/);
+  assert.match(text, /U1 \(QFN-48\) @ \(5\.12, 5\.00\) bottom 90° \[LOCKED\]/);
+  relay.__resetForTests();
+});
+
+test("get_components tool: pagination footer when more pages available", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({ offset: 0, limit: 200 }))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  const items = Array.from({ length: 200 }, (_, i) => ({
+    primitiveId: `p-${i}`,
+    designator: `R${i}`,
+    footprint: "0402",
+    x: 0,
+    y: 0,
+    layer: "top",
+    rotation: 0,
+    locked: false,
+  }));
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items, total: 350 },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /More available — call again with offset=200/);
+  relay.__resetForTests();
+});
+
+test("get_components tool: empty board → 'No components' caption (not isError)", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const handler = captureGetComponentsHandler(buildToolCtx(platform));
+
+  const result = (async () => handler({}))();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items: [], total: 0 },
+  });
+  const res = await result;
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No components on the active easyeda PCB/);
+  relay.__resetForTests();
+});
+
+test("get_components tool: AD relay disconnected → MCP error result with actionable reason", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const handler = captureGetComponentsHandler(buildToolCtx(platform));
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not read components/);
+  assert.match(text, /relay is not connected/i);
 });
 
 test("get_messages tool: all entries below threshold → 'No messages at or above severity X' (distinct from clean state)", async () => {

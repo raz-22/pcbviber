@@ -1077,6 +1077,237 @@ test("EasyedaPlatform.listLibraryComponents: no relay → supported:false NO_BRI
   }
 });
 
+// ─── normalizeLayer — Sprint 11 PR 11.1 ─────────────────────────────
+
+import { normalizeLayer } from "./altium.js";
+
+test("normalizeLayer: Altium and EasyEDA flavors map to the cross-platform union", () => {
+  // Pin the cross-platform contract: AI clients write rules like
+  // `c.layer === "top"` and they must work on both platforms.
+  assert.equal(normalizeLayer("eTopLayer"), "top");
+  assert.equal(normalizeLayer("top"), "top");
+  assert.equal(normalizeLayer("Top_Layer"), "top");
+  assert.equal(normalizeLayer("eBottomLayer"), "bottom");
+  assert.equal(normalizeLayer("bottom"), "bottom");
+  // Inner / mid / plane all collapse to "inner" — AI clients
+  // reasoning about routability vs. placement only need
+  // top/bottom/inner/unknown to write portable rules.
+  assert.equal(normalizeLayer("eMidLayer3"), "inner");
+  assert.equal(normalizeLayer("inner1"), "inner");
+  assert.equal(normalizeLayer("InternalPlane2"), "inner");
+  // Falls through to "unknown" rather than crashing on
+  // unrecognized strings or non-string inputs.
+  assert.equal(normalizeLayer("MechanicalLayer"), "unknown");
+  assert.equal(normalizeLayer(undefined), "unknown");
+  assert.equal(normalizeLayer(42), "unknown");
+});
+
+// ─── AltiumPlatform.getComponents — Sprint 11 PR 11.1 ───────────────
+
+test("AltiumPlatform.getComponents: relay round-trip maps full payload + normalizes layer", async () => {
+  // Stub AdRelay execute → simulate the AD relay's get_components
+  // response. Coordinates already converted to mm by AltiumRelay.js
+  // so the platform doesn't redo the math.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      assert.equal(method, "get_components");
+      assert.deepEqual(params, { offset: 0, limit: 200 });
+      return {
+        items: [
+          {
+            primitiveId: "comp_0",
+            designator: "U1",
+            mpn: "STM32F4",
+            footprint: "QFP-100",
+            x: 25.4,
+            y: 12.7,
+            layer: "eTopLayer",
+            rotation: 90,
+            locked: true,
+          },
+        ],
+        total: 1,
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getComponents({ offset: 0, limit: 200 });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 1);
+    const c = result.data.items[0];
+    assert.equal(c.primitiveId, "comp_0");
+    assert.equal(c.designator, "U1");
+    assert.equal(c.mpn, "STM32F4");
+    assert.equal(c.x, 25.4);
+    assert.equal(c.y, 12.7);
+    assert.equal(c.layer, "top", "eTopLayer must normalize to 'top'");
+    assert.equal(c.rotation, 90);
+    assert.equal(c.locked, true);
+  }
+});
+
+test("AltiumPlatform.getComponents: relay disconnected → supported:false RELAY_DISCONNECTED", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("AltiumPlatform.getComponents: malformed AD result (no items array) → actionable supported:false naming the missing relay command", async () => {
+  // Defense in depth: if AltiumRelay.js is on an older version that
+  // doesn't know `get_components`, the call still completes with a
+  // bare/unknown shape. Surface a reason that names the fix
+  // ("update AltiumRelay.js") rather than a generic shape error.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({ wrong: true }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /AltiumRelay\.js/);
+  }
+});
+
+// ─── EasyedaPlatform.getComponents — Sprint 11 PR 11.1 ──────────────
+
+test("EasyedaPlatform.getComponents: maps placement payload with all fields", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.getComponents({ offset: 0, limit: 200 });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  assert.equal(cmd.method, "get_components");
+
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p-1",
+          designator: "R1",
+          mpn: "RC0402-10K",
+          footprint: "0402",
+          x: 10.5,
+          y: 20.25,
+          layer: "top",
+          rotation: 0,
+          locked: false,
+        },
+        {
+          primitiveId: "p-2",
+          designator: "U2",
+          properties: { mpn: "ESP32", footprint: "QFN-48" },
+          position: { x: 5, y: 5 },
+          layer: "bottom",
+          rotation: 270,
+          locked: true,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.items.length, 2);
+    const r1 = result.data.items[0];
+    assert.equal(r1.designator, "R1");
+    assert.equal(r1.mpn, "RC0402-10K");
+    assert.equal(r1.layer, "top");
+    assert.equal(r1.rotation, 0);
+    assert.equal(r1.locked, false);
+    // Properties-fallback + position:{x,y} fallback
+    const u2 = result.data.items[1];
+    assert.equal(u2.mpn, "ESP32");
+    assert.equal(u2.footprint, "QFN-48");
+    assert.equal(u2.x, 5);
+    assert.equal(u2.y, 5);
+    assert.equal(u2.layer, "bottom");
+    assert.equal(u2.locked, true);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getComponents: missing fields → empty/zero defaults, never undefined", async () => {
+  // The cross-platform contract: PlacedComponent fields are always
+  // populated (empty string / 0 / false defaults) so AI clients can
+  // count on a deterministic shape. Pin that "" rather than
+  // undefined for missing strings.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [{ primitiveId: "p-1" }],
+      total: 1,
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    const c = result.data.items[0];
+    assert.equal(c.designator, "");
+    assert.equal(c.mpn, "");
+    assert.equal(c.footprint, "");
+    assert.equal(c.x, 0);
+    assert.equal(c.y, 0);
+    assert.equal(c.layer, "unknown");
+    assert.equal(c.rotation, 0);
+    assert.equal(c.locked, false);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getComponents: malformed result (no items array) → supported:false", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.getComponents({});
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected queued command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { wrong: true } });
+  const result = await pending;
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /items.*array/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getComponents: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.getComponents({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── EasyedaPlatform.getMessages — Sprint 10 PR 10.5 ────────────────
 
 test("EasyedaPlatform.getMessages: maps {messages:[...]} to PlatformMessage[] with severity coercion", async () => {

@@ -189,6 +189,41 @@
      * The server normalizes that shape into Page<PcbComponent>
      * — see EasyedaPlatform.listPcbComponents().
      */
+    /**
+     * Sprint 11 PR 11.1: paginated read of placed components with
+     * full layout fields. Sister to list_pcb_components — same
+     * BoardIterator-style walk over pcb_PrimitiveComponent ids,
+     * but the server expects the placement payload (x/y/layer/
+     * rotation/locked) extracted alongside designator/footprint.
+     *
+     * EasyEDA Pro stores X/Y in mm natively, so no unit conversion
+     * here. Layer comes back as "top"/"bottom"/etc. — server
+     * normalizes via the shared normalizeLayer helper.
+     */
+    get_components: async function (params) {
+      const offset = Math.max(0, Math.floor(params?.offset ?? 0));
+      const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));
+      // eslint-disable-next-line no-undef
+      const allIds = await eda.pcb_PrimitiveComponent.getAllPrimitiveId();
+      const total = allIds.length;
+      const pageIds = allIds.slice(offset, offset + limit);
+      // eslint-disable-next-line no-undef
+      const details = await eda.pcb_PrimitiveComponent.get(pageIds);
+      let items;
+      if (Array.isArray(details)) {
+        items = details.map(function (d, i) {
+          return Object.assign({ primitiveId: pageIds[i] }, d);
+        });
+      } else if (details && typeof details === "object") {
+        items = pageIds.map(function (id) {
+          return Object.assign({ primitiveId: id }, details[id] ?? {});
+        });
+      } else {
+        items = [];
+      }
+      return { items: items, total: total };
+    },
+
     list_pcb_components: async function (params) {
       const offset = Math.max(0, Math.floor(params?.offset ?? 0));
       const limit = Math.min(500, Math.max(1, Math.floor(params?.limit ?? 200)));

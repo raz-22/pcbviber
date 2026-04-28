@@ -182,6 +182,72 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "get_components",
+    "Read placed components on the active PCB with full layout fields — designator, mpn, footprint, x, y (mm, board-local), layer (top/bottom/inner), rotation (degrees), locked. Cross-platform; coordinates are normalized to mm at the relay boundary. Pair this with `screenshot` for visual verification before any move/rotate operations. Use `list_pcb_components` instead when you only need designator + footprint (cheaper round-trip).",
+    PaginationShape,
+    async (args) => {
+      const result = await ctx.platform.getComponents({
+        offset: args.offset,
+        limit: args.limit,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not read components: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const { items, nextOffset, total } = result.data;
+      if (items.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No components on the active ${ctx.platform.name} PCB.`,
+            },
+          ],
+        };
+      }
+      // Compact one-line-per-component rendering. Order:
+      //   designator footprint @ (x,y) layer rotation° [LOCKED] mpn
+      // The mpn is positioned last because it's often empty; putting
+      // it at the end keeps the visual rhythm of the populated
+      // fields stable.
+      const lines = items.map((c) => {
+        const parts: string[] = [];
+        if (c.designator) parts.push(c.designator);
+        if (c.footprint) parts.push(`(${c.footprint})`);
+        // 2 decimal places for mm — sub-100µm precision is rarely
+        // useful for AI reasoning and avoids long noisy floats.
+        parts.push(`@ (${c.x.toFixed(2)}, ${c.y.toFixed(2)})`);
+        parts.push(c.layer);
+        parts.push(`${c.rotation.toFixed(0)}°`);
+        if (c.locked) parts.push("[LOCKED]");
+        if (c.mpn) parts.push(`mpn=${c.mpn}`);
+        return `- ${parts.join(" ")}`;
+      });
+      const totalStr = total !== undefined ? ` of ${total}` : "";
+      const header = `Placed components 1–${items.length}${totalStr} (${ctx.platform.name}):`;
+      const footer =
+        nextOffset !== null
+          ? `\n\nMore available — call again with offset=${nextOffset} to fetch the next page.`
+          : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n") + footer,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "list_pcb_components",
     "List components placed on the active PCB, paginated. Each entry has primitiveId + designator + footprint + the platform's raw payload. Pass offset+limit to page through dense boards; the response carries `nextOffset` (null when the page is the last). EasyEDA today; Altium ships in a follow-up that extends the AD relay (Sprint 11 PR 11.1's `get_components` adds the placement payload).",
     PaginationShape,

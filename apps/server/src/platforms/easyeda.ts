@@ -36,6 +36,7 @@
 
 import type { EdaRelay } from "../eda-relay/relay.js";
 import type { NexarService } from "../services/nexar.js";
+import { normalizeLayer } from "./altium.js";
 import {
   notSupported,
   ok,
@@ -46,6 +47,7 @@ import {
   type Page,
   type PaginationParams,
   type PcbComponent,
+  type PlacedComponent,
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
@@ -254,6 +256,107 @@ export class EasyedaPlatform implements Platform {
         nextOffset =
           items.length === limit ? offset + items.length : null;
       }
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async getComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<PlacedComponent>>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "get_components",
+        { offset, limit }
+      );
+      // Extension returns the full placement payload — sister to
+      // list_pcb_components but extracts the richer per-entry fields.
+      // EasyEDA Pro stores X/Y in mm natively, so no unit conversion
+      // here (Altium converts at the relay boundary).
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a get_components result without an `items` array."
+        );
+      }
+      const items: PlacedComponent[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const primitiveId =
+          typeof entry.primitiveId === "string" ? entry.primitiveId : "";
+        if (!primitiveId) return [];
+        const props = isRecord(entry.properties) ? entry.properties : {};
+        const designator =
+          typeof entry.designator === "string"
+            ? entry.designator
+            : typeof props.designator === "string"
+              ? (props.designator as string)
+              : "";
+        const mpn =
+          typeof entry.mpn === "string"
+            ? entry.mpn
+            : typeof entry.manufacturerPartNumber === "string"
+              ? entry.manufacturerPartNumber
+              : typeof props.mpn === "string"
+                ? (props.mpn as string)
+                : "";
+        const footprint =
+          typeof entry.footprint === "string"
+            ? entry.footprint
+            : typeof props.footprint === "string"
+              ? (props.footprint as string)
+              : "";
+        // EasyEDA Pro stores position under several names depending
+        // on entry vintage. Common: x/y top-level, or position:{x,y}.
+        const pos = isRecord(entry.position) ? entry.position : null;
+        const x =
+          typeof entry.x === "number"
+            ? entry.x
+            : pos && typeof pos.x === "number"
+              ? pos.x
+              : 0;
+        const y =
+          typeof entry.y === "number"
+            ? entry.y
+            : pos && typeof pos.y === "number"
+              ? pos.y
+              : 0;
+        const rotation =
+          typeof entry.rotation === "number"
+            ? entry.rotation
+            : 0;
+        const locked = entry.locked === true;
+        return [
+          {
+            primitiveId,
+            designator,
+            mpn,
+            footprint,
+            x,
+            y,
+            layer: normalizeLayer(entry.layer),
+            rotation,
+            locked,
+            raw: entry,
+          },
+        ];
+      });
+      const nextOffset =
+        total !== undefined
+          ? offset + items.length < total
+            ? offset + items.length
+            : null
+          : items.length === limit
+            ? offset + items.length
+            : null;
       return ok({ items, nextOffset, total });
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));

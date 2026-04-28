@@ -28,6 +28,7 @@ import {
   type Page,
   type PaginationParams,
   type PcbComponent,
+  type PlacedComponent,
   type Platform,
   type PlatformMessage,
   type PlatformResponse,
@@ -163,6 +164,69 @@ export class AltiumPlatform implements Platform {
     }
   }
 
+  async getComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<PlacedComponent>>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const limit = Math.min(500, Math.max(1, Math.floor(params.limit ?? 200)));
+    try {
+      // The AD relay's get_components command walks BoardIterator over
+      // eComponentObject and returns coordinates already converted to
+      // mm — see ad-script/AltiumRelay.js: CmdGetComponents. Layer
+      // values come back as raw AD layer names; normalize to the
+      // cross-platform union here.
+      const raw = await this.deps.relay.execute<unknown>(
+        "get_components",
+        { offset, limit }
+      );
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      const total = typeof obj.total === "number" ? obj.total : undefined;
+      if (!itemsRaw) {
+        return notSupported(
+          "AD relay returned a get_components result without an `items` array. Update AltiumRelay.js to the version shipped with Sprint 11 PR 11.1."
+        );
+      }
+      const items: PlacedComponent[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const primitiveId =
+          typeof entry.primitiveId === "string" ? entry.primitiveId : "";
+        if (!primitiveId) return [];
+        return [
+          {
+            primitiveId,
+            designator:
+              typeof entry.designator === "string" ? entry.designator : "",
+            mpn: typeof entry.mpn === "string" ? entry.mpn : "",
+            footprint:
+              typeof entry.footprint === "string" ? entry.footprint : "",
+            x: typeof entry.x === "number" ? entry.x : 0,
+            y: typeof entry.y === "number" ? entry.y : 0,
+            layer: normalizeLayer(entry.layer),
+            rotation:
+              typeof entry.rotation === "number" ? entry.rotation : 0,
+            locked: entry.locked === true,
+            raw: entry,
+          },
+        ];
+      });
+      const nextOffset =
+        total !== undefined
+          ? offset + items.length < total
+            ? offset + items.length
+            : null
+          : items.length === limit
+            ? offset + items.length
+            : null;
+      return ok({ items, nextOffset, total });
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async listPcbComponents(
     _params: PaginationParams
   ): Promise<PlatformResponse<Page<PcbComponent>>> {
@@ -245,6 +309,31 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Normalize a raw layer string (Altium: `eTopLayer`, `eBottomLayer`,
+ * `eMidLayer1`...; EasyEDA: `top`, `bottom`, etc.) to the cross-
+ * platform union. Unrecognized values fall through to "unknown" so
+ * AI clients writing rules like `layer === "top"` stay portable.
+ *
+ * Exported because `EasyedaPlatform.getComponents` needs the same
+ * normalization — keeping one function so the two impls can't drift.
+ */
+export function normalizeLayer(
+  raw: unknown
+): "top" | "bottom" | "inner" | "unknown" {
+  if (typeof raw !== "string") return "unknown";
+  const s = raw.toLowerCase();
+  if (s === "top" || s === "etoplayer" || s === "top_layer") return "top";
+  if (s === "bottom" || s === "ebottomlayer" || s === "bottom_layer") return "bottom";
+  if (
+    s.includes("mid") ||
+    s.includes("inner") ||
+    s.includes("plane")
+  )
+    return "inner";
+  return "unknown";
 }
 
 function errorReason(err: unknown): string {

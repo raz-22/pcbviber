@@ -153,6 +153,45 @@ export interface PcbComponent {
 }
 
 /**
+ * Sprint 11 PR 11.1: a placed component with full layout-relevant
+ * fields. Distinct from `PcbComponent` (10.3b's basic-BOM read) —
+ * `get_components` returns this richer payload because it's the
+ * foundation Sprint 11's write tools (move/rotate/lock) all build
+ * on. Two tools instead of one because the basic enumeration path
+ * doesn't need the placement round-trip cost.
+ *
+ * Coordinate convention: **millimeters, board-local origin.** Both
+ * platforms convert to mm at the relay/extension boundary so the
+ * cross-platform contract is unit-uniform — Altium's native is
+ * 10,000ths of a mil, EasyEDA's is mm. Layer is normalized to one
+ * of `top|bottom|inner|unknown` so AI clients can write portable
+ * placement rules.
+ *
+ * `mpn` and `footprint` come from platform-specific fields:
+ *   Altium: Comment / Pattern (best-effort — not all components
+ *           carry MPN-style identifiers).
+ *   EasyEDA: properties.mpn / properties.footprint.
+ * Empty string when unset rather than undefined so AI clients render
+ * a deterministic value.
+ */
+export interface PlacedComponent {
+  primitiveId: string;
+  designator: string;
+  mpn: string;
+  footprint: string;
+  /** X/Y in millimeters. Origin and orientation are platform-native
+   *  (board-local). */
+  x: number;
+  y: number;
+  /** Normalized layer name. `unknown` for inner / mech / unrecognized. */
+  layer: "top" | "bottom" | "inner" | "unknown";
+  /** Rotation in degrees, 0-360 normalized. */
+  rotation: number;
+  locked: boolean;
+  raw: unknown;
+}
+
+/**
  * One entry from the workspace's component library — the universal
  * basic-catalog shape across both platforms. This isn't a part placed
  * on a board; it's a part sitting in the user's library, available to
@@ -297,6 +336,23 @@ export interface Platform {
   listPcbComponents(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<PcbComponent>>>;
+
+  /**
+   * Sprint 11 PR 11.1: paginated read of placed components with
+   * full layout fields. Distinct from `listPcbComponents` (basic
+   * BOM) — `getComponents` is the foundation Sprint 11's write
+   * tools call before mutating placement.
+   *
+   * Altium: walks `BoardIterator` over `eComponentObject` via a
+   * new AD relay command (`get_components`); converts native
+   * 10,000ths-of-a-mil → mm at the relay boundary so the contract
+   * is unit-uniform.
+   * EasyEDA: `eda.pcb_PrimitiveComponent.get(ids)` already returns
+   * position/rotation/layer/locked per the spike.
+   */
+  getComponents(
+    params: PaginationParams
+  ): Promise<PlatformResponse<Page<PlacedComponent>>>;
 
   /**
    * List entries from the workspace's component library, paginated.

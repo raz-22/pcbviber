@@ -142,6 +142,7 @@ function Dispatch(cmd) {
         case "generate_outputs":   return CmdGenerateOutputs(cmd.params);
         case "auto_place":         return CmdAutoPlace(cmd.params);
         case "auto_route":         return CmdAutoRoute(cmd.params);
+        case "get_components":     return CmdGetComponents(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -483,6 +484,120 @@ function SetOf(ids) {
     // literal; if not, this becomes [DOCUMENTED] nonfunctional and the caller
     // records it in `notes`. Harmless either way.
     try { return MkSet(ids); } catch (_) { return ids; }
+}
+
+// Sprint 11 PR 11.1: paginated read of placed components with full
+// layout fields. Walks BoardIterator over eComponentObject (=4),
+// extracting designator / comment-as-MPN / footprint / position /
+// layer / rotation / locked. Coordinates converted to mm at this
+// boundary (AD's native is 10,000ths of a mil = 0.0000254 mm/unit)
+// so the cross-platform contract stays unit-uniform.
+//
+// Per-field extraction is defensive: any field accessor that throws
+// records "" / 0 / false rather than failing the whole call. The
+// raw component object is NOT included in the returned envelope —
+// IPCB_Component instances aren't JSON-serializable.
+function CmdGetComponents(params) {
+    var offset = Math.max(0, Math.floor((params && params.offset) || 0));
+    var limit = Math.min(500, Math.max(1, Math.floor((params && params.limit) || 200)));
+
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) {
+        throw MakeError("PCBServer not available in this script context.");
+    }
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) {
+        throw MakeError("No PCB document is currently focused.");
+    }
+
+    var iter = board.BoardIterator_Create();
+    iter.AddFilter_ObjectSet(SetOf([4])); // eComponentObject = 4
+    iter.AddFilter_LayerSet(null);
+    iter.AddFilter_Method(null);
+
+    // First pass: count for pagination total. Two-pass because
+    // BoardIterator can't be rewound — we need the total for the
+    // server's nextOffset math, AND we need to skip `offset` items
+    // before collecting the page.
+    var total = 0;
+    var c = iter.FirstPCBObject();
+    while (c) { total++; c = iter.NextPCBObject(); }
+    board.BoardIterator_Destroy(iter);
+
+    // Second pass: collect the requested page.
+    var iter2 = board.BoardIterator_Create();
+    iter2.AddFilter_ObjectSet(SetOf([4]));
+    iter2.AddFilter_LayerSet(null);
+    iter2.AddFilter_Method(null);
+    var items = [];
+    var idx = 0;
+    var comp = iter2.FirstPCBObject();
+    while (comp && items.length < limit) {
+        if (idx >= offset) {
+            items.push(ExtractComponent(comp, idx));
+        }
+        idx++;
+        comp = iter2.NextPCBObject();
+    }
+    board.BoardIterator_Destroy(iter2);
+
+    return { items: items, total: total };
+}
+
+// Pull the cross-platform fields off an IPCB_Component. Each accessor
+// is wrapped in its own try/catch — an AD build that doesn't expose
+// (say) `Locked` shouldn't drop the rest of the component's data.
+function ExtractComponent(comp, idx) {
+    var MM_PER_COORD = 0.0000254; // 1 internal coord unit = 1/10000 mil; mil → mm = 0.0254
+    var out = {
+        primitiveId: "comp_" + idx,
+        designator: "",
+        mpn: "",
+        footprint: "",
+        x: 0,
+        y: 0,
+        layer: "unknown",
+        rotation: 0,
+        locked: false
+    };
+    try { out.designator = String(comp.Name || comp.LogicalDesignator || comp.SourceDesignator || ""); } catch (_) { }
+    // AD's `Comment` field is the conventional home for MPN — not
+    // every project populates it, but when set it's the closest thing
+    // to a manufacturer part number on the AD side.
+    try { out.mpn = String(comp.Comment || ""); } catch (_) { }
+    try { out.footprint = String(comp.Pattern || comp.FootprintName || ""); } catch (_) { }
+    try { out.x = Number(comp.XLocation) * MM_PER_COORD; } catch (_) { }
+    try { out.y = Number(comp.YLocation) * MM_PER_COORD; } catch (_) { }
+    try {
+        // comp.Layer returns a layer object on some AD builds, an
+        // integer enum on others. Best-effort: read the name property
+        // if it's an object, else cast to string and let the server
+        // normalize.
+        var lyr = comp.Layer;
+        if (lyr && typeof lyr === "object" && lyr.Name) {
+            out.layer = String(lyr.Name);
+        } else if (lyr !== null && lyr !== undefined) {
+            out.layer = String(lyr);
+        }
+    } catch (_) { }
+    try {
+        var rot = Number(comp.Rotation);
+        // Normalize to 0–360. AD reports negative values for
+        // counter-rotated parts; cross-platform contract is
+        // canonical positive.
+        if (rot < 0) rot = ((rot % 360) + 360) % 360;
+        if (rot >= 360) rot = rot % 360;
+        out.rotation = rot;
+    } catch (_) { }
+    try { out.locked = Boolean(comp.Locked); } catch (_) { }
+    return out;
 }
 
 function CmdGetStackup(_params) {
