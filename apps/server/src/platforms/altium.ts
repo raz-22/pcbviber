@@ -33,6 +33,8 @@ import {
   type SetRouteRuleParams,
   type UnrouteResult,
   type ViaStitchResult,
+  type XSignalStatus,
+  type XSignalsStatusResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -414,6 +416,23 @@ export class AltiumPlatform implements Platform {
     }
   }
 
+  async getXSignalsStatus(): Promise<PlatformResponse<XSignalsStatusResult>> {
+    // Reuses the existing getMessages path (PR 10.5) — no new
+    // relay command needed. xSignal status entries land in the
+    // Messages panel after Compile/DRC; we filter + parse them.
+    const messages = await this.getMessages();
+    if (!messages.supported) return messages;
+    const xSignalMessages = messages.data.filter(
+      (m) =>
+        m.source.toLowerCase().includes("xsignal") ||
+        m.text.toLowerCase().includes("xsignal")
+    );
+    return ok({
+      signals: parseXSignalMessages(xSignalMessages),
+      rawMessages: xSignalMessages,
+    });
+  }
+
   async viaStitchPlane(params: {
     net: string;
     densityMm?: number;
@@ -611,6 +630,83 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Sprint 12 PR 12.6: parse xSignal length-tuning entries out of
+ * a list of messages from AD's Messages panel. Best-effort regex
+ * over a couple of common message-text shapes:
+ *
+ *   "xSignal foo: 95.2mm of 100mm"           → matched=95.2%
+ *   "xSignal foo: target 100mm, current 95mm" → matched=95%
+ *
+ * Anything that doesn't match either shape gets dropped from the
+ * structured output but stays in the `rawMessages` field of the
+ * result, so AI clients can inspect un-parsed entries.
+ *
+ * Length-divide-zero guard: when targetLength is 0, matchedPercent
+ * is NaN. AI clients should treat NaN as "couldn't compute" — the
+ * signal exists but the target wasn't set or wasn't parseable.
+ *
+ * Exported so a future EDA platform that DID expose xSignals could
+ * reuse the parser logic on its own message stream.
+ */
+export function parseXSignalMessages(
+  messages: Array<{ text: string; raw?: unknown }>
+): XSignalStatus[] {
+  const out: XSignalStatus[] = [];
+  for (const m of messages) {
+    const text = m.text;
+    // Shape 1: "xSignal NAME: N.NNmm of N.NNmm" (with optional
+    // trailing percent, "matched", etc.)
+    let parsed = parseXSignalShapeOf(text);
+    if (!parsed) parsed = parseXSignalShapeTargetCurrent(text);
+    if (!parsed) continue;
+    const targetLengthMm = parsed.target;
+    const currentLengthMm = parsed.current;
+    const matchedPercent =
+      targetLengthMm > 0
+        ? (currentLengthMm / targetLengthMm) * 100
+        : NaN;
+    out.push({
+      name: parsed.name,
+      targetLengthMm,
+      currentLengthMm,
+      matchedPercent,
+      raw: m.raw ?? m,
+    });
+  }
+  return out;
+}
+
+function parseXSignalShapeOf(
+  text: string
+): { name: string; target: number; current: number } | null {
+  // Match "xSignal NAME: N.NNmm of N.NNmm" with case-insensitive
+  // xSignal keyword and tolerant of mil/inch suffixes (we only
+  // handle mm in v1; other units → drop).
+  const m = /xsignal\s+([^\s:]+)\s*:\s*([\d.]+)\s*mm\s+of\s+([\d.]+)\s*mm/i.exec(text);
+  if (!m) return null;
+  const current = Number(m[2]);
+  const target = Number(m[3]);
+  if (!isFinite(current) || !isFinite(target)) return null;
+  return { name: m[1], target, current };
+}
+
+function parseXSignalShapeTargetCurrent(
+  text: string
+): { name: string; target: number; current: number } | null {
+  // Match "xSignal NAME: target N.NNmm, current N.NNmm" — order-
+  // tolerant on the target/current pair.
+  const named = /xsignal\s+([^\s:]+)\s*:/i.exec(text);
+  if (!named) return null;
+  const targetMatch = /target\s+([\d.]+)\s*mm/i.exec(text);
+  const currentMatch = /current\s+([\d.]+)\s*mm/i.exec(text);
+  if (!targetMatch || !currentMatch) return null;
+  const target = Number(targetMatch[1]);
+  const current = Number(currentMatch[1]);
+  if (!isFinite(target) || !isFinite(current)) return null;
+  return { name: named[1], target, current };
 }
 
 /**

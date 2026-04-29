@@ -320,6 +320,36 @@ export type SetRouteRuleParams = {
  * net's plane region (plane-region detection lands in a future PR
  * once polygon-plane reads are exposed by the relay/extension).
  */
+/**
+ * Sprint 12 PR 12.6: a single xSignal length-tuning entry. Altium
+ * exposes these via the Messages panel after Compile/DRC runs;
+ * EasyEDA Pro doesn't expose any equivalent (deliberate platform
+ * exclusivity per the cross-platform-validation amendment #50).
+ *
+ * `matchedPercent` is `currentLengthMm / targetLengthMm × 100`.
+ * NaN when target is 0 (un-set or unparseable). AI clients should
+ * treat NaN as "couldn't compute" — distinct from 0% which means
+ * "the signal exists but has 0mm routed".
+ */
+export interface XSignalStatus {
+  name: string;
+  targetLengthMm: number;
+  currentLengthMm: number;
+  matchedPercent: number;
+  /** Source message line; preserved for AI debugging. */
+  raw: unknown;
+}
+
+export interface XSignalsStatusResult {
+  signals: XSignalStatus[];
+  /**
+   * Source messages used for parsing, surfaced verbatim. Useful
+   * when the parser dropped entries or the AI wants to inspect
+   * the raw AD output for non-tuning xSignal messages.
+   */
+  rawMessages: PlatformMessage[];
+}
+
 export interface ViaStitchResult {
   net: string;
   placed: number;
@@ -814,6 +844,22 @@ export interface Platform {
     /** Skip vias within this far of board edge (mm). Default 1.5. */
     edgeClearanceMm?: number;
   }): Promise<PlatformResponse<ViaStitchResult>>;
+
+  /**
+   * Sprint 12 PR 12.6: read current xSignal length-tuning state.
+   * **First genuine platform-exclusivity case** — EasyEDA Pro
+   * doesn't expose xSignals/length-tuning at all and deliberately
+   * returns `supported: false` with a constant reason. AI clients
+   * use the standard supported:false contract to degrade gracefully.
+   *
+   * Altium: best-effort parse of the Messages panel (which is
+   * populated by Compile / DRC runs). The exact text format varies
+   * across AD builds — unparseable entries are dropped from
+   * `signals` but surfaced via `rawMessages` for AI debugging.
+   *
+   * Pair with `run_drc` to refresh the panel before reading.
+   */
+  getXSignalsStatus(): Promise<PlatformResponse<XSignalsStatusResult>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

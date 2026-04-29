@@ -195,6 +195,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     unrouteNet: async () => ({ supported: false, reason: "stub" }),
     routeDiffPair: async () => ({ supported: false, reason: "stub" }),
     viaStitchPlane: async () => ({ supported: false, reason: "stub" }),
+    getXSignalsStatus: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -305,6 +306,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     unrouteNet: async () => ({ supported: false, reason: "stub" }),
     routeDiffPair: async () => ({ supported: false, reason: "stub" }),
     viaStitchPlane: async () => ({ supported: false, reason: "stub" }),
+    getXSignalsStatus: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -993,6 +995,102 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── xsignals_status tool — Sprint 12 PR 12.6 ────────────────────────
+
+type GetXSignalsStatusHandler = () => Promise<{
+  content: Array<{ type: string }>;
+  isError?: boolean;
+}>;
+
+function captureGetXSignalsStatusHandler(
+  ctx: ToolContext
+): GetXSignalsStatusHandler {
+  let handler: GetXSignalsStatusHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: GetXSignalsStatusHandler) => {
+      if (name === "xsignals_status") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `xsignals_status`");
+  return handler;
+}
+
+test("xsignals_status tool: per-signal length summary + matched percent (NaN renders as 'n/a')", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    getXSignalsStatus: async () => ({
+      supported: true as const,
+      data: {
+        signals: [
+          {
+            name: "USB_DP",
+            targetLengthMm: 100,
+            currentLengthMm: 95.2,
+            matchedPercent: 95.2,
+            raw: null,
+          },
+          {
+            name: "STUB",
+            targetLengthMm: 0,
+            currentLengthMm: 0,
+            matchedPercent: NaN,
+            raw: null,
+          },
+        ],
+        rawMessages: [],
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureGetXSignalsStatusHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /xSignals status on altium: 2 signal/);
+  assert.match(text, /USB_DP: 95\.20mm of 100\.00mm \(95\.2%\)/);
+  // NaN renders as "n/a" so AI clients can scan for it.
+  assert.match(text, /STUB: 0\.00mm of 0\.00mm \(n\/a\)/);
+});
+
+test("xsignals_status tool: empty result → 'No xSignals' caption with run_drc hint", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    getXSignalsStatus: async () => ({
+      supported: true as const,
+      data: { signals: [], rawMessages: [] },
+    }),
+  } as unknown as Platform;
+  const handler = captureGetXSignalsStatusHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No xSignals on the active altium project/);
+  // Hint at run_drc since the panel needs to be populated.
+  assert.match(text, /run_drc/);
+});
+
+test("xsignals_status tool: EasyEDA deliberate-exclusivity → MCP error result with the platform-difference reason", async () => {
+  // Critical architectural contract pin: EasyEDA's deliberate
+  // supported:false must surface to the AI client as isError:true
+  // with the "deliberate cross-platform difference" wording. The
+  // tool's docstring tells AI clients to expect this; the test
+  // pins it.
+  const stubPlatform = {
+    name: "easyeda" as const,
+    getXSignalsStatus: async () => ({
+      supported: false as const,
+      reason:
+        "EasyEDA does not expose xSignals/length-tuning state. This is a deliberate cross-platform difference, not a missing API — EasyEDA Pro's design surface doesn't include the xSignals concept (introduced Sprint 12 PR 12.6).",
+    }),
+  } as unknown as Platform;
+  const handler = captureGetXSignalsStatusHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not read xSignals status/);
+  assert.match(text, /deliberate cross-platform difference/i);
 });
 
 // ─── via_stitch_plane tool — Sprint 12 PR 12.5 ───────────────────────

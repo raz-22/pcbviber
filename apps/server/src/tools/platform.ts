@@ -248,6 +248,53 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "xsignals_status",
+    "Read current xSignal length-tuning state. Each entry has signal name, target length, current routed length, and matched percent. Cross-platform contract: Altium parses status from the Messages panel (best-effort — pair with `run_drc` first to refresh); EasyEDA returns supported:false by design (xSignals is an AD-only concept). The supported:false case is NOT a tool failure — it's the documented platform exclusivity.",
+    {},
+    async () => {
+      const result = await ctx.platform.getXSignalsStatus();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not read xSignals status: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const { signals, rawMessages } = result.data;
+      if (signals.length === 0) {
+        const note =
+          rawMessages.length > 0
+            ? ` (${rawMessages.length} xSignal-related message(s) in panel but none parsed — call again after \`run_drc\` to refresh, or inspect raw messages.)`
+            : ` (Messages panel has no xSignal entries — call \`run_drc\` to populate before reading.)`;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No xSignals on the active ${ctx.platform.name} project.${note}`,
+            },
+          ],
+        };
+      }
+      const lines = signals.map((s) => {
+        const pct = isNaN(s.matchedPercent)
+          ? "n/a"
+          : `${s.matchedPercent.toFixed(1)}%`;
+        return `- ${s.name}: ${s.currentLengthMm.toFixed(2)}mm of ${s.targetLengthMm.toFixed(2)}mm (${pct})`;
+      });
+      const header = `xSignals status on ${ctx.platform.name}: ${signals.length} signal(s).`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n"),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "via_stitch_plane",
     "Generate a grid of vias tied to `net` (typically GND) across the board area. Used after a plane is poured to improve return-path stitching. Stitches over the whole board with collision skipping (components, keepouts, existing vias, edge clearance) — not just the net's plane region (plane-region detection is a future PR). Default density 5mm, edge clearance 1.5mm. Pair with `screenshot` for visual confirmation.",
     {

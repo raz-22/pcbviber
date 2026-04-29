@@ -63,6 +63,7 @@ import {
   type SetRouteRuleParams,
   type UnrouteResult,
   type ViaStitchResult,
+  type XSignalsStatusResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -126,6 +127,17 @@ const STUB_REASON =
  */
 const NO_BRIDGE_REASON =
   "EasyEDA extension is not connected to this workspace. Open EasyEDA Pro with the PCBviber extension installed; the bottom-dock panel should read 'Connected' before tools are usable.";
+
+/**
+ * Sprint 12 PR 12.6: deliberate cross-platform-exclusivity reason.
+ * EasyEDA Pro doesn't expose xSignals/length-tuning state at all
+ * — this isn't a missing accessor, it's an architectural difference.
+ * Naming the case in code (rather than inlining the message) makes
+ * the contract searchable + protects against accidental
+ * stub-replacement in a future PR.
+ */
+const GENUINE_PLATFORM_EXCLUSIVITY_XSIGNALS =
+  "EasyEDA does not expose xSignals/length-tuning state. This is a deliberate cross-platform difference, not a missing API — EasyEDA Pro's design surface doesn't include the xSignals concept (introduced Sprint 12 PR 12.6).";
 
 export class EasyedaPlatform implements Platform {
   readonly name = "easyeda" as const;
@@ -582,6 +594,13 @@ export class EasyedaPlatform implements Platform {
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async getXSignalsStatus(): Promise<PlatformResponse<XSignalsStatusResult>> {
+    // Deliberate platform exclusivity — no length-tuning state to
+    // read because EasyEDA Pro doesn't have the concept. AI clients
+    // degrade gracefully via the standard supported:false contract.
+    return notSupported(GENUINE_PLATFORM_EXCLUSIVITY_XSIGNALS);
   }
 
   async viaStitchPlane(params: {

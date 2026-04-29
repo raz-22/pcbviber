@@ -1743,6 +1743,161 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── xSignals status — Sprint 12 PR 12.6 ─────────────────────────────
+
+import { parseXSignalMessages } from "./altium.js";
+
+test("parseXSignalMessages: 'NAME: N.NNmm of N.NNmm' shape parses correctly", () => {
+  const result = parseXSignalMessages([
+    { text: "xSignal USB_DP: 95.20mm of 100.00mm matched" },
+    { text: "xSignal CLK: 47.5mm of 50mm" },
+  ]);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].name, "USB_DP");
+  assert.equal(result[0].currentLengthMm, 95.2);
+  assert.equal(result[0].targetLengthMm, 100);
+  assert.ok(Math.abs(result[0].matchedPercent - 95.2) < 1e-6);
+  assert.equal(result[1].name, "CLK");
+  assert.equal(result[1].matchedPercent, 95);
+});
+
+test("parseXSignalMessages: 'target N.NNmm, current N.NNmm' shape parses (order-tolerant)", () => {
+  // Pin the alternate AD message format. Order tolerance: target
+  // can appear before OR after current in the text.
+  const result = parseXSignalMessages([
+    { text: "xSignal HDMI_TMDS: target 80mm, current 78.4mm" },
+  ]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, "HDMI_TMDS");
+  assert.equal(result[0].targetLengthMm, 80);
+  assert.equal(result[0].currentLengthMm, 78.4);
+});
+
+test("parseXSignalMessages: zero target → matchedPercent NaN, signal still emitted", () => {
+  // Defensive: when target is 0 (un-set), matchedPercent must be
+  // NaN — distinct from 0% which means "exists but 0mm routed".
+  const result = parseXSignalMessages([
+    { text: "xSignal STUB: 0mm of 0mm" },
+  ]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].targetLengthMm, 0);
+  assert.equal(result[0].currentLengthMm, 0);
+  assert.ok(isNaN(result[0].matchedPercent),
+    "matchedPercent must be NaN when target is 0 — divide-by-zero guard");
+});
+
+test("parseXSignalMessages: malformed/non-xSignal entries dropped, valid ones preserved", () => {
+  // Mixed input: one good, two malformed (no length info / wrong
+  // unit), one not-xSignal. Only the good one survives.
+  const result = parseXSignalMessages([
+    { text: "xSignal GOOD: 50mm of 60mm" },
+    { text: "xSignal BAD_NO_LEN: status check pending" },
+    { text: "xSignal BAD_UNIT: 1.5in of 2in" }, // mil/inch not parsed
+    { text: "Compile: 0 errors, 0 warnings" }, // not xSignal
+  ]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, "GOOD");
+});
+
+test("parseXSignalMessages: empty input → empty output", () => {
+  const result = parseXSignalMessages([]);
+  assert.deepEqual(result, []);
+});
+
+test("AltiumPlatform.getXSignalsStatus: chains getMessages, filters xSignal source, parses", async () => {
+  // Stub the relay to provide get_messages output containing two
+  // xSignal entries plus unrelated noise. Server filters by source
+  // OR text keyword, parses the survivors, returns the structured
+  // result.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string) => {
+      assert.equal(method, "get_messages");
+      return {
+        messages: [
+          {
+            severity: "info",
+            source: "xSignals",
+            message: "xSignal USB_DP: 95.2mm of 100mm",
+          },
+          {
+            severity: "warning",
+            source: "xSignals",
+            message: "xSignal CLK: 47.5mm of 50mm",
+          },
+          {
+            severity: "info",
+            source: "Compiler",
+            message: "Compile: 0 errors",
+          },
+        ],
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getXSignalsStatus();
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.signals.length, 2);
+    assert.equal(result.data.signals[0].name, "USB_DP");
+    assert.equal(result.data.signals[1].name, "CLK");
+    // rawMessages includes the source xSignal entries (not the
+    // unrelated Compile entry — filter applied first)
+    assert.equal(result.data.rawMessages.length, 2);
+  }
+});
+
+test("AltiumPlatform.getXSignalsStatus: getMessages supported:false propagates", async () => {
+  // Pin upstream-error passthrough — the AI client sees
+  // "relay is not connected" rather than a misleading
+  // "no xSignals" caption.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getXSignalsStatus();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.getXSignalsStatus: deliberate platform exclusivity — NEVER supported, with the documented reason", async () => {
+  // Architectural contract pin: EasyEDA's getXSignalsStatus must
+  // NEVER return supported:true. The reason must explicitly call
+  // out that this is a deliberate cross-platform difference, not
+  // a missing accessor — protects against accidental
+  // stub-replacement in a future PR.
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.getXSignalsStatus();
+  assert.equal(result.supported, false,
+    "EasyEDA getXSignalsStatus must always be supported:false (deliberate exclusivity)");
+  if (result.supported === false) {
+    assert.match(result.reason, /deliberate cross-platform difference/i);
+    assert.match(result.reason, /xSignals/);
+  }
+  // Pin: even WITH a relay+workspace, the result must still be
+  // supported:false — this isn't a no-bridge fallback, it's
+  // genuine exclusivity.
+  const relay = new EdaRelay();
+  const platformWithBridge = new EasyedaPlatform({
+    relay,
+    workspaceId: "ws-a",
+  });
+  const result2 = await platformWithBridge.getXSignalsStatus();
+  assert.equal(result2.supported, false,
+    "deliberate exclusivity must survive a connected bridge — extension can't be asked");
+  if (result2.supported === false) {
+    assert.match(result2.reason, /deliberate cross-platform difference/i);
+  }
+  relay.__resetForTests();
+});
+
 // ─── viaStitchPlane wiring — Sprint 12 PR 12.5 ───────────────────────
 
 test("EasyedaPlatform.viaStitchPlane: chains getComponents → getKeepouts → getNetRouting → create_vias", async () => {
