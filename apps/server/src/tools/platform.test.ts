@@ -193,6 +193,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     getDesignRules: async () => ({ supported: false, reason: "stub" }),
     setRouteRule: async () => ({ supported: false, reason: "stub" }),
     unrouteNet: async () => ({ supported: false, reason: "stub" }),
+    routeDiffPair: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -301,6 +302,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     getDesignRules: async () => ({ supported: false, reason: "stub" }),
     setRouteRule: async () => ({ supported: false, reason: "stub" }),
     unrouteNet: async () => ({ supported: false, reason: "stub" }),
+    routeDiffPair: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -989,6 +991,87 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── route_diff_pair tool — Sprint 12 PR 12.4 ────────────────────────
+
+type RouteDiffPairHandler = (args: {
+  positiveNet: string;
+  negativeNet: string;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureRouteDiffPairHandler(ctx: ToolContext): RouteDiffPairHandler {
+  let handler: RouteDiffPairHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: RouteDiffPairHandler) => {
+      if (name === "route_diff_pair") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `route_diff_pair`");
+  return handler;
+}
+
+test("route_diff_pair tool: routed:true → confirmation rendered verbatim, NOT isError", async () => {
+  const stubPlatform = {
+    name: "easyeda" as const,
+    routeDiffPair: async () => ({
+      supported: true as const,
+      data: {
+        positiveNet: "USB_DP",
+        negativeNet: "USB_DN",
+        routed: true,
+        totalLengthMm: 24.5,
+        message: "Routed diff pair (USB_DP, USB_DN): 24.50mm total trace on EasyEDA.",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureRouteDiffPairHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ positiveNet: "USB_DP", negativeNet: "USB_DN" });
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.equal(text, "Routed diff pair (USB_DP, USB_DN): 24.50mm total trace on EasyEDA.");
+});
+
+test("route_diff_pair tool: routed:false is NOT isError — tool ran, router didn't", async () => {
+  // Critical contract pin at the tool layer: the AI client
+  // distinguishes "tool unavailable" (isError:true, retry-or-abort)
+  // from "router couldn't find a path" (no isError, retry with
+  // adjusted params).
+  const stubPlatform = {
+    name: "altium" as const,
+    routeDiffPair: async () => ({
+      supported: true as const,
+      data: {
+        positiveNet: "USB_DP",
+        negativeNet: "USB_DN",
+        routed: false,
+        totalLengthMm: 0,
+        message: "Diff pair router could not lay traces for (USB_DP, USB_DN); too tight a clearance rule.",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureRouteDiffPairHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ positiveNet: "USB_DP", negativeNet: "USB_DN" });
+  assert.equal(res.isError, undefined, "routed:false must NOT set isError — tool ran successfully");
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /could not lay traces/);
+});
+
+test("route_diff_pair tool: supported:false (e.g. pair not declared) → isError + actionable reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    routeDiffPair: async () => ({
+      supported: false as const,
+      reason: "No declared differential pair (FOO, BAR) on this PCB. Declare it in PCB > Design > Differential Pair Editor first.",
+    }),
+  } as unknown as Platform;
+  const handler = captureRouteDiffPairHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ positiveNet: "FOO", negativeNet: "BAR" });
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not route diff pair/);
+  assert.match(text, /Differential Pair Editor/);
 });
 
 // ─── unroute_net tool — Sprint 12 PR 12.3 ────────────────────────────

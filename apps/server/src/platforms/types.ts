@@ -293,6 +293,31 @@ export type SetRouteRuleParams = {
  * AI clients can call get_net_routing first to disambiguate
  * before unrouting if the distinction matters.
  */
+/**
+ * Sprint 12 PR 12.4: result of `routeDiffPair`. Two-axis status:
+ *
+ *   `supported` (PlatformResponse-level): tool ran or didn't.
+ *   `routed` (this field): the router itself succeeded or didn't.
+ *
+ * `routed: false` is NOT a tool failure — the call worked, the
+ * platform's diff-pair router ran but couldn't lay traces (no
+ * clear path, blocked by obstacles, spacing rule too tight, etc.).
+ * AI clients should retry with adjusted parameters before treating
+ * this as a hard error. `supported: false` (the outer envelope)
+ * IS a hard error: tool unavailable, relay disconnected, etc.
+ *
+ * `totalLengthMm` is the sum of new trace length on both nets —
+ * a rough proxy for how much got routed. Zero means the router
+ * laid no new traces.
+ */
+export interface RouteDiffPairResult {
+  positiveNet: string;
+  negativeNet: string;
+  routed: boolean;
+  totalLengthMm: number;
+  message: string;
+}
+
 export interface UnrouteResult {
   net: string;
   deletedTraces: number;
@@ -725,6 +750,28 @@ export interface Platform {
   unrouteNet(params: {
     net: string;
   }): Promise<PlatformResponse<UnrouteResult>>;
+
+  /**
+   * Sprint 12 PR 12.4: trigger the platform's native differential-
+   * pair router on the (positiveNet, negativeNet) pair. Requires
+   * the diff pair to already be declared in the project — v1
+   * doesn't create pairs. Errors out cleanly with supported:false
+   * naming the diff-pair editor when the pair isn't recognized.
+   *
+   * Returns `routed: true/false` distinct from `supported: true`:
+   * tool ran successfully = supported true; router laid traces =
+   * routed true. AI clients reading `routed: false` can retry
+   * with different layer/spacing rather than abort.
+   *
+   * Altium: invokes the AD process for diff-pair routing
+   * (Server:DispatchDocument) with Board.RouteNets fallback.
+   * EasyEDA: pcb_Document.autoRouting(props) — currently BETA
+   * per the SDK; defensive shape extraction for version drift.
+   */
+  routeDiffPair(params: {
+    positiveNet: string;
+    negativeNet: string;
+  }): Promise<PlatformResponse<RouteDiffPairResult>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

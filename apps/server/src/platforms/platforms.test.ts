@@ -1743,6 +1743,162 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── routeDiffPair — Sprint 12 PR 12.4 ───────────────────────────────
+
+import { buildRouteDiffPairResult } from "./altium.js";
+
+test("buildRouteDiffPairResult: routed:true with explicit message → preserved verbatim", () => {
+  const result = buildRouteDiffPairResult("USB_DP", "USB_DN", {
+    routed: true,
+    totalLengthMm: 24.5,
+    message: "Routed diff pair (USB_DP, USB_DN): 24.50mm total trace on Altium.",
+  });
+  assert.equal(result.routed, true);
+  assert.equal(result.totalLengthMm, 24.5);
+  assert.match(result.message, /Routed diff pair/);
+});
+
+test("buildRouteDiffPairResult: missing/non-boolean routed defaults false (defensive)", () => {
+  // Pin the safe-default contract: when we can't tell whether
+  // routing succeeded, treat as failed so AI clients don't
+  // claim success and skip verification.
+  const r1 = buildRouteDiffPairResult("A", "B", { routed: "yes" });
+  assert.equal(r1.routed, false);
+  const r2 = buildRouteDiffPairResult("A", "B", {}); // missing
+  assert.equal(r2.routed, false);
+  const r3 = buildRouteDiffPairResult("A", "B", null);
+  assert.equal(r3.routed, false);
+});
+
+test("buildRouteDiffPairResult: synthesizes message when relay didn't supply one", () => {
+  // Older relay may return counts/flag without a message — pin
+  // the synthesized fallback so AI clients still see a coherent
+  // line. Routed-true gets a success-shaped message; routed-false
+  // gets a try-again-with-different-params hint.
+  const success = buildRouteDiffPairResult("USB_DP", "USB_DN", {
+    routed: true,
+    totalLengthMm: 12.3,
+  });
+  assert.match(success.message, /Routed diff pair \(USB_DP, USB_DN\): 12\.30mm/);
+  const failed = buildRouteDiffPairResult("USB_DP", "USB_DN", {
+    routed: false,
+    totalLengthMm: 0,
+  });
+  assert.match(failed.message, /produced no traces/i);
+  assert.match(failed.message, /retry/i);
+});
+
+test("AltiumPlatform.routeDiffPair: forwards both nets to relay; returns confirmation", async () => {
+  const captured: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      captured.push({ method, params });
+      return {
+        positiveNet: "USB_DP",
+        negativeNet: "USB_DN",
+        routed: true,
+        totalLengthMm: 18.5,
+        message: "Routed diff pair (USB_DP, USB_DN): 18.50mm total trace on Altium.",
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.routeDiffPair({
+    positiveNet: "USB_DP",
+    negativeNet: "USB_DN",
+  });
+  assert.equal(captured[0].method, "route_diff_pair");
+  assert.deepEqual(captured[0].params, {
+    positiveNet: "USB_DP",
+    negativeNet: "USB_DN",
+  });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.routed, true);
+    assert.equal(result.data.totalLengthMm, 18.5);
+  }
+});
+
+test("AltiumPlatform.routeDiffPair: relay throws 'pair not declared' → supported:false carries reason", async () => {
+  // Pin the actionable-error contract: AD relay throws with a
+  // message naming the diff-pair editor, server passes through.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => {
+      throw new Error(
+        "No declared differential pair (FOO, BAR) on this PCB. Declare it in PCB > Design > Differential Pair Editor first."
+      );
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.routeDiffPair({
+    positiveNet: "FOO",
+    negativeNet: "BAR",
+  });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /Differential Pair Editor/);
+  }
+});
+
+test("EasyedaPlatform.routeDiffPair: routed:false from BETA API surfaces correctly (NOT supported:false)", async () => {
+  // Critical contract pin: when the BETA pcb_Document.autoRouting
+  // says it ran but couldn't lay traces, the tool returns
+  // supported:true with routed:false. AI clients distinguish
+  // "tool unavailable" from "routing failed" — only the latter
+  // is retryable.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.routeDiffPair({
+    positiveNet: "DP",
+    negativeNet: "DN",
+  });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected route_diff_pair command");
+  assert.equal(cmd.method, "route_diff_pair");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      positiveNet: "DP",
+      negativeNet: "DN",
+      routed: false,
+      totalLengthMm: 0,
+      message: "Diff pair router could not lay traces for (DP, DN); too tight a clearance rule for current layer.",
+    },
+  });
+  const result = await pending;
+  // Tool ran successfully: supported:true
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    // Router failed: routed:false
+    assert.equal(result.data.routed, false);
+    assert.match(result.data.message, /could not lay traces/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.routeDiffPair: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.routeDiffPair({
+    positiveNet: "DP",
+    negativeNet: "DN",
+  });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── unrouteNet — Sprint 12 PR 12.3 ──────────────────────────────────
 
 import { buildUnrouteResult } from "./altium.js";

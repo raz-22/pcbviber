@@ -321,6 +321,108 @@
     },
 
     /**
+     * Sprint 12 PR 12.4: trigger EasyEDA Pro's diff-pair router on
+     * the (positiveNet, negativeNet) pair. Uses pcb_Document.autoRouting
+     * which is BETA — defensive shape extraction since the props
+     * accepted and result envelope returned may shift.
+     *
+     * Result envelope: {routed, totalLengthMm, message}. The handler
+     * tries to extract whether routing succeeded from common result
+     * shapes; defaults to routed:false (safer than claiming success
+     * when we can't tell).
+     *
+     * Length measurement: walks pcb_PrimitiveLine.getAll for both
+     * nets after the route call to sum total trace length on the
+     * pair. Doesn't distinguish newly-routed from pre-existing.
+     */
+    route_diff_pair: async function (params) {
+      const positiveNet = params && typeof params.positiveNet === "string" ? params.positiveNet : "";
+      const negativeNet = params && typeof params.negativeNet === "string" ? params.negativeNet : "";
+      if (!positiveNet) throw new Error("positiveNet is required");
+      if (!negativeNet) throw new Error("negativeNet is required");
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_Document || typeof eda.pcb_Document.autoRouting !== "function") {
+        throw new Error("EasyEDA Pro pcb_Document.autoRouting is not exposed in this extension version (BETA API).");
+      }
+
+      // Invoke the router. Props shape isn't fully spelled out in
+      // the SDK — try the most likely common shape.
+      let routerResult = null;
+      let routerNote = "";
+      try {
+        // eslint-disable-next-line no-undef
+        routerResult = await eda.pcb_Document.autoRouting({
+          nets: [positiveNet, negativeNet],
+          mode: "diffPair"
+        });
+      } catch (e) {
+        routerNote = e && e.message ? e.message : String(e);
+      }
+
+      // Determine routed status from the result envelope. Pro's
+      // autoRouting may return:
+      //   - boolean true/false
+      //   - {success: true} or {ok: true}
+      //   - {routed: true}
+      //   - undefined (success-without-return on some versions)
+      let routed = false;
+      if (routerResult === true) {
+        routed = true;
+      } else if (routerResult && typeof routerResult === "object") {
+        if (routerResult.routed === true || routerResult.success === true || routerResult.ok === true) {
+          routed = true;
+        }
+      } else if (routerResult === undefined && !routerNote) {
+        // Function returned undefined without throwing — most likely
+        // success on a Pro version that doesn't return a status.
+        // Trust the no-error signal.
+        routed = true;
+      }
+
+      // Best-effort length measurement.
+      let totalLengthMm = 0;
+      try {
+        // eslint-disable-next-line no-undef
+        const posLines = await eda.pcb_PrimitiveLine.getAll(positiveNet);
+        // eslint-disable-next-line no-undef
+        const negLines = await eda.pcb_PrimitiveLine.getAll(negativeNet);
+        const sumLengths = function (lines) {
+          if (!Array.isArray(lines)) return 0;
+          let s = 0;
+          for (let i = 0; i < lines.length; i++) {
+            const ln = lines[i] || {};
+            const dx = Number(ln.x2 || 0) - Number(ln.x1 || 0);
+            const dy = Number(ln.y2 || 0) - Number(ln.y1 || 0);
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (isFinite(len)) s += len;
+          }
+          return s;
+        };
+        totalLengthMm = sumLengths(posLines) + sumLengths(negLines);
+      } catch (_) { /* length measurement is best-effort */ }
+
+      let message;
+      if (routed && totalLengthMm > 0) {
+        message = "Routed diff pair (" + positiveNet + ", " + negativeNet +
+                  "): " + totalLengthMm.toFixed(2) + "mm total trace on EasyEDA.";
+      } else if (routed) {
+        message = "Diff pair router for (" + positiveNet + ", " + negativeNet +
+                  ") completed; no new traces detected (already routed?). on EasyEDA.";
+      } else {
+        message = "Diff pair router could not lay traces for (" + positiveNet +
+                  ", " + negativeNet + ")" + (routerNote ? "; " + routerNote : "") + ".";
+      }
+
+      return {
+        positiveNet: positiveNet,
+        negativeNet: negativeNet,
+        routed: routed,
+        totalLengthMm: totalLengthMm,
+        message: message
+      };
+    },
+
+    /**
      * Sprint 12 PR 12.3: delete all traces + vias on a given net.
      *
      * Two API calls per primitive type — getAll(net) for

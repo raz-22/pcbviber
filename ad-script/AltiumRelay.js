@@ -151,6 +151,7 @@ function Dispatch(cmd) {
         case "get_design_rules":   return CmdGetDesignRules(cmd.params);
         case "set_route_rule":     return CmdSetRouteRule(cmd.params);
         case "unroute_net":        return CmdUnrouteNet(cmd.params);
+        case "route_diff_pair":    return CmdRouteDiffPair(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -1296,6 +1297,177 @@ function CmdUnrouteNet(params) {
         deletedVias: deletedVias,
         skippedLocked: skippedLocked,
         message: msg
+    };
+}
+
+// Sprint 12 PR 12.4: trigger AD's diff-pair router. The user-facing
+// "Interactive Differential Pair Routing" command in AD is GUI-only;
+// the scripting path uses Server.DispatchDocument with the
+// "PCB:RoutingDifferentialPair" command target. Some AD builds also
+// expose Board.RouteNets with a diff-pair option — try that first
+// since it's more deterministic, then fall back to the dispatch.
+//
+// Diff pair MUST be declared in the project before this can route
+// it. Detection: check Board.DifferentialPairs for a pair containing
+// the two named nets. Missing → throw with a clear reason naming
+// the diff-pair editor.
+//
+// Result envelope: {routed, totalLengthMm, message}. routed=false
+// is NOT a tool failure — the call ran, the router just couldn't
+// lay traces. Length is best-effort: walk traces on both nets after
+// the route call to estimate how much got laid (delta vs. before
+// would be more accurate but requires pre-snapshot).
+function CmdRouteDiffPair(params) {
+    if (!params || typeof params.positiveNet !== "string" || params.positiveNet.length === 0) {
+        throw MakeError("positiveNet is required");
+    }
+    if (typeof params.negativeNet !== "string" || params.negativeNet.length === 0) {
+        throw MakeError("negativeNet is required");
+    }
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    // Verify the diff pair is declared. The DifferentialPairs
+    // collection is on most modern AD builds; older builds may
+    // expose it as DifferentialPair_Iterator or similar. Best
+    // effort — if we can't enumerate, we proceed and let the
+    // router itself error out.
+    var pairExists = false;
+    var pairNames = [];
+    try {
+        var pairs = board.DifferentialPairs || null;
+        if (pairs) {
+            var pCount = 0;
+            try { pCount = Number(pairs.Count) || 0; } catch (_) { }
+            for (var i = 0; i < pCount; i++) {
+                var p = null;
+                try { p = pairs.Item(i); } catch (_) { }
+                if (!p) continue;
+                var pos = "";
+                var neg = "";
+                try { pos = String((p.PositiveNet && p.PositiveNet.Name) || ""); } catch (_) { }
+                try { neg = String((p.NegativeNet && p.NegativeNet.Name) || ""); } catch (_) { }
+                pairNames.push(pos + "/" + neg);
+                if (
+                    (pos === params.positiveNet && neg === params.negativeNet) ||
+                    (pos === params.negativeNet && neg === params.positiveNet)
+                ) {
+                    pairExists = true;
+                    break;
+                }
+            }
+        }
+    } catch (_) { }
+    if (!pairExists && pairNames.length > 0) {
+        // We could enumerate pairs and the requested one wasn't there.
+        // Hard-fail with a useful reason; AI client knows what to fix.
+        throw MakeError(
+            "No declared differential pair (" + params.positiveNet + ", " +
+            params.negativeNet + ") on this PCB. Declare it in PCB > Design > " +
+            "Differential Pair Editor first. Existing pairs: " + pairNames.join(", ")
+        );
+    }
+    // If we couldn't enumerate at all (older AD build), proceed
+    // and let the router error out if the pair is missing.
+
+    // Try Board.RouteNets first if it exposes diff-pair routing.
+    // Then fall back to Server.DispatchDocument with the diff-pair
+    // command target. Either path yields routed:true on success.
+    var routed = false;
+    var routerNote = "";
+    try {
+        if (typeof board.RouteNets === "function") {
+            try {
+                board.RouteNets({
+                    nets: [params.positiveNet, params.negativeNet],
+                    differentialPair: true
+                });
+                routed = true;
+            } catch (e) {
+                routerNote = "RouteNets threw: " + (e.message || e);
+            }
+        }
+        if (!routed) {
+            try {
+                if (server && typeof server.DispatchDocument === "function") {
+                    server.DispatchDocument(
+                        board,
+                        "PCB:RoutingDifferentialPair",
+                        "PositiveNet=" + params.positiveNet + "|NegativeNet=" + params.negativeNet
+                    );
+                    routed = true;
+                }
+            } catch (e) {
+                routerNote = (routerNote ? routerNote + "; " : "") +
+                             "DispatchDocument threw: " + (e.message || e);
+            }
+        }
+    } catch (e) {
+        routerNote = (routerNote ? routerNote + "; " : "") +
+                     "router invocation threw: " + (e.message || e);
+    }
+
+    // Best-effort length measurement: walk traces on both nets and
+    // sum lengths. Doesn't distinguish "newly routed" from "was
+    // already there", but for an unrouted pair before the call,
+    // any non-zero result confirms the router did something.
+    var totalLengthMm = 0;
+    var MM_PER_COORD = 0.0000254;
+    try {
+        var iter = board.BoardIterator_Create();
+        iter.AddFilter_ObjectSet(SetOf([3])); // eTrackObject
+        iter.AddFilter_LayerSet(null);
+        iter.AddFilter_Method(null);
+        var t = iter.FirstPCBObject();
+        while (t) {
+            var tn = "";
+            try {
+                var tnet = t.Net;
+                if (tnet && tnet.Name) tn = String(tnet.Name);
+            } catch (_) { }
+            if (tn === params.positiveNet || tn === params.negativeNet) {
+                try {
+                    var dx = (Number(t.X2) - Number(t.X1)) * MM_PER_COORD;
+                    var dy = (Number(t.Y2) - Number(t.Y1)) * MM_PER_COORD;
+                    var len = Math.sqrt(dx * dx + dy * dy);
+                    if (isFinite(len)) totalLengthMm += len;
+                } catch (_) { }
+            }
+            t = iter.NextPCBObject();
+        }
+        board.BoardIterator_Destroy(iter);
+    } catch (_) { }
+
+    var message;
+    if (routed && totalLengthMm > 0) {
+        message = "Routed diff pair (" + params.positiveNet + ", " + params.negativeNet +
+                  "): " + totalLengthMm.toFixed(2) + "mm total trace on Altium.";
+    } else if (routed) {
+        // Router said it ran but no traces detected — could be
+        // already-routed-but-not-changed, or partial route.
+        message = "Diff pair router for (" + params.positiveNet + ", " + params.negativeNet +
+                  ") completed; no new traces detected (already routed?). on Altium.";
+    } else {
+        message = "Diff pair router could not lay traces for (" + params.positiveNet +
+                  ", " + params.negativeNet + ")" +
+                  (routerNote ? "; " + routerNote : "") + ".";
+    }
+
+    return {
+        positiveNet: params.positiveNet,
+        negativeNet: params.negativeNet,
+        routed: routed,
+        totalLengthMm: totalLengthMm,
+        message: message
     };
 }
 

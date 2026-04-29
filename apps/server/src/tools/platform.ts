@@ -248,6 +248,33 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "route_diff_pair",
+    "Trigger the platform's native differential-pair router on a (positiveNet, negativeNet) pair. The pair MUST be declared in the project before this is called — Altium: PCB > Design > Differential Pair Editor; EasyEDA: pair config in the Pro UI. The tool's `routed: true` indicates the router laid traces; `routed: false` means the router ran but couldn't find a path (try adjusting layer / spacing rules and retry). Pair with `screenshot` for visual confirmation. Cross-platform; both implementations are best-effort wrappers around platform-native routers.",
+    {
+      positiveNet: z.string().min(1).describe("Positive net name in the diff pair, e.g. 'USB_DP'."),
+      negativeNet: z.string().min(1).describe("Negative net name in the diff pair, e.g. 'USB_DN'."),
+    },
+    async (args) => {
+      const result = await ctx.platform.routeDiffPair({
+        positiveNet: args.positiveNet,
+        negativeNet: args.negativeNet,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not route diff pair: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      // routed:false is NOT isError — the tool ran successfully;
+      // the router just couldn't find a path. Surface message
+      // verbatim so the AI sees the platform's diagnostic.
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
     "unroute_net",
     "Delete all traces + vias on a given net. Locked traces/vias are skipped (user-intentional placement) and counted separately so the AI can decide whether to unlock + retry. Net-not-found and 'net has no traces' both succeed with zero counts. No undo — pair with `screenshot` for visual confirmation. Cross-platform.",
     {

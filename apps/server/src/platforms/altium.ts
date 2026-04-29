@@ -29,6 +29,7 @@ import {
   type DesignRule,
   type Keepout,
   type NetRouting,
+  type RouteDiffPairResult,
   type SetRouteRuleParams,
   type UnrouteResult,
   type Page,
@@ -411,6 +412,31 @@ export class AltiumPlatform implements Platform {
     }
   }
 
+  async routeDiffPair(params: {
+    positiveNet: string;
+    negativeNet: string;
+  }): Promise<PlatformResponse<RouteDiffPairResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      // AltiumRelay.js's route_diff_pair invokes the AD process
+      // for diff-pair routing. Server consumes the {routed,
+      // totalLengthMm, message} envelope. Diff pair MUST be
+      // declared first — relay errors out with the diff-pair
+      // editor reference if not.
+      const raw = await this.deps.relay.execute<unknown>(
+        "route_diff_pair",
+        params as unknown as Record<string, unknown>
+      );
+      return ok(
+        buildRouteDiffPairResult(params.positiveNet, params.negativeNet, raw)
+      );
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async getNetRouting(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<NetRouting>>> {
@@ -567,6 +593,46 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Sprint 12 PR 12.4: build a RouteDiffPairResult from a relay or
+ * extension payload. Defensive extraction:
+ *   - `routed`: defaults false; only true when the relay/extension
+ *     explicitly reports success. Treats missing/non-boolean as
+ *     "couldn't tell, assume not routed" so AI clients err on the
+ *     side of retry-or-investigate rather than declaring success.
+ *   - `totalLengthMm`: defaults 0 when missing/non-numeric.
+ *   - `message`: synthesized from the routed flag + length when
+ *     the relay/extension didn't supply one (older relay version
+ *     compatibility).
+ *
+ * Exported because both AltiumPlatform and EasyedaPlatform share
+ * the result-shape contract — single-source so the two impls
+ * can't drift on what AI clients see.
+ */
+export function buildRouteDiffPairResult(
+  positiveNet: string,
+  negativeNet: string,
+  raw: unknown
+): RouteDiffPairResult {
+  const obj = isRecord(raw) ? raw : {};
+  const routed = obj.routed === true;
+  const totalLengthMm =
+    typeof obj.totalLengthMm === "number" ? obj.totalLengthMm : 0;
+  const message =
+    typeof obj.message === "string"
+      ? obj.message
+      : routed
+        ? `Routed diff pair (${positiveNet}, ${negativeNet}): ${totalLengthMm.toFixed(2)}mm total trace.`
+        : `Diff pair router ran but produced no traces for (${positiveNet}, ${negativeNet}). Try adjusting layer / spacing rules and retry.`;
+  return {
+    positiveNet,
+    negativeNet,
+    routed,
+    totalLengthMm,
+    message,
+  };
 }
 
 /**

@@ -37,6 +37,7 @@
 import type { EdaRelay } from "../eda-relay/relay.js";
 import type { NexarService } from "../services/nexar.js";
 import {
+  buildRouteDiffPairResult,
   buildUnrouteResult,
   extractVertices,
   makeMutateResult,
@@ -58,6 +59,7 @@ import {
   type DesignRule,
   type Keepout,
   type NetRouting,
+  type RouteDiffPairResult,
   type SetRouteRuleParams,
   type UnrouteResult,
   type Page,
@@ -575,6 +577,32 @@ export class EasyedaPlatform implements Platform {
         params as unknown as Record<string, unknown>
       );
       return ok(buildUnrouteResult(params.net, raw));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async routeDiffPair(params: {
+    positiveNet: string;
+    negativeNet: string;
+  }): Promise<PlatformResponse<RouteDiffPairResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Extension calls pcb_Document.autoRouting(props) which is
+      // BETA per the SDK. Defensive shape extraction in
+      // buildRouteDiffPairResult — version drift in the result
+      // envelope just produces a {routed: false} fallback rather
+      // than crashing the call.
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "route_diff_pair",
+        params as unknown as Record<string, unknown>
+      );
+      return ok(
+        buildRouteDiffPairResult(params.positiveNet, params.negativeNet, raw)
+      );
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }
