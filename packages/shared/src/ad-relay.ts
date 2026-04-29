@@ -33,6 +33,8 @@ export const AdMethod = z.enum([
   "lock_component",
   "get_keepouts",
   "get_net_routing",
+  "get_design_rules",
+  "set_route_rule",
 ]);
 export type AdMethod = z.infer<typeof AdMethod>;
 

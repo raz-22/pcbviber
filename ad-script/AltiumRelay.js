@@ -148,6 +148,8 @@ function Dispatch(cmd) {
         case "lock_component":     return CmdLockComponent(cmd.params);
         case "get_keepouts":       return CmdGetKeepouts(cmd.params);
         case "get_net_routing":    return CmdGetNetRouting(cmd.params);
+        case "get_design_rules":   return CmdGetDesignRules(cmd.params);
+        case "set_route_rule":     return CmdSetRouteRule(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -1013,6 +1015,181 @@ function CmdGetNetRouting(params) {
         });
     }
     return { items: items, total: total };
+}
+
+// Sprint 12 PR 12.2: read all design rules on the active PCB.
+// Walks Board.DesignRules across rule categories. Per-rule values
+// extracted into the cross-platform shape — kind/scope/clearanceMm/
+// widthMm/viaMm — with the raw rule object preserved for tools
+// that need finer category info.
+//
+// Per-rule try/catch keeps a rule with one bad accessor from
+// dropping the whole result; the broken rule shows up with kind:
+// "other" and only the name+raw populated.
+function CmdGetDesignRules(_params) {
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    var items = [];
+    var rules = null;
+    try { rules = board.DesignRules; } catch (_) { }
+    if (!rules) {
+        return { items: items };
+    }
+
+    // Walk all rules. AD exposes RuleCount + RuleAt(i) on most builds;
+    // some expose Iterator-style accessors. Try both.
+    var count = 0;
+    try { count = Number(rules.Count) || Number(rules.RuleCount) || 0; } catch (_) { }
+    for (var i = 0; i < count; i++) {
+        var ruleObj = null;
+        try {
+            ruleObj = typeof rules.RuleAt === "function"
+                ? rules.RuleAt(i)
+                : (typeof rules.Item === "function" ? rules.Item(i) : null);
+        } catch (_) { }
+        if (!ruleObj) continue;
+        var name = "";
+        try { name = String(ruleObj.Name || ""); } catch (_) { }
+        if (!name) continue;
+        items.push(ExtractDesignRule(ruleObj, name));
+    }
+    return { items: items };
+}
+
+// Pull cross-platform fields off an IPCB_Rule. Each accessor
+// wrapped in its own try/catch — kind-specific fields stay
+// undefined when the rule type doesn't expose them.
+function ExtractDesignRule(rule, name) {
+    var MM_PER_COORD = 0.0000254;
+    var out = {
+        name: name,
+        kind: "other",
+        scope: "All",
+        raw: { name: name }
+    };
+    var rawKind = "";
+    try { rawKind = String(rule.RuleKind || rule.RuleType || rule.Category || ""); } catch (_) { }
+    if (rawKind) {
+        out.kind = rawKind;
+        out.raw.kind = rawKind;
+    }
+    // Scope expression: AD's RuleScope returns a string like
+    // "All" / "InNet('VCC')" / "InNetClass('Power')". Normalize the
+    // common shapes to the cross-platform DSL the server expects.
+    try {
+        var scopeStr = String(rule.RuleScope || rule.Scope || "All");
+        var mNet = /^InNet\(['"]?([^'")]+)['"]?\)$/i.exec(scopeStr);
+        var mCls = /^InNetClass\(['"]?([^'")]+)['"]?\)$/i.exec(scopeStr);
+        if (mNet) {
+            out.scope = { type: "net", target: mNet[1] };
+        } else if (mCls) {
+            out.scope = { type: "net-class", target: mCls[1] };
+        } else {
+            out.scope = { type: "all" };
+        }
+    } catch (_) { }
+    // Per-kind value extraction. Order: via first (so width/clearance
+    // checks don't catch via-named rules), then clearance, then width.
+    var kLower = String(out.kind).toLowerCase();
+    if (kLower.indexOf("via") >= 0 || kLower.indexOf("hole") >= 0) {
+        try {
+            var hole = Number(rule.HoleSize || rule.HoleDiameter || 0) * MM_PER_COORD;
+            var pad = Number(rule.PadDiameter || rule.OuterDiameter || 0) * MM_PER_COORD;
+            if (hole > 0 || pad > 0) {
+                out.viaMm = { holeDiameter: hole, padDiameter: pad };
+            }
+        } catch (_) { }
+    } else if (kLower.indexOf("clearance") >= 0 || kLower.indexOf("gap") >= 0) {
+        try {
+            var clr = Number(rule.MinimumClearance || rule.Gap || 0) * MM_PER_COORD;
+            if (clr > 0) out.clearanceMm = clr;
+        } catch (_) { }
+    } else if (kLower.indexOf("width") >= 0) {
+        try {
+            var min = Number(rule.MinWidth || 0) * MM_PER_COORD;
+            var pref = Number(rule.PreferredWidth || rule.Width || 0) * MM_PER_COORD;
+            var max = Number(rule.MaxWidth || 0) * MM_PER_COORD;
+            if (min > 0 || pref > 0 || max > 0) {
+                out.widthMm = { min: min, preferred: pref, max: max };
+            }
+        } catch (_) { }
+    }
+    return out;
+}
+
+// Sprint 12 PR 12.2: update or create a design rule. Discriminated
+// by `params.kind` — only the matching value field is read.
+//
+// AD's DesignRules collection allows in-place field updates via
+// the rule's setter accessors. We look up by name + set the
+// applicable fields. Creating a new rule (when the name doesn't
+// exist) requires DesignRules.AddRule(...) which has different
+// signatures across AD versions — for v1, we error out cleanly
+// on missing rules and let a future PR add creation support.
+function CmdSetRouteRule(params) {
+    if (!params || typeof params.name !== "string" || params.name.length === 0) {
+        throw MakeError("name is required");
+    }
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    var rules = null;
+    try { rules = board.DesignRules; } catch (_) { }
+    if (!rules) throw MakeError("Board.DesignRules is not accessible on this AD build.");
+
+    var rule = null;
+    try { rule = rules.RuleByName ? rules.RuleByName(params.name) : null; } catch (_) { }
+    if (!rule) {
+        throw MakeError(
+            "Design rule '" + params.name +
+            "' not found on the active PCB. Rule creation isn't yet supported; update an existing rule's values instead."
+        );
+    }
+
+    var COORD_PER_MM = 1 / 0.0000254;
+    if (params.kind === "clearance") {
+        try { rule.MinimumClearance = Number(params.clearanceMm) * COORD_PER_MM; }
+        catch (e) { throw MakeError("set MinimumClearance failed: " + (e.message || e)); }
+    } else if (params.kind === "width") {
+        var w = params.widthMm || {};
+        try {
+            if (typeof w.min === "number") rule.MinWidth = w.min * COORD_PER_MM;
+            if (typeof w.preferred === "number") rule.PreferredWidth = w.preferred * COORD_PER_MM;
+            if (typeof w.max === "number") rule.MaxWidth = w.max * COORD_PER_MM;
+        } catch (e) { throw MakeError("set Width fields failed: " + (e.message || e)); }
+    } else if (params.kind === "via") {
+        var v = params.viaMm || {};
+        try {
+            if (typeof v.holeDiameter === "number") rule.HoleSize = v.holeDiameter * COORD_PER_MM;
+            if (typeof v.padDiameter === "number") rule.PadDiameter = v.padDiameter * COORD_PER_MM;
+        } catch (e) { throw MakeError("set Via fields failed: " + (e.message || e)); }
+    } else {
+        throw MakeError("unknown rule kind: '" + params.kind + "' (expected clearance, width, or via)");
+    }
+
+    return {
+        name: params.name,
+        message: "Updated rule '" + params.name + "' (" + params.kind + ") on Altium."
+    };
 }
 
 function CmdGetStackup(_params) {

@@ -1743,6 +1743,272 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── Design rules — Sprint 12 PR 12.2 ────────────────────────────────
+
+import { normalizeRuleKind } from "./altium.js";
+
+test("normalizeRuleKind: AD enum flavors and EasyEDA variants collapse to the cross-platform union", () => {
+  // Common AD rule type names
+  assert.equal(normalizeRuleKind("Clearance"), "clearance");
+  assert.equal(normalizeRuleKind("MinClearance"), "clearance");
+  assert.equal(normalizeRuleKind("Width"), "width");
+  assert.equal(normalizeRuleKind("RoutingVias"), "via");
+  // Order pin: "via" must beat "width" since AD has rule types
+  // like "ViaWidth" that include both substrings.
+  assert.equal(normalizeRuleKind("ViaWidth"), "via");
+  // Hole-related rules collapse to "via"
+  assert.equal(normalizeRuleKind("HoleSize"), "via");
+  // Anything we can't classify → "other" (safer than guessing)
+  assert.equal(normalizeRuleKind("PolygonConnect"), "other");
+  assert.equal(normalizeRuleKind(undefined), "other");
+});
+
+test("AltiumPlatform.getDesignRules: relay round-trip maps all three kinds + scope DSL", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string) => {
+      assert.equal(method, "get_design_rules");
+      return {
+        items: [
+          {
+            name: "DefaultClearance",
+            kind: "Clearance",
+            scope: "All",
+            clearanceMm: 0.2,
+          },
+          {
+            name: "VccWidth",
+            kind: "Width",
+            scope: { type: "net", target: "VCC" },
+            widthMm: { min: 0.2, preferred: 0.3, max: 0.5 },
+          },
+          {
+            name: "PowerVias",
+            kind: "RoutingVias",
+            scope: { type: "net-class", target: "Power" },
+            viaMm: { holeDiameter: 0.3, padDiameter: 0.6 },
+          },
+        ],
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getDesignRules();
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.length, 3);
+    const clr = result.data[0];
+    assert.equal(clr.kind, "clearance");
+    assert.equal(clr.scope.type, "all");
+    assert.equal(clr.clearanceMm, 0.2);
+    const w = result.data[1];
+    assert.equal(w.kind, "width");
+    assert.equal(w.scope.type, "net");
+    assert.equal(w.scope.target, "VCC");
+    assert.deepEqual(w.widthMm, { min: 0.2, preferred: 0.3, max: 0.5 });
+    const v = result.data[2];
+    assert.equal(v.kind, "via");
+    assert.equal(v.scope.type, "net-class");
+    assert.equal(v.scope.target, "Power");
+    assert.deepEqual(v.viaMm, { holeDiameter: 0.3, padDiameter: 0.6 });
+  }
+});
+
+test("AltiumPlatform.getDesignRules: scope as 'InNet(VCC)' string parses to {type:net, target:VCC}", async () => {
+  // AD's RuleScope returns string DSL like InNet('VCC') /
+  // InNetClass('Power'). normalizeDesignRule must parse these.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({
+      items: [{ name: "R1", kind: "clearance", scope: "InNet('VCC')", clearanceMm: 0.15 }],
+    }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getDesignRules();
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data[0].scope.type, "net");
+    assert.equal(result.data[0].scope.target, "VCC");
+  }
+});
+
+test("AltiumPlatform.getDesignRules: unrecognized rule kind → 'other' with raw preserved", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({
+      items: [{ name: "Polygon1", kind: "PolygonConnect", scope: "All", strangeField: 42 }],
+    }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.getDesignRules();
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data[0].kind, "other");
+    assert.equal(result.data[0].clearanceMm, undefined);
+    // Raw preserved for callers that need finer detail
+    const rawObj = result.data[0].raw as { strangeField: number };
+    assert.equal(rawObj.strangeField, 42);
+  }
+});
+
+test("AltiumPlatform.getDesignRules: relay disconnected + malformed result → supported:false", async () => {
+  // Two failure modes in one test for compactness.
+  const disconnected = await new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  }).getDesignRules();
+  assert.equal(disconnected.supported, false);
+  if (disconnected.supported === false) {
+    assert.match(disconnected.reason, /relay is not connected/i);
+  }
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({ wrong: true }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const malformed = await new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  }).getDesignRules();
+  assert.equal(malformed.supported, false);
+  if (malformed.supported === false) {
+    assert.match(malformed.reason, /AltiumRelay\.js/);
+  }
+});
+
+test("AltiumPlatform.setRouteRule: forwards full envelope to relay; returns confirmation", async () => {
+  const captured: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      captured.push({ method, params });
+      return { name: "DefaultClearance", message: "Updated rule 'DefaultClearance' (clearance) on Altium." };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.setRouteRule({
+    name: "DefaultClearance",
+    kind: "clearance",
+    clearanceMm: 0.3,
+  });
+  assert.equal(captured[0].method, "set_route_rule");
+  assert.equal(captured[0].params.name, "DefaultClearance");
+  assert.equal(captured[0].params.kind, "clearance");
+  assert.equal(captured[0].params.clearanceMm, 0.3);
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.designator, "DefaultClearance");
+    assert.match(result.data.message, /Updated rule/);
+  }
+});
+
+test("AltiumPlatform.setRouteRule: relay throws 'rule not found' → supported:false carries the reason", async () => {
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => {
+      throw new Error("Design rule 'GhostRule' not found on the active PCB.");
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.setRouteRule({
+    name: "GhostRule",
+    kind: "clearance",
+    clearanceMm: 0.2,
+  });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /'GhostRule' not found/);
+  }
+});
+
+test("EasyedaPlatform.getDesignRules + setRouteRule: route through correct relay methods", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  // get_design_rules
+  const getPending = platform.getDesignRules();
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected get_design_rules command");
+  assert.equal(cmd.method, "get_design_rules");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        { name: "MinGap", kind: "clearance", scope: "All", clearanceMm: 0.15 },
+      ],
+    },
+  });
+  const getResult = await getPending;
+  assert.equal(getResult.supported, true);
+  if (getResult.supported) {
+    assert.equal(getResult.data.length, 1);
+    assert.equal(getResult.data[0].kind, "clearance");
+  }
+
+  // set_route_rule
+  const setPending = platform.setRouteRule({
+    name: "MinGap",
+    kind: "clearance",
+    clearanceMm: 0.25,
+  });
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected set_route_rule command");
+  assert.equal(cmd.method, "set_route_rule");
+  assert.equal(cmd.params.kind, "clearance");
+  assert.equal(cmd.params.clearanceMm, 0.25);
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { name: "MinGap", message: "Updated rule 'MinGap' (clearance) on EasyEDA." },
+  });
+  const setResult = await setPending;
+  assert.equal(setResult.supported, true);
+  if (setResult.supported) {
+    assert.match(setResult.data.message, /Updated rule 'MinGap'/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.getDesignRules + setRouteRule: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  for (const result of [
+    await platform.getDesignRules(),
+    await platform.setRouteRule({
+      name: "X",
+      kind: "clearance",
+      clearanceMm: 0.1,
+    }),
+  ]) {
+    assert.equal(result.supported, false);
+    if (result.supported === false) {
+      assert.match(result.reason, /extension is not connected/i);
+    }
+  }
+});
+
 // ─── getNetRouting — Sprint 12 PR 12.1 ──────────────────────────────
 
 test("AltiumPlatform.getNetRouting: relay round-trip maps full payload + normalizes layer keys", async () => {

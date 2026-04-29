@@ -248,6 +248,167 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "get_design_rules",
+    "Read all design rules on the active PCB. Each entry has name + kind (clearance/width/via/other) + scope (all/net/net-class) + kind-specific values (clearanceMm, widthMm.{min,preferred,max}, viaMm.{holeDiameter,padDiameter}). Cross-platform; coordinates in mm. Pair with `set_route_rule` to mutate one. The `other` kind preserves any rule category v1 doesn't normalize — read its raw payload for finer detail.",
+    {},
+    async () => {
+      const result = await ctx.platform.getDesignRules();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not read design rules: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const rules = result.data;
+      if (rules.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No design rules on the active ${ctx.platform.name} PCB.`,
+            },
+          ],
+        };
+      }
+      // Group by kind in the header for AI scanning. Per-line:
+      // name + kind + scope + kind-specific value summary.
+      const byKind = rules.reduce<Record<string, number>>((acc, r) => {
+        acc[r.kind] = (acc[r.kind] ?? 0) + 1;
+        return acc;
+      }, {});
+      const kindParts = Object.entries(byKind)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, n]) => `${n} ${k}`);
+      const header = `Design rules on ${ctx.platform.name}: ${rules.length} total (${kindParts.join(", ")}).`;
+      const lines = rules.map((r) => {
+        const scopeStr =
+          r.scope.type === "all"
+            ? "all"
+            : `${r.scope.type}=${r.scope.target ?? "?"}`;
+        let valStr = "";
+        if (r.kind === "clearance" && r.clearanceMm !== undefined) {
+          valStr = ` clearance=${r.clearanceMm.toFixed(3)}mm`;
+        } else if (r.kind === "width" && r.widthMm !== undefined) {
+          valStr = ` width=${r.widthMm.min.toFixed(3)}/${r.widthMm.preferred.toFixed(3)}/${r.widthMm.max.toFixed(3)}mm (min/pref/max)`;
+        } else if (r.kind === "via" && r.viaMm !== undefined) {
+          valStr = ` via=hole ${r.viaMm.holeDiameter.toFixed(3)}mm / pad ${r.viaMm.padDiameter.toFixed(3)}mm`;
+        }
+        return `- [${r.kind}] ${r.name} (${scopeStr})${valStr}`;
+      });
+      return {
+        content: [
+          { type: "text" as const, text: header + "\n" + lines.join("\n") },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "set_route_rule",
+    "Update or create a design rule. Discriminated by `kind` — only the matching value field is used. Three kinds in v1: 'clearance' (single number, mm), 'width' (min/preferred/max, mm), 'via' (hole + pad diameter, mm). Pair with `get_design_rules` to inspect current state before mutating. Cross-platform; the EasyEDA write does an internal read-modify-write since the API only exposes full-config writes.",
+    {
+      name: z.string().min(1).describe("Rule name. Updates an existing rule, or creates one if missing."),
+      kind: z
+        .enum(["clearance", "width", "via"])
+        .describe("Which value-shape applies. v1 supports the three core kinds; other rule categories are read-only."),
+      scope: z
+        .object({
+          type: z.enum(["all", "net", "net-class"]),
+          target: z.string().optional(),
+        })
+        .optional()
+        .describe("Scope DSL. Defaults to {type: 'all'} when omitted."),
+      clearanceMm: z.coerce.number().min(0).optional().describe("Required when kind='clearance'."),
+      widthMm: z
+        .object({
+          min: z.coerce.number().min(0),
+          preferred: z.coerce.number().min(0),
+          max: z.coerce.number().min(0),
+        })
+        .optional()
+        .describe("Required when kind='width'."),
+      viaMm: z
+        .object({
+          holeDiameter: z.coerce.number().min(0),
+          padDiameter: z.coerce.number().min(0),
+        })
+        .optional()
+        .describe("Required when kind='via'."),
+    },
+    async (args) => {
+      // Validate per-kind params at this layer for clearer AI errors.
+      let typedParams;
+      if (args.kind === "clearance") {
+        if (typeof args.clearanceMm !== "number") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "set_route_rule with kind='clearance' requires `clearanceMm`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+        typedParams = {
+          name: args.name,
+          scope: args.scope,
+          kind: "clearance" as const,
+          clearanceMm: args.clearanceMm,
+        };
+      } else if (args.kind === "width") {
+        if (!args.widthMm) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "set_route_rule with kind='width' requires `widthMm: {min, preferred, max}`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+        typedParams = {
+          name: args.name,
+          scope: args.scope,
+          kind: "width" as const,
+          widthMm: args.widthMm,
+        };
+      } else {
+        if (!args.viaMm) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "set_route_rule with kind='via' requires `viaMm: {holeDiameter, padDiameter}`.",
+              },
+            ],
+            isError: true,
+          };
+        }
+        typedParams = {
+          name: args.name,
+          scope: args.scope,
+          kind: "via" as const,
+          viaMm: args.viaMm,
+        };
+      }
+      const result = await ctx.platform.setRouteRule(typedParams);
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not set route rule: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
     "get_net_routing",
     "Read per-net routing summary on the active PCB, paginated. Each entry has total trace length (mm), layer split (mm per layer), via count, and unrouted-segment count. Cross-platform; coordinates aggregated in mm, layers normalized to top/bottom/inner/unknown. Pair with `screenshot` for visual + numeric verification of routing completeness. EasyEDA support depends on the extension's pcb_Net.getAll accessor — surfaces a clear supported:false reason when unavailable.",
     PaginationShape,

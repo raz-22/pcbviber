@@ -39,6 +39,7 @@ import type { NexarService } from "../services/nexar.js";
 import {
   extractVertices,
   makeMutateResult,
+  normalizeDesignRule,
   normalizeKeepoutKind,
   normalizeKeepoutLayer,
   normalizeLayer,
@@ -53,8 +54,10 @@ import {
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
+  type DesignRule,
   type Keepout,
   type NetRouting,
+  type SetRouteRuleParams,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -499,6 +502,58 @@ export class EasyedaPlatform implements Platform {
     params: PlaceByGroupParams
   ): Promise<PlatformResponse<PlaceByGroupResult>> {
     return placeByGroupShared(this, params);
+  }
+
+  async getDesignRules(): Promise<PlatformResponse<DesignRule[]>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "get_design_rules",
+        {}
+      );
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      if (!itemsRaw) {
+        return notSupported(
+          "EasyEDA extension returned a get_design_rules result without an `items` array."
+        );
+      }
+      const items: DesignRule[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const name = typeof entry.name === "string" ? entry.name : "";
+        if (!name) return [];
+        return [normalizeDesignRule(entry, name)];
+      });
+      return ok(items);
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async setRouteRule(
+    params: SetRouteRuleParams
+  ): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Extension does the read-modify-write internally — the
+      // EasyEDA Pro API exposes only a full-config write
+      // (overwriteCurrentRuleConfiguration), so the extension
+      // reads the current config, mutates one rule by name, and
+      // writes back.
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        this.deps.workspaceId,
+        "set_route_rule",
+        params as unknown as Record<string, unknown>
+      );
+      return ok(makeMutateResult(params.name, raw, "Updated"));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async getNetRouting(

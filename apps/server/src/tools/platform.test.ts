@@ -190,6 +190,8 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     validatePlacement: async () => ({ supported: false, reason: "stub" }),
     placeByGroup: async () => ({ supported: false, reason: "stub" }),
     getNetRouting: async () => ({ supported: false, reason: "stub" }),
+    getDesignRules: async () => ({ supported: false, reason: "stub" }),
+    setRouteRule: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -295,6 +297,8 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     validatePlacement: async () => ({ supported: false, reason: "stub" }),
     placeByGroup: async () => ({ supported: false, reason: "stub" }),
     getNetRouting: async () => ({ supported: false, reason: "stub" }),
+    getDesignRules: async () => ({ supported: false, reason: "stub" }),
+    setRouteRule: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -983,6 +987,182 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── design rules tools — Sprint 12 PR 12.2 ─────────────────────────
+
+type GetDesignRulesHandler = () => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+type SetRouteRuleHandler = (args: {
+  name: string;
+  kind: "clearance" | "width" | "via";
+  scope?: { type: "all" | "net" | "net-class"; target?: string };
+  clearanceMm?: number;
+  widthMm?: { min: number; preferred: number; max: number };
+  viaMm?: { holeDiameter: number; padDiameter: number };
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureGetDesignRulesHandler(ctx: ToolContext): GetDesignRulesHandler {
+  let handler: GetDesignRulesHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: GetDesignRulesHandler) => {
+      if (name === "get_design_rules") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `get_design_rules`");
+  return handler;
+}
+
+function captureSetRouteRuleHandler(ctx: ToolContext): SetRouteRuleHandler {
+  let handler: SetRouteRuleHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: SetRouteRuleHandler) => {
+      if (name === "set_route_rule") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `set_route_rule`");
+  return handler;
+}
+
+test("get_design_rules tool: header counts by kind + per-line value summaries", async () => {
+  const stubPlatform = {
+    name: "easyeda" as const,
+    getDesignRules: async () => ({
+      supported: true as const,
+      data: [
+        {
+          name: "MinGap",
+          kind: "clearance" as const,
+          scope: { type: "all" as const },
+          clearanceMm: 0.2,
+          raw: {},
+        },
+        {
+          name: "VccWidth",
+          kind: "width" as const,
+          scope: { type: "net" as const, target: "VCC" },
+          widthMm: { min: 0.2, preferred: 0.3, max: 0.5 },
+          raw: {},
+        },
+        {
+          name: "PowerVias",
+          kind: "via" as const,
+          scope: { type: "net-class" as const, target: "Power" },
+          viaMm: { holeDiameter: 0.3, padDiameter: 0.6 },
+          raw: {},
+        },
+      ],
+    }),
+  } as unknown as Platform;
+  const handler = captureGetDesignRulesHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Design rules on easyeda: 3 total \(1 clearance, 1 via, 1 width\)/);
+  // Per-line value summaries
+  assert.match(text, /\[clearance\] MinGap \(all\) clearance=0\.200mm/);
+  assert.match(text, /\[width\] VccWidth \(net=VCC\) width=0\.200\/0\.300\/0\.500mm/);
+  assert.match(text, /\[via\] PowerVias \(net-class=Power\) via=hole 0\.300mm \/ pad 0\.600mm/);
+});
+
+test("get_design_rules tool: empty result → 'No design rules' caption (not isError)", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    getDesignRules: async () => ({ supported: true as const, data: [] }),
+  } as unknown as Platform;
+  const handler = captureGetDesignRulesHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /No design rules on the active altium PCB/);
+});
+
+test("set_route_rule tool: missing kind-specific params → MCP error before any platform call", async () => {
+  let platformCalled = false;
+  const stubPlatform = {
+    name: "easyeda" as const,
+    setRouteRule: async () => {
+      platformCalled = true;
+      return { supported: false as const, reason: "should not be called" };
+    },
+  } as unknown as Platform;
+  const handler = captureSetRouteRuleHandler(buildToolCtx(stubPlatform));
+  // kind=width without widthMm
+  const res = await handler({ name: "X", kind: "width" });
+  assert.equal(res.isError, true);
+  assert.equal(platformCalled, false);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /kind='width' requires `widthMm/);
+});
+
+test("set_route_rule tool: each kind dispatches with correct params + renders confirmation", async () => {
+  // Three calls in one test for compactness — verifies the
+  // discriminated-union routing on the tool layer.
+  const seenParams: Array<{ kind: string; clearanceMm?: number; widthMm?: unknown; viaMm?: unknown }> = [];
+  const stubPlatform = {
+    name: "altium" as const,
+    setRouteRule: async (params: {
+      name: string;
+      kind: string;
+      clearanceMm?: number;
+      widthMm?: unknown;
+      viaMm?: unknown;
+    }) => {
+      seenParams.push(params);
+      return {
+        supported: true as const,
+        data: { designator: params.name, message: `Updated ${params.name}.` },
+      };
+    },
+  } as unknown as Platform;
+  const handler = captureSetRouteRuleHandler(buildToolCtx(stubPlatform));
+
+  const r1 = await handler({ name: "C1", kind: "clearance", clearanceMm: 0.25 });
+  assert.equal(r1.isError, undefined);
+  const r2 = await handler({
+    name: "W1",
+    kind: "width",
+    widthMm: { min: 0.1, preferred: 0.2, max: 0.4 },
+  });
+  assert.equal(r2.isError, undefined);
+  const r3 = await handler({
+    name: "V1",
+    kind: "via",
+    viaMm: { holeDiameter: 0.3, padDiameter: 0.6 },
+  });
+  assert.equal(r3.isError, undefined);
+
+  // Each call should reach the platform with only the matching value field
+  assert.equal(seenParams[0].kind, "clearance");
+  assert.equal(seenParams[0].clearanceMm, 0.25);
+  assert.equal(seenParams[0].widthMm, undefined);
+  assert.equal(seenParams[1].kind, "width");
+  assert.deepEqual(seenParams[1].widthMm, { min: 0.1, preferred: 0.2, max: 0.4 });
+  assert.equal(seenParams[2].kind, "via");
+  assert.deepEqual(seenParams[2].viaMm, { holeDiameter: 0.3, padDiameter: 0.6 });
+
+  // Confirmation rendered verbatim
+  assert.match(
+    (r1.content[0] as unknown as { text: string }).text,
+    /Updated C1\./
+  );
+});
+
+test("set_route_rule tool: supported:false → MCP error result with reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    setRouteRule: async () => ({
+      supported: false as const,
+      reason: "Design rule 'X' not found.",
+    }),
+  } as unknown as Platform;
+  const handler = captureSetRouteRuleHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ name: "X", kind: "clearance", clearanceMm: 0.2 });
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not set route rule/);
+  assert.match(text, /not found/);
 });
 
 // ─── get_net_routing tool — Sprint 12 PR 12.1 ────────────────────────

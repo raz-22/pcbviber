@@ -226,6 +226,61 @@ export interface Keepout {
  * `get_unrouted_segments` PR can expose the segment-level detail
  * for specific repair workflows.
  */
+/**
+ * Sprint 12 PR 12.2: a design rule on the active PCB.
+ *
+ * `kind` collapses platform-specific rule categories to four cases
+ * the cross-platform tools normalize: `clearance`, `width`, `via`,
+ * and `other` (everything else, preserved in `raw`). v1 only writes
+ * the first three; reads surface every rule the platform exposes.
+ *
+ * `scope` follows the standard scope-DSL of EDA rules: a rule
+ * applies to "all" objects, a single net, or a net class. Cross-
+ * platform names get extracted; the raw scope expression survives
+ * in `raw` for tools that need fine-grained control.
+ *
+ * Kind-specific value fields (clearanceMm/widthMm/viaMm) are all
+ * optional. AI clients dispatch on `kind` and read the matching
+ * field. Unknown rule shapes leave all kind-specific fields
+ * undefined and rely on `raw`.
+ */
+export interface DesignRule {
+  name: string;
+  kind: "clearance" | "width" | "via" | "other";
+  scope: {
+    type: "all" | "net" | "net-class";
+    /** Net name or net-class name; absent when type === "all". */
+    target?: string;
+  };
+  /** For kind: "clearance" — minimum gap between scoped objects. */
+  clearanceMm?: number;
+  /** For kind: "width" — preferred trace width with min/max bounds. */
+  widthMm?: { min: number; preferred: number; max: number };
+  /** For kind: "via" — drilled hole + outer pad diameter. */
+  viaMm?: { holeDiameter: number; padDiameter: number };
+  raw: unknown;
+}
+
+/**
+ * Sprint 12 PR 12.2: discriminated-union input for `setRouteRule`.
+ * The `kind` field selects which value-shape applies; only the
+ * matching field is used. v1 supports the three core kinds; other
+ * rule categories are read-only until a future PR.
+ */
+export type SetRouteRuleParams = {
+  /** Rule name. Updates an existing rule, or creates one if missing. */
+  name: string;
+  /** Defaults to {type: "all"} when caller omits scope. */
+  scope?: {
+    type: "all" | "net" | "net-class";
+    target?: string;
+  };
+} & (
+  | { kind: "clearance"; clearanceMm: number }
+  | { kind: "width"; widthMm: { min: number; preferred: number; max: number } }
+  | { kind: "via"; viaMm: { holeDiameter: number; padDiameter: number } }
+);
+
 export interface NetRouting {
   netName: string;
   totalLengthMm: number;
@@ -605,6 +660,35 @@ export interface Platform {
   getNetRouting(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<NetRouting>>>;
+
+  /**
+   * Sprint 12 PR 12.2: read all design rules on the active PCB.
+   * Not paginated — design rules are typically <100 per board and
+   * AI clients usually want the whole set for "what rules apply
+   * here?" reasoning.
+   *
+   * Altium: walks Board.DesignRules across all categories. EasyEDA:
+   * `pcb_Drc.getCurrentRuleConfiguration()`. Both surface every
+   * rule kind; cross-platform `kind` normalization collapses the
+   * three core kinds (clearance, width, via); rest end up as
+   * "other" with raw payload preserved.
+   */
+  getDesignRules(): Promise<PlatformResponse<DesignRule[]>>;
+
+  /**
+   * Sprint 12 PR 12.2: update or create a design rule. Discriminated
+   * by `kind` — only the matching value field is used; others
+   * silently ignored.
+   *
+   * Altium: `Board.DesignRules.RuleByName(name)` followed by field
+   * setters; creates the rule if name is new. EasyEDA: read-modify-
+   * write on the full rule config (single-rule update isn't
+   * directly exposed; we read getCurrentRuleConfiguration, mutate
+   * one entry, write via overwriteCurrentRuleConfiguration).
+   */
+  setRouteRule(
+    params: SetRouteRuleParams
+  ): Promise<PlatformResponse<MutateResult>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

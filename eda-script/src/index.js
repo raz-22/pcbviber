@@ -321,6 +321,146 @@
     },
 
     /**
+     * Sprint 12 PR 12.2: read all design rules from the current
+     * EasyEDA Pro DRC config. The Pro API exposes the full config
+     * as a single object via getCurrentRuleConfiguration; we walk
+     * its rule entries and surface them in the cross-platform
+     * shape. Per-rule fields vary by category — defensive
+     * extraction with raw payload preserved.
+     */
+    get_design_rules: async function () {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_Drc || typeof eda.pcb_Drc.getCurrentRuleConfiguration !== "function") {
+        return { items: [] };
+      }
+      let config;
+      try {
+        // eslint-disable-next-line no-undef
+        config = await eda.pcb_Drc.getCurrentRuleConfiguration();
+      } catch (e) {
+        return { items: [] };
+      }
+      if (!config || typeof config !== "object") return { items: [] };
+      // Pro version drift: rules may live under config.rules,
+      // config.items, or be the config object itself when it's
+      // already an array. Try the common shapes.
+      let entries = [];
+      if (Array.isArray(config)) {
+        entries = config;
+      } else if (Array.isArray(config.rules)) {
+        entries = config.rules;
+      } else if (Array.isArray(config.items)) {
+        entries = config.items;
+      } else if (typeof config === "object") {
+        // Object-keyed-by-name layout: convert to array preserving name.
+        for (const key of Object.keys(config)) {
+          const v = config[key];
+          if (v && typeof v === "object") {
+            entries.push(Object.assign({ name: key }, v));
+          }
+        }
+      }
+      return { items: entries };
+    },
+
+    /**
+     * Sprint 12 PR 12.2: update or create a design rule via the
+     * read-modify-write pattern. EasyEDA Pro's only writer is
+     * overwriteCurrentRuleConfiguration, which takes the FULL
+     * config — so we fetch current state, mutate one entry by
+     * name, and write back.
+     *
+     * Race-window note: if two callers race rule writes, the
+     * later one wins on the FULL config (potentially clobbering
+     * the earlier caller's other rule changes). Acceptable for
+     * v1 — AI clients typically don't race rule writes.
+     */
+    set_route_rule: async function (params) {
+      const name = params && typeof params.name === "string" ? params.name : "";
+      const kind = params && typeof params.kind === "string" ? params.kind : "";
+      if (!name) throw new Error("name is required");
+      if (!kind) throw new Error("kind is required");
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_Drc || typeof eda.pcb_Drc.getCurrentRuleConfiguration !== "function") {
+        throw new Error("EasyEDA Pro DRC API is not exposed in this extension version.");
+      }
+      // eslint-disable-next-line no-undef
+      const config = await eda.pcb_Drc.getCurrentRuleConfiguration();
+      if (!config || typeof config !== "object") {
+        throw new Error("getCurrentRuleConfiguration returned no config");
+      }
+      // Locate the rule by name. Look in both array-shaped and
+      // object-keyed-by-name layouts.
+      let rule = null;
+      let setRule = null;
+      if (Array.isArray(config)) {
+        for (let i = 0; i < config.length; i++) {
+          if (config[i] && config[i].name === name) {
+            rule = config[i];
+            setRule = function (next) { config[i] = next; };
+            break;
+          }
+        }
+      } else if (config[name] && typeof config[name] === "object") {
+        rule = Object.assign({ name: name }, config[name]);
+        setRule = function (next) {
+          // Strip the synthesized name field before writing back.
+          const copy = Object.assign({}, next);
+          delete copy.name;
+          config[name] = copy;
+        };
+      } else if (Array.isArray(config.rules)) {
+        for (let i = 0; i < config.rules.length; i++) {
+          if (config.rules[i] && config.rules[i].name === name) {
+            rule = config.rules[i];
+            setRule = function (next) { config.rules[i] = next; };
+            break;
+          }
+        }
+      }
+      if (!rule || !setRule) {
+        throw new Error(
+          "Design rule '" + name + "' not found in the current rule configuration."
+        );
+      }
+      // Apply kind-specific updates. Spread the existing rule so we
+      // preserve fields we don't touch.
+      const next = Object.assign({}, rule);
+      if (kind === "clearance") {
+        if (typeof params.clearanceMm === "number") {
+          next.clearanceMm = params.clearanceMm;
+        }
+      } else if (kind === "width") {
+        if (params.widthMm && typeof params.widthMm === "object") {
+          next.widthMm = {
+            min: Number(params.widthMm.min),
+            preferred: Number(params.widthMm.preferred),
+            max: Number(params.widthMm.max)
+          };
+        }
+      } else if (kind === "via") {
+        if (params.viaMm && typeof params.viaMm === "object") {
+          next.viaMm = {
+            holeDiameter: Number(params.viaMm.holeDiameter),
+            padDiameter: Number(params.viaMm.padDiameter)
+          };
+        }
+      } else {
+        throw new Error(
+          "unknown rule kind: '" + kind + "' (expected clearance, width, or via)"
+        );
+      }
+      next.kind = kind;
+      setRule(next);
+      // eslint-disable-next-line no-undef
+      await eda.pcb_Drc.overwriteCurrentRuleConfiguration(config);
+      return {
+        name: name,
+        message: "Updated rule '" + name + "' (" + kind + ") on EasyEDA."
+      };
+    },
+
+    /**
      * Sprint 12 PR 12.1: per-net routing summary, paginated by net.
      *
      * Steps:

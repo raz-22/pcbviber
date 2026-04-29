@@ -26,8 +26,10 @@ import {
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
+  type DesignRule,
   type Keepout,
   type NetRouting,
+  type SetRouteRuleParams,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -343,6 +345,51 @@ export class AltiumPlatform implements Platform {
     return placeByGroupShared(this, params);
   }
 
+  async getDesignRules(): Promise<PlatformResponse<DesignRule[]>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      const raw = await this.deps.relay.execute<unknown>("get_design_rules", {});
+      const obj = isRecord(raw) ? raw : {};
+      const itemsRaw = Array.isArray(obj.items) ? obj.items : null;
+      if (!itemsRaw) {
+        return notSupported(
+          "AD relay returned a get_design_rules result without an `items` array. Update AltiumRelay.js to the version shipped with Sprint 12 PR 12.2."
+        );
+      }
+      const items: DesignRule[] = itemsRaw.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const name = typeof entry.name === "string" ? entry.name : "";
+        if (!name) return [];
+        return [normalizeDesignRule(entry, name)];
+      });
+      return ok(items);
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
+  async setRouteRule(
+    params: SetRouteRuleParams
+  ): Promise<PlatformResponse<MutateResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      // Server passes the full discriminated-union envelope through;
+      // AltiumRelay.js dispatches on `kind` to call the right
+      // DesignRules setter.
+      const raw = await this.deps.relay.execute<{ message?: unknown }>(
+        "set_route_rule",
+        params as unknown as Record<string, unknown>
+      );
+      return ok(makeMutateResult(params.name, raw, "Updated"));
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async getNetRouting(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<NetRouting>>> {
@@ -499,6 +546,117 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Sprint 12 PR 12.2: collapse Altium's many DesignRules categories
+ * (Clearance, Width, RoutingVias, RoutingTracksDirection, etc.) and
+ * EasyEDA's drc-config rule types into the four cross-platform
+ * cases AI clients reason about: clearance, width, via, other.
+ *
+ * Anything we don't recognize falls through to "other" with the
+ * raw payload preserved — readers that need finer granularity can
+ * dig into `raw`. Exported because both platforms call it.
+ */
+export function normalizeRuleKind(
+  raw: unknown
+): "clearance" | "width" | "via" | "other" {
+  if (typeof raw !== "string") return "other";
+  const s = raw.toLowerCase();
+  // Order matters: check "via" first since "viawidth"-style names
+  // would otherwise match the "width" branch below.
+  if (s.includes("via") || s.includes("hole")) return "via";
+  if (s.includes("clearance") || s.includes("gap")) return "clearance";
+  if (s.includes("width") || s.includes("trackwidth")) return "width";
+  return "other";
+}
+
+/**
+ * Sprint 12 PR 12.2: extract a cross-platform DesignRule from a
+ * raw relay/extension entry. Per-field accessors handle the kind-
+ * specific value shapes; missing fields stay undefined rather than
+ * defaulting to 0 (which would lie about the rule's actual contents).
+ *
+ * Exported because both platforms call it after their own preliminary
+ * extraction — keeps the kind normalization + scope normalization
+ * single-sourced.
+ */
+export function normalizeDesignRule(
+  entry: Record<string, unknown>,
+  name: string
+): DesignRule {
+  const kind = normalizeRuleKind(entry.kind ?? entry.type ?? entry.category);
+  // Scope can be expressed as a flat string ("All", "Net=VCC",
+  // "NetClass=Power", or AD's DSL "InNet('VCC')" / "InNetClass('Power')")
+  // or a structured object. Extract defensively for both.
+  let scope: DesignRule["scope"] = { type: "all" };
+  const scopeRaw = entry.scope;
+  if (typeof scopeRaw === "string") {
+    const trimmed = scopeRaw.trim();
+    // AD DSL: InNet('VCC') / InNetClass('Power'). Quotes optional.
+    const adNet = /^InNet\s*\(\s*['"]?([^'")]+)['"]?\s*\)$/i.exec(trimmed);
+    const adCls = /^InNetClass\s*\(\s*['"]?([^'")]+)['"]?\s*\)$/i.exec(trimmed);
+    // Simple key=value: net=VCC / netclass=Power.
+    const kv = /^(net|netclass|net-class)\s*=\s*(.+)$/i.exec(trimmed);
+    if (adNet) {
+      scope = { type: "net", target: adNet[1].trim() };
+    } else if (adCls) {
+      scope = { type: "net-class", target: adCls[1].trim() };
+    } else if (kv) {
+      scope = {
+        type: kv[1].toLowerCase() === "net" ? "net" : "net-class",
+        target: kv[2].trim(),
+      };
+    }
+  } else if (isRecord(scopeRaw)) {
+    const t = String(scopeRaw.type ?? "").toLowerCase();
+    if (t === "net" || t === "net-class" || t === "netclass") {
+      scope = {
+        type: t === "net" ? "net" : "net-class",
+        target:
+          typeof scopeRaw.target === "string"
+            ? scopeRaw.target
+            : typeof scopeRaw.name === "string"
+              ? (scopeRaw.name as string)
+              : undefined,
+      };
+    }
+  }
+  const result: DesignRule = { name, kind, scope, raw: entry };
+  if (kind === "clearance") {
+    if (typeof entry.clearanceMm === "number") {
+      result.clearanceMm = entry.clearanceMm;
+    }
+  } else if (kind === "width") {
+    if (isRecord(entry.widthMm)) {
+      const w = entry.widthMm;
+      if (
+        typeof w.min === "number" &&
+        typeof w.preferred === "number" &&
+        typeof w.max === "number"
+      ) {
+        result.widthMm = {
+          min: w.min,
+          preferred: w.preferred,
+          max: w.max,
+        };
+      }
+    }
+  } else if (kind === "via") {
+    if (isRecord(entry.viaMm)) {
+      const v = entry.viaMm;
+      if (
+        typeof v.holeDiameter === "number" &&
+        typeof v.padDiameter === "number"
+      ) {
+        result.viaMm = {
+          holeDiameter: v.holeDiameter,
+          padDiameter: v.padDiameter,
+        };
+      }
+    }
+  }
+  return result;
 }
 
 /**
