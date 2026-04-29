@@ -32,6 +32,7 @@ import {
   type RouteDiffPairResult,
   type SetRouteRuleParams,
   type UnrouteResult,
+  type ViaStitchResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -48,6 +49,7 @@ import {
 } from "./types.js";
 import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.js";
 import { placeByGroupShared } from "./place-by-group.js";
+import { viaStitchPlaneShared } from "./via-stitching.js";
 
 export interface AltiumPlatformDeps {
   /** Local Altium Designer relay (HTTP long-poll bridge). Optional —
@@ -410,6 +412,22 @@ export class AltiumPlatform implements Platform {
     } catch (err) {
       return notSupported(errorReason(err));
     }
+  }
+
+  async viaStitchPlane(params: {
+    net: string;
+    densityMm?: number;
+    edgeClearanceMm?: number;
+  }): Promise<PlatformResponse<ViaStitchResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    return viaStitchPlaneShared(this, params, "altium", (positions) =>
+      this.deps.relay!.execute<unknown>("create_vias", {
+        net: params.net,
+        positions,
+      })
+    );
   }
 
   async routeDiffPair(params: {

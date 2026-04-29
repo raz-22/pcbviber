@@ -310,6 +310,25 @@ export type SetRouteRuleParams = {
  * a rough proxy for how much got routed. Zero means the router
  * laid no new traces.
  */
+/**
+ * Sprint 12 PR 12.5: result of `viaStitchPlane`. Reports how many
+ * vias were placed on the target net + how many candidates were
+ * skipped, broken down by skip reason in the message.
+ *
+ * Pair with `screenshot` after stitching to confirm coverage —
+ * the tool stitches over the whole board area, not just the
+ * net's plane region (plane-region detection lands in a future PR
+ * once polygon-plane reads are exposed by the relay/extension).
+ */
+export interface ViaStitchResult {
+  net: string;
+  placed: number;
+  skipped: number;
+  densityMm: number;
+  edgeClearanceMm: number;
+  message: string;
+}
+
 export interface RouteDiffPairResult {
   positiveNet: string;
   negativeNet: string;
@@ -772,6 +791,29 @@ export interface Platform {
     positiveNet: string;
     negativeNet: string;
   }): Promise<PlatformResponse<RouteDiffPairResult>>;
+
+  /**
+   * Sprint 12 PR 12.5: generate a grid of vias tied to `net` (typically
+   * GND) across the board area. Used after a plane is poured to improve
+   * return-path stitching.
+   *
+   * Two-phase orchestration: server reads board state via getComponents
+   * + getKeepouts + getNetRouting, runs the shared grid-planner with
+   * collision filtering (`platforms/via-stitching.ts`), then sends the
+   * survivor list to the relay/extension's create_vias primitive.
+   *
+   * Stitches over the whole board, not just the net's plane region —
+   * plane-region detection requires polygon-plane reads not yet
+   * exposed in the relay/extension surface. AI clients can manually
+   * delete strays; future PR can add plane-aware stitching.
+   */
+  viaStitchPlane(params: {
+    net: string;
+    /** Grid spacing between via centers in mm. Default 5. */
+    densityMm?: number;
+    /** Skip vias within this far of board edge (mm). Default 1.5. */
+    edgeClearanceMm?: number;
+  }): Promise<PlatformResponse<ViaStitchResult>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

@@ -321,6 +321,49 @@
     },
 
     /**
+     * Sprint 12 PR 12.5: batch via creation. Server-side planner
+     * (platforms/via-stitching.ts) computes the candidate positions
+     * after collision filtering; this handler materializes them
+     * via pcb_PrimitiveVia.create per position.
+     *
+     * EasyEDA Pro stores X/Y in mm natively, so no unit conversion.
+     * Per-via try/catch — a single creation failure (e.g., a
+     * position that snuck through the server-side filter but
+     * conflicts with an undetected obstacle) doesn't abort the
+     * batch.
+     */
+    create_vias: async function (params) {
+      const net = params && typeof params.net === "string" ? params.net : "";
+      const positions = params && Array.isArray(params.positions)
+        ? params.positions
+        : [];
+      if (!net) throw new Error("net is required");
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_PrimitiveVia || typeof eda.pcb_PrimitiveVia.create !== "function") {
+        throw new Error("EasyEDA Pro pcb_PrimitiveVia.create is not exposed in this extension version.");
+      }
+      let placed = 0;
+      for (let i = 0; i < positions.length; i++) {
+        const p = positions[i];
+        if (!p || typeof p.x !== "number" || typeof p.y !== "number") continue;
+        try {
+          // pcb_PrimitiveVia.create signature varies across Pro
+          // versions; the most common shape is (net, x, y[, layer]).
+          // eslint-disable-next-line no-undef
+          await eda.pcb_PrimitiveVia.create(net, p.x, p.y);
+          placed++;
+        } catch (_) {
+          // One failed create shouldn't abort the batch.
+        }
+      }
+      return {
+        net: net,
+        placed: placed,
+        message: "Created " + placed + " via(s) on net '" + net + "' on EasyEDA."
+      };
+    },
+
+    /**
      * Sprint 12 PR 12.4: trigger EasyEDA Pro's diff-pair router on
      * the (positiveNet, negativeNet) pair. Uses pcb_Document.autoRouting
      * which is BETA — defensive shape extraction since the props

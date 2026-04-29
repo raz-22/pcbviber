@@ -62,6 +62,7 @@ import {
   type RouteDiffPairResult,
   type SetRouteRuleParams,
   type UnrouteResult,
+  type ViaStitchResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -77,6 +78,7 @@ import {
   type ValidatePlacementResult,
 } from "./types.js";
 import { placeByGroupShared } from "./place-by-group.js";
+import { viaStitchPlaneShared } from "./via-stitching.js";
 
 export interface EasyedaPlatformDeps {
   /**
@@ -580,6 +582,23 @@ export class EasyedaPlatform implements Platform {
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async viaStitchPlane(params: {
+    net: string;
+    densityMm?: number;
+    edgeClearanceMm?: number;
+  }): Promise<PlatformResponse<ViaStitchResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    return viaStitchPlaneShared(this, params, "easyeda", (positions) =>
+      this.deps.relay!.execute<unknown>(
+        this.deps.workspaceId!,
+        "create_vias",
+        { net: params.net, positions }
+      )
+    );
   }
 
   async routeDiffPair(params: {

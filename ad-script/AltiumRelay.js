@@ -152,6 +152,7 @@ function Dispatch(cmd) {
         case "set_route_rule":     return CmdSetRouteRule(cmd.params);
         case "unroute_net":        return CmdUnrouteNet(cmd.params);
         case "route_diff_pair":    return CmdRouteDiffPair(cmd.params);
+        case "create_vias":        return CmdCreateVias(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -1468,6 +1469,96 @@ function CmdRouteDiffPair(params) {
         routed: routed,
         totalLengthMm: totalLengthMm,
         message: message
+    };
+}
+
+// Sprint 12 PR 12.5: batch via creation. Server's via-stitching
+// orchestrator computes the candidate positions (post-collision-
+// filter) and dispatches them here for materialization. Each
+// position is in mm (board-local origin); we convert to AD's
+// 1/10000-mil internal units at this boundary.
+//
+// Creation strategy: PCBObjectFactory(eViaObject) returns a new
+// via instance; set its properties (X/Y/Net/Layer/Size) via
+// Setters; then Board.AddPCBObject(via) commits it. Per-via
+// try/catch keeps a single failure (e.g., AD policy refusing one
+// position) from aborting the batch.
+//
+// Hole + diameter come from the project's current via-style rule.
+// We don't override here — vias inherit the design rules in force,
+// matching what AI clients would expect when stitching against an
+// established rule set.
+function CmdCreateVias(params) {
+    if (!params || typeof params.net !== "string" || params.net.length === 0) {
+        throw MakeError("net is required");
+    }
+    if (!Array.isArray(params.positions)) {
+        throw MakeError("positions must be an array of {x, y} entries (mm)");
+    }
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    // Look up the net once; reuse the same object for every via.
+    // Missing net is a hard failure — without a net, the vias
+    // would be created floating, and AI clients should know so
+    // they can declare it first.
+    var net = null;
+    try {
+        if (typeof board.GetNetByName === "function") {
+            net = board.GetNetByName(params.net);
+        } else if (typeof board.NetByName === "function") {
+            net = board.NetByName(params.net);
+        }
+    } catch (_) { }
+    if (!net) {
+        throw MakeError(
+            "Net '" + params.net + "' not found on the active PCB. " +
+            "Add it to the netlist before stitching."
+        );
+    }
+
+    var COORD_PER_MM = 1 / 0.0000254;
+    var placed = 0;
+    for (var i = 0; i < params.positions.length; i++) {
+        var p = params.positions[i];
+        if (!p || typeof p.x !== "number" || typeof p.y !== "number") continue;
+        try {
+            // PCBObjectFactory typically takes (objectKind, dim, mode)
+            // — eViaObject = 5, dim eDimensionKind_2D = 2, mode
+            // eCreate_Default = 0 are AD's standard values.
+            var via = null;
+            if (typeof server.PCBObjectFactory === "function") {
+                via = server.PCBObjectFactory(5, 2, 0);
+            }
+            if (!via) continue;
+            try { via.X = p.x * COORD_PER_MM; } catch (_) { }
+            try { via.Y = p.y * COORD_PER_MM; } catch (_) { }
+            try { via.Net = net; } catch (_) { }
+            try {
+                if (typeof board.AddPCBObject === "function") {
+                    board.AddPCBObject(via);
+                    placed++;
+                }
+            } catch (_) {
+                // AddPCBObject can refuse for layer/permission reasons;
+                // skip and continue with the next position.
+            }
+        } catch (_) { }
+    }
+
+    return {
+        net: params.net,
+        placed: placed,
+        message: "Created " + placed + " via(s) on net '" + params.net + "' on Altium."
     };
 }
 

@@ -1743,6 +1743,204 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── viaStitchPlane wiring — Sprint 12 PR 12.5 ───────────────────────
+
+test("EasyedaPlatform.viaStitchPlane: chains getComponents → getKeepouts → getNetRouting → create_vias", async () => {
+  // End-to-end pin: server reads board state in three relay calls
+  // (components/keepouts/net-routing), runs the planner, then
+  // dispatches create_vias with the survivor positions. Mock
+  // each step to verify the chain.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.viaStitchPlane({
+    net: "GND",
+    densityMm: 5,
+    edgeClearanceMm: 1.5,
+  });
+
+  // Step 1: get_components
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected get_components");
+  assert.equal(cmd.method, "get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        // Two corner components define a 30×30 extent with 5mm pad
+        // → grid extent x ∈ [-5, 35], y ∈ [-5, 35] = 9×9 = 81 candidates.
+        {
+          primitiveId: "p1",
+          designator: "U1",
+          footprint: "QFN",
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+        {
+          primitiveId: "p2",
+          designator: "U2",
+          footprint: "QFN",
+          x: 30,
+          y: 30,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  // Step 2: get_keepouts (optional — empty result OK)
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_keepouts");
+  assert.equal(cmd.method, "get_keepouts");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { items: [] } });
+
+  // Step 3: get_net_routing (optional — empty result OK; the
+  // existingViasFromNetRouting helper returns [] regardless today)
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_net_routing");
+  assert.equal(cmd.method, "get_net_routing");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { items: [], total: 0 },
+  });
+
+  // Step 4: create_vias — pin the wire format. Server should
+  // dispatch with {net, positions: [{x, y}, ...]}.
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected create_vias");
+  assert.equal(cmd.method, "create_vias");
+  assert.equal(cmd.params.net, "GND");
+  assert.ok(Array.isArray(cmd.params.positions));
+  assert.ok(
+    (cmd.params.positions as unknown[]).length > 0,
+    "planner should emit at least one survivor position for a 30×30 board"
+  );
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      net: "GND",
+      placed: (cmd.params.positions as unknown[]).length,
+      message: "ok",
+    },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.net, "GND");
+    assert.ok(result.data.placed > 0);
+    assert.match(result.data.message, /Stitched 'GND' on easyeda/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.viaStitchPlane: getComponents supported:false propagates through the orchestrator", async () => {
+  // Pin the early-bailout: when the read phase fails, the create
+  // phase should not run, and the AI client sees the upstream
+  // reason verbatim.
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.viaStitchPlane({ net: "GND" });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.viaStitchPlane: getKeepouts supported:false is non-fatal — proceeds without keepout filtering", async () => {
+  // Keepouts are best-effort; an EasyEDA build without
+  // pcb_PrimitiveRegion exposed (which surfaces as supported:false)
+  // should NOT abort the stitch — proceed without keepout
+  // filtering.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.viaStitchPlane({ net: "GND", densityMm: 10 });
+
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p1",
+          designator: "U1",
+          x: 0,
+          y: 0,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+        {
+          primitiveId: "p2",
+          designator: "U2",
+          x: 20,
+          y: 20,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  // get_keepouts: extension reports unsupported (older Pro version)
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_keepouts");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { unsupported: true },
+  });
+
+  // get_net_routing
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_net_routing");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: { items: [] } });
+
+  // create_vias still dispatches — keepout filtering was skipped
+  // but the rest of the planner ran.
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected create_vias");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { placed: (cmd.params.positions as unknown[]).length },
+  });
+
+  const result = await pending;
+  assert.equal(result.supported, true,
+    "keepouts unsupported must NOT make the whole stitch supported:false");
+  relay.__resetForTests();
+});
+
+test("AltiumPlatform.viaStitchPlane: relay disconnected → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.viaStitchPlane({ net: "GND" });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
 // ─── routeDiffPair — Sprint 12 PR 12.4 ───────────────────────────────
 
 import { buildRouteDiffPairResult } from "./altium.js";

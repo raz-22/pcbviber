@@ -37,6 +37,7 @@ export const AdMethod = z.enum([
   "set_route_rule",
   "unroute_net",
   "route_diff_pair",
+  "create_vias",
 ]);
 export type AdMethod = z.infer<typeof AdMethod>;
 

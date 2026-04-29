@@ -248,6 +248,44 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "via_stitch_plane",
+    "Generate a grid of vias tied to `net` (typically GND) across the board area. Used after a plane is poured to improve return-path stitching. Stitches over the whole board with collision skipping (components, keepouts, existing vias, edge clearance) — not just the net's plane region (plane-region detection is a future PR). Default density 5mm, edge clearance 1.5mm. Pair with `screenshot` for visual confirmation.",
+    {
+      net: z.string().min(1).describe("Target net for the via stitching, typically 'GND'."),
+      densityMm: z.coerce
+        .number()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe(
+          "Grid spacing between via centers in mm. Defaults to 5; clamped to 1mm minimum to prevent pathological grids (a 100×100 board at 0.5mm = 40k vias). 50mm cap is sane for boards larger than typical."
+        ),
+      edgeClearanceMm: z.coerce
+        .number()
+        .min(0)
+        .max(20)
+        .optional()
+        .describe("Skip vias within this far of the board edge. Defaults to 1.5mm."),
+    },
+    async (args) => {
+      const result = await ctx.platform.viaStitchPlane({
+        net: args.net,
+        densityMm: args.densityMm,
+        edgeClearanceMm: args.edgeClearanceMm,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not stitch via plane: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
     "route_diff_pair",
     "Trigger the platform's native differential-pair router on a (positiveNet, negativeNet) pair. The pair MUST be declared in the project before this is called — Altium: PCB > Design > Differential Pair Editor; EasyEDA: pair config in the Pro UI. The tool's `routed: true` indicates the router laid traces; `routed: false` means the router ran but couldn't find a path (try adjusting layer / spacing rules and retry). Pair with `screenshot` for visual confirmation. Cross-platform; both implementations are best-effort wrappers around platform-native routers.",
     {

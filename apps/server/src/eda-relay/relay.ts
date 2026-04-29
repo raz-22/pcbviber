@@ -53,6 +53,7 @@ export type EdaMethod =
   | "set_route_rule"
   | "unroute_net"
   | "route_diff_pair"
+  | "create_vias"
   | "run_drc"
   | "get_messages";
 

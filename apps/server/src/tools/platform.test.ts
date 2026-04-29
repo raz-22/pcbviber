@@ -194,6 +194,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     setRouteRule: async () => ({ supported: false, reason: "stub" }),
     unrouteNet: async () => ({ supported: false, reason: "stub" }),
     routeDiffPair: async () => ({ supported: false, reason: "stub" }),
+    viaStitchPlane: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -303,6 +304,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     setRouteRule: async () => ({ supported: false, reason: "stub" }),
     unrouteNet: async () => ({ supported: false, reason: "stub" }),
     routeDiffPair: async () => ({ supported: false, reason: "stub" }),
+    viaStitchPlane: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -991,6 +993,65 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── via_stitch_plane tool — Sprint 12 PR 12.5 ───────────────────────
+
+type ViaStitchPlaneHandler = (args: {
+  net: string;
+  densityMm?: number;
+  edgeClearanceMm?: number;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureViaStitchPlaneHandler(ctx: ToolContext): ViaStitchPlaneHandler {
+  let handler: ViaStitchPlaneHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: ViaStitchPlaneHandler) => {
+      if (name === "via_stitch_plane") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `via_stitch_plane`");
+  return handler;
+}
+
+test("via_stitch_plane tool: success → platform's confirmation message verbatim", async () => {
+  const stubPlatform = {
+    name: "easyeda" as const,
+    viaStitchPlane: async () => ({
+      supported: true as const,
+      data: {
+        net: "GND",
+        placed: 142,
+        skipped: 23,
+        densityMm: 5,
+        edgeClearanceMm: 1.5,
+        message: "Stitched 'GND' on easyeda: placed 142 via(s), skipped 23 (12 component-collision, 11 edge-clearance). Density 5mm, edge clearance 1.5mm.",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureViaStitchPlaneHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ net: "GND" });
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Stitched 'GND' on easyeda/);
+  assert.match(text, /placed 142.*skipped 23/);
+});
+
+test("via_stitch_plane tool: supported:false → MCP error result with reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    viaStitchPlane: async () => ({
+      supported: false as const,
+      reason: "Altium Designer relay is not connected.",
+    }),
+  } as unknown as Platform;
+  const handler = captureViaStitchPlaneHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ net: "GND" });
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not stitch via plane/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── route_diff_pair tool — Sprint 12 PR 12.4 ────────────────────────
