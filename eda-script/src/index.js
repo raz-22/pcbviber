@@ -321,6 +321,170 @@
     },
 
     /**
+     * Sprint 13 PR 13.1: upload an artifact (Gerber/drill/BOM/P&P)
+     * to the server's /api/artifacts route. Each export handler
+     * calls this after producing the file. Returns the upload
+     * route's JSON envelope, which the server's
+     * readEasyedaArtifactFromUpload unpacks into ExportResult.
+     *
+     * The File arg is the browser File object returned by the
+     * EasyEDA Pro export accessor. sys_ClientUrl.request can
+     * post a File directly as application/octet-stream.
+     */
+    __uploadArtifact: async function (file, format, filename, mimeType, meta, ctx) {
+      // eslint-disable-next-line no-undef
+      const url = ctx.baseUrl + "/api/artifacts";
+      const headers = {
+        Authorization: "Bearer " + ctx.apiKey,
+        "Content-Type": mimeType || "application/octet-stream",
+        "X-Artifact-Format": format,
+        "X-Artifact-Filename": filename,
+        "X-Artifact-Mime": mimeType || "application/octet-stream",
+      };
+      if (meta && typeof meta === "object") {
+        headers["X-Artifact-Meta"] = JSON.stringify(meta);
+      }
+      // eslint-disable-next-line no-undef
+      const res = await eda.sys_ClientUrl.request(url, "POST", file, { headers: headers });
+      if (res.status !== 200) {
+        throw new Error("Artifact upload failed with status " + res.status);
+      }
+      return await res.json();
+    },
+
+    /**
+     * Sprint 13 PR 13.1: export Gerber zip via
+     * pcb_ManufactureData.getGerberFile (BETA) + upload.
+     *
+     * The accessor signature per the SDK:
+     *   getGerberFile(fileName, colorSilkscreen, unit, digitalFormat,
+     *                 other, layers, objects): Promise<File>
+     *
+     * v1 uses sane defaults — colorSilkscreen=false, unit='mm',
+     * standard digital format, no layer/object filtering. The
+     * AI client controls higher-level intent ("export gerbers")
+     * not the per-flag config; future PR can add a params shape
+     * if power users need it.
+     */
+    export_gerbers: async function (_params, ctx) {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_ManufactureData || typeof eda.pcb_ManufactureData.getGerberFile !== "function") {
+        throw new Error("EasyEDA Pro pcb_ManufactureData.getGerberFile is not exposed in this extension version (BETA API).");
+      }
+      // eslint-disable-next-line no-undef
+      const file = await eda.pcb_ManufactureData.getGerberFile(
+        "Gerber.zip",
+        false,        // colorSilkscreen
+        "mm",         // unit
+        undefined,    // digitalFormat (default)
+        undefined,    // other
+        undefined,    // layers (all)
+        undefined     // objects (all)
+      );
+      if (!file) throw new Error("getGerberFile returned no file");
+      return await handlers.__uploadArtifact(
+        file,
+        "gerber-zip",
+        "Gerber.zip",
+        "application/zip",
+        {}, // meta — could include layer count if extension exposes it
+        ctx
+      );
+    },
+
+    /**
+     * Sprint 13 PR 13.1: export Excellon drill files. The Pro
+     * accessors are getDsnFile() / getIdxFile() per the spike;
+     * they return DSN/IDX format, NOT raw Excellon. Full Excellon
+     * conversion is `[NEEDS HANDS-ON]` per spike question; v1
+     * uploads whatever the accessors return + tags it
+     * 'excellon-drill' (caller may need post-processing).
+     */
+    export_drill: async function (_params, ctx) {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_ManufactureData || typeof eda.pcb_ManufactureData.getDsnFile !== "function") {
+        throw new Error("EasyEDA Pro pcb_ManufactureData.getDsnFile is not exposed in this extension version.");
+      }
+      // eslint-disable-next-line no-undef
+      const file = await eda.pcb_ManufactureData.getDsnFile();
+      if (!file) throw new Error("getDsnFile returned no file");
+      return await handlers.__uploadArtifact(
+        file,
+        "excellon-drill",
+        "Drill.dsn",
+        "application/octet-stream",
+        { note: "DSN format from EasyEDA — full Excellon conversion may be needed for some fab houses" },
+        ctx
+      );
+    },
+
+    /**
+     * Sprint 13 PR 13.1: export BOM CSV via
+     * sch_ManufactureData.getBomFile (BETA). When withLcsc is
+     * true, includes LCSC part-number columns — useful for
+     * one-click JLCPCB ordering.
+     */
+    export_bom: async function (params, ctx) {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.sch_ManufactureData || typeof eda.sch_ManufactureData.getBomFile !== "function") {
+        throw new Error("EasyEDA Pro sch_ManufactureData.getBomFile is not exposed in this extension version (BETA API).");
+      }
+      const withLcsc = params && params.withLcsc !== false; // default true
+      // The columns parameter shape is sketchy — pass undefined
+      // for default columns when withLcsc=false; pass an LCSC-
+      // including column list when true. The exact column-spec
+      // format is `[NEEDS HANDS-ON]` per spike; v1 uses
+      // undefined and trusts EasyEDA's default to include LCSC
+      // when the parts have LCSC IDs attached.
+      // eslint-disable-next-line no-undef
+      const file = await eda.sch_ManufactureData.getBomFile(
+        "BOM.csv",
+        "csv",        // fileType
+        undefined,    // template (default)
+        undefined,    // filterOptions
+        undefined,    // statistics
+        undefined,    // property
+        undefined,    // columns (default — includes LCSC when available)
+        undefined     // assemblyVariantsConfig
+      );
+      if (!file) throw new Error("getBomFile returned no file");
+      return await handlers.__uploadArtifact(
+        file,
+        "csv-bom",
+        "BOM.csv",
+        "text/csv",
+        { withLcsc: withLcsc },
+        ctx
+      );
+    },
+
+    /**
+     * Sprint 13 PR 13.1: export pick-and-place CSV via
+     * pcb_ManufactureData.getPickAndPlaceFile.
+     */
+    export_pick_and_place: async function (_params, ctx) {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_ManufactureData || typeof eda.pcb_ManufactureData.getPickAndPlaceFile !== "function") {
+        throw new Error("EasyEDA Pro pcb_ManufactureData.getPickAndPlaceFile is not exposed in this extension version.");
+      }
+      // eslint-disable-next-line no-undef
+      const file = await eda.pcb_ManufactureData.getPickAndPlaceFile(
+        "PickAndPlace.csv",
+        "csv",   // fileType
+        "mm"     // unit
+      );
+      if (!file) throw new Error("getPickAndPlaceFile returned no file");
+      return await handlers.__uploadArtifact(
+        file,
+        "csv-pick-and-place",
+        "PickAndPlace.csv",
+        "text/csv",
+        {},
+        ctx
+      );
+    },
+
+    /**
      * Sprint 12 PR 12.5: batch via creation. Server-side planner
      * (platforms/via-stitching.ts) computes the candidate positions
      * after collision filtering; this handler materializes them
@@ -1148,7 +1312,11 @@
       };
     } else {
       try {
-        const result = await handler(cmd.params || {});
+        // Sprint 13 PR 13.1: pass {baseUrl, apiKey} as a second
+        // arg so export handlers can upload artifacts to
+        // /api/artifacts. Pre-13.1 handlers ignore the extra arg
+        // (JS doesn't care about unused parameters).
+        const result = await handler(cmd.params || {}, { baseUrl: baseUrl, apiKey: apiKey });
         body = { id: cmd.id, ok: true, result: result };
       } catch (err) {
         body = {

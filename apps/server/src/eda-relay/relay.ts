@@ -54,6 +54,10 @@ export type EdaMethod =
   | "unroute_net"
   | "route_diff_pair"
   | "create_vias"
+  | "export_gerbers"
+  | "export_drill"
+  | "export_bom"
+  | "export_pick_and_place"
   | "run_drc"
   | "get_messages";
 

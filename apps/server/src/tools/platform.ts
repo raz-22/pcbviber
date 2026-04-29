@@ -14,6 +14,24 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../mcp/dispatch.js";
+import type { ExportResult } from "../platforms/types.js";
+
+/**
+ * Sprint 13 PR 13.1: shared rendering for the four export tools.
+ * Centralized so all four emit the same text shape — AI clients
+ * see consistent structure regardless of which export they ran.
+ */
+function buildExportToolMessage(result: ExportResult, platformName: string): string {
+  const sizeKb = (result.byteSize / 1024).toFixed(1);
+  const metaParts: string[] = [];
+  for (const [k, v] of Object.entries(result.meta)) {
+    if (typeof v === "number" || typeof v === "string" || typeof v === "boolean") {
+      metaParts.push(`${k}=${v}`);
+    }
+  }
+  const metaStr = metaParts.length > 0 ? ` (${metaParts.join(", ")})` : "";
+  return `Exported ${result.format} from ${platformName}: ${sizeKb} KB${metaStr}. Download via ${result.downloadUrl} (expires ${result.expiresAt}).`;
+}
 
 const PaginationShape = {
   offset: z.coerce
@@ -243,6 +261,93 @@ export function registerPlatformTools(
             text: header + "\n" + lines.join("\n") + footer,
           },
         ],
+      };
+    }
+  );
+
+  server.tool(
+    "export_gerbers",
+    "Export the active project as a Gerber zip. Returns metadata + a download URL — the AI never sees the raw bytes (use the URL to retrieve or pass to downstream tools like JLCPCB ordering). Cross-platform: EasyEDA via the in-editor extension's pcb_ManufactureData (BETA); Altium needs hands-on OutJob wiring per the Sprint 13 follow-up. Pair with `screenshot` first to confirm the project is in the right state.",
+    {},
+    async () => {
+      const result = await ctx.platform.exportGerbers();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not export Gerbers: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: buildExportToolMessage(result.data, ctx.platform.name) }],
+      };
+    }
+  );
+
+  server.tool(
+    "export_drill",
+    "Export Excellon drill files for the active PCB. EasyEDA returns DSN format (full Excellon conversion may be needed for some fab houses); Altium needs hands-on OutJob wiring. Returns metadata + download URL.",
+    {},
+    async () => {
+      const result = await ctx.platform.exportDrill();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not export drill: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: buildExportToolMessage(result.data, ctx.platform.name) }],
+      };
+    }
+  );
+
+  server.tool(
+    "export_bom",
+    "Export the project BOM as CSV. EasyEDA includes LCSC part numbers when available (useful for JLCPCB ordering); Altium BOMs follow the project's BOM template configuration. Pair with `list_library_components` if you need richer per-part data.",
+    {
+      withLcsc: z
+        .boolean()
+        .optional()
+        .describe(
+          "Include LCSC part numbers in the CSV (EasyEDA only). Defaults to true. No-op on Altium."
+        ),
+    },
+    async (args) => {
+      const result = await ctx.platform.exportBom({ withLcsc: args.withLcsc });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not export BOM: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: buildExportToolMessage(result.data, ctx.platform.name) }],
+      };
+    }
+  );
+
+  server.tool(
+    "export_pick_and_place",
+    "Export pick-and-place CSV (designator, footprint, x, y, rotation, layer) for the active PCB. Pair with `get_components` to inspect placement state before exporting.",
+    {},
+    async () => {
+      const result = await ctx.platform.exportPickAndPlace();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not export pick-and-place: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: buildExportToolMessage(result.data, ctx.platform.name) }],
       };
     }
   );

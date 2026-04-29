@@ -32,6 +32,7 @@ import {
   type RouteDiffPairResult,
   type SetRouteRuleParams,
   type UnrouteResult,
+  type ExportResult,
   type ViaStitchResult,
   type XSignalStatus,
   type XSignalsStatusResult,
@@ -52,6 +53,7 @@ import {
 import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.js";
 import { placeByGroupShared } from "./place-by-group.js";
 import { viaStitchPlaneShared } from "./via-stitching.js";
+import { readAltiumArtifactFromPath } from "./exports.js";
 
 export interface AltiumPlatformDeps {
   /** Local Altium Designer relay (HTTP long-poll bridge). Optional —
@@ -69,6 +71,13 @@ export interface AltiumPlatformDeps {
    * `{supported: false}` with a clear reason rather than throw.
    */
   altiumWorkspaceUrl: string | null;
+  /**
+   * Sprint 13 PR 13.1: org ID for the current request. Used by
+   * the four export tools to scope artifacts in the store. Null
+   * on the stdio path (no API key); export tools require it and
+   * surface a clear `supported:false` reason when it's missing.
+   */
+  orgId?: string | null;
 }
 
 const RELAY_DISCONNECTED =
@@ -411,6 +420,67 @@ export class AltiumPlatform implements Platform {
         params as unknown as Record<string, unknown>
       );
       return ok(buildUnrouteResult(params.net, raw));
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
+  async exportGerbers(): Promise<PlatformResponse<ExportResult>> {
+    return this.runAltiumExport("export_gerbers", "gerber-zip");
+  }
+
+  async exportDrill(): Promise<PlatformResponse<ExportResult>> {
+    return this.runAltiumExport("export_drill", "excellon-drill");
+  }
+
+  async exportBom(_params: {
+    withLcsc?: boolean;
+  }): Promise<PlatformResponse<ExportResult>> {
+    // withLcsc is no-op on Altium — AD's BOMs don't carry LCSC
+    // fields by default. Caller passes the param for the EasyEDA
+    // path; we accept and ignore on this side.
+    return this.runAltiumExport("export_bom", "csv-bom");
+  }
+
+  async exportPickAndPlace(): Promise<PlatformResponse<ExportResult>> {
+    return this.runAltiumExport("export_pick_and_place", "csv-pick-and-place");
+  }
+
+  /**
+   * Shared per-export pipeline:
+   *   1. Connectivity + orgId guards.
+   *   2. Trigger relay command — relay runs OutJob, returns
+   *      {path, byteSize, meta}.
+   *   3. Server reads bytes from path + uploads to artifact store
+   *      via readAltiumArtifactFromPath.
+   *
+   * Per-format method names are kept distinct on the Platform
+   * interface so AI clients call by intent, but the pipeline is
+   * the same — this private helper is the single-source.
+   */
+  private async runAltiumExport(
+    method:
+      | "export_gerbers"
+      | "export_drill"
+      | "export_bom"
+      | "export_pick_and_place",
+    format:
+      | "gerber-zip"
+      | "excellon-drill"
+      | "csv-bom"
+      | "csv-pick-and-place"
+  ): Promise<PlatformResponse<ExportResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    if (!this.deps.orgId) {
+      return notSupported(
+        "Export tools need a workspace API key (orgId) to scope artifacts. The stdio CLI path doesn't carry one — call from a workspace-bound /mcp request instead."
+      );
+    }
+    try {
+      const raw = await this.deps.relay.execute<unknown>(method, {});
+      return await readAltiumArtifactFromPath(this.deps.orgId, format, raw);
     } catch (err) {
       return notSupported(errorReason(err));
     }

@@ -65,6 +65,7 @@ import type { AdRelay } from "./ad-relay/relay.js";
 import { registerAdRelayRoutes } from "./ad-relay/routes.js";
 import { EdaRelay } from "./eda-relay/relay.js";
 import { registerEdaRelayRoutes } from "./eda-relay/routes.js";
+import { registerArtifactRoutes } from "./artifacts/routes.js";
 import { registerEdaScriptRoutes } from "./eda-script-routes/routes.js";
 import { AltiumPlatform } from "./platforms/altium.js";
 import { EasyedaPlatform } from "./platforms/easyeda.js";
@@ -294,6 +295,12 @@ export async function startHttpServer(opts: {
   const edaRelay = new EdaRelay();
   registerEdaRelayRoutes(app, edaRelay);
 
+  // Sprint 13 PR 13.1: artifact upload/download for manufacturing
+  // exports (Gerbers, drill, BOM, P&P). EasyEDA extension posts
+  // exported file bytes here; AI clients retrieve via the
+  // download URL returned in the export tool's result.
+  await registerArtifactRoutes(app);
+
   // ── eda-script package serve ───────────────────────────────────
   // Serves the packaged EasyEDA Pro extension as a `.eext` archive
   // at /eda-script/pcbviber-easyeda.eext. Public route — the .eext
@@ -381,6 +388,11 @@ export async function startHttpServer(opts: {
             relay,
             nexar: perRequestNexar,
             altiumWorkspaceUrl: workspaceRow.altiumWorkspaceUrl,
+            // Sprint 13 PR 13.1: orgId scopes artifacts in the
+            // store. Required by export tools; null on the stdio
+            // path (export tools surface a clear supported:false
+            // reason in that case).
+            orgId: apiKeyCtx.org.id,
           });
     const toolCtx: ToolContext = {
       nexar: perRequestNexar,

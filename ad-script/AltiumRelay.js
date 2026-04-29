@@ -153,6 +153,10 @@ function Dispatch(cmd) {
         case "unroute_net":        return CmdUnrouteNet(cmd.params);
         case "route_diff_pair":    return CmdRouteDiffPair(cmd.params);
         case "create_vias":        return CmdCreateVias(cmd.params);
+        case "export_gerbers":     return CmdExportGerbers(cmd.params);
+        case "export_drill":       return CmdExportDrill(cmd.params);
+        case "export_bom":         return CmdExportBom(cmd.params);
+        case "export_pick_and_place": return CmdExportPickAndPlace(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -1560,6 +1564,55 @@ function CmdCreateVias(params) {
         placed: placed,
         message: "Created " + placed + " via(s) on net '" + params.net + "' on Altium."
     };
+}
+
+// Sprint 13 PR 13.1: manufacturing-export handlers.
+//
+// These four handlers trigger the OutJob system + return the file
+// path on disk. The server (platforms/exports.ts) reads the bytes
+// and uploads them to the artifact store.
+//
+// What's working today:
+//   - The relay command dispatch + the server-side artifact store
+//     + the EasyEDA upload path (extension uploads via
+//     sys_ClientUrl.request) — full end-to-end on EasyEDA.
+//
+// What needs hands-on wiring:
+//   - OutJob output-path resolution. AD's OutJob system writes
+//     to a path configured per-OutJob in the .OutJob file; the
+//     scripting API to read THAT path back is undocumented at
+//     the level of detail needed for v1.
+//   - The Project:Generate dispatch fires asynchronously; we'd
+//     need a sync-wait or polling for the file to appear.
+//
+// Until live test confirms the path-resolution approach, these
+// handlers throw a clear actionable message that surfaces in
+// the AI client as supported:false. The architecture is in
+// place — wiring the AD side is a follow-up patch that doesn't
+// touch the server contract.
+function altiumExportNotWiredYet(format) {
+    throw MakeError(
+        "AD-side " + format + " export needs hands-on wiring against OutJob output paths. " +
+        "Sprint 13 PR 13.1 ships the architecture (relay → server → artifact store); " +
+        "the OutJob-path-resolution piece is tracked as a follow-up. " +
+        "Use the EasyEDA workspace for now, or run Project:Generate manually + retrieve the file from the project output directory."
+    );
+}
+
+function CmdExportGerbers(_params) {
+    altiumExportNotWiredYet("Gerber");
+}
+
+function CmdExportDrill(_params) {
+    altiumExportNotWiredYet("Drill");
+}
+
+function CmdExportBom(_params) {
+    altiumExportNotWiredYet("BOM");
+}
+
+function CmdExportPickAndPlace(_params) {
+    altiumExportNotWiredYet("Pick & Place");
 }
 
 function CmdGetStackup(_params) {

@@ -1743,6 +1743,210 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── Manufacturing exports — Sprint 13 PR 13.1 ───────────────────────
+
+import { readEasyedaArtifactFromUpload } from "./exports.js";
+
+test("readEasyedaArtifactFromUpload: maps upload-route envelope to ExportResult", () => {
+  // Pin the wire format the EasyEDA extension's
+  // sys_ClientUrl.request → /api/artifacts response shape.
+  const result = readEasyedaArtifactFromUpload("gerber-zip", {
+    id: "art-abc-123",
+    byteSize: 12345,
+    format: "gerber-zip",
+    expiresAt: "2026-04-29T10:00:00.000Z",
+    meta: { layers: 6 },
+    downloadUrl: "/api/artifacts/art-abc-123",
+  });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.artifactId, "art-abc-123");
+    assert.equal(result.data.byteSize, 12345);
+    assert.equal(result.data.format, "gerber-zip");
+    assert.equal(result.data.downloadUrl, "/api/artifacts/art-abc-123");
+    assert.deepEqual(result.data.meta, { layers: 6 });
+  }
+});
+
+test("readEasyedaArtifactFromUpload: missing id → supported:false naming the upload path", () => {
+  // Defense-in-depth: extension version drift could change the
+  // upload response shape. Surface a clear reason so AI clients
+  // know what's broken.
+  const result = readEasyedaArtifactFromUpload("csv-bom", {
+    byteSize: 100,
+    // no id field
+  });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /artifact id/);
+    assert.match(result.reason, /\/api\/artifacts/);
+  }
+});
+
+test("readEasyedaArtifactFromUpload: synthesizes downloadUrl when extension didn't supply one", () => {
+  // Older extension versions may return only the id. The helper
+  // synthesizes a default downloadUrl so the AI client still
+  // gets a usable URL.
+  const result = readEasyedaArtifactFromUpload("excellon-drill", {
+    id: "art-xyz",
+    byteSize: 5000,
+  });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.downloadUrl, "/api/artifacts/art-xyz");
+  }
+});
+
+test("AltiumPlatform.exportGerbers: relay disconnected → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+    orgId: "org-1",
+  });
+  const result = await platform.exportGerbers();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("AltiumPlatform.exportGerbers: missing orgId → supported:false naming the stdio limitation", async () => {
+  // Pin the architectural contract: export tools require the
+  // workspace API key context for artifact scoping. Stdio path
+  // doesn't carry one — the error message tells AI clients
+  // (and CLI users) what to do.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => ({ path: "/tmp/g.zip" }),
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+    orgId: null,
+  });
+  const result = await platform.exportGerbers();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /orgId/);
+    assert.match(result.reason, /stdio/);
+  }
+});
+
+test("AltiumPlatform.exportGerbers: relay throws 'not yet wired' → supported:false carries the actionable message", async () => {
+  // Today's AD relay stub throws altiumExportNotWiredYet — pin
+  // that the AI client sees the actionable wiring-status message
+  // verbatim, with the EasyEDA-fallback hint.
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async () => {
+      throw new Error(
+        "AD-side Gerber export needs hands-on wiring against OutJob output paths. " +
+          "Sprint 13 PR 13.1 ships the architecture (relay → server → artifact store); " +
+          "the OutJob-path-resolution piece is tracked as a follow-up. " +
+          "Use the EasyEDA workspace for now, or run Project:Generate manually + retrieve the file from the project output directory."
+      );
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+    orgId: "org-1",
+  });
+  const result = await platform.exportGerbers();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /AD-side Gerber export needs hands-on wiring/);
+    assert.match(result.reason, /EasyEDA workspace/);
+  }
+});
+
+test("EasyedaPlatform.exportGerbers: relay round-trip → ExportResult unpacked from upload envelope", async () => {
+  // End-to-end pin: extension returns the upload-route envelope,
+  // server unpacks via readEasyedaArtifactFromUpload, returns
+  // ExportResult to the caller.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.exportGerbers();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected export_gerbers command");
+  assert.equal(cmd.method, "export_gerbers");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      id: "art-gerber-1",
+      byteSize: 65536,
+      format: "gerber-zip",
+      expiresAt: "2026-04-29T11:00:00.000Z",
+      meta: {},
+      downloadUrl: "/api/artifacts/art-gerber-1",
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.artifactId, "art-gerber-1");
+    assert.equal(result.data.format, "gerber-zip");
+    assert.equal(result.data.byteSize, 65536);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.exportBom: passes withLcsc flag to the extension; defaults to true", async () => {
+  // Pin the param-passthrough: tool layer accepts withLcsc,
+  // platform forwards to the extension.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  // Test 1: explicit withLcsc=false
+  let pending = platform.exportBom({ withLcsc: false });
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected export_bom command");
+  assert.equal(cmd.params.withLcsc, false);
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { id: "art-bom-1", byteSize: 100, format: "csv-bom" },
+  });
+  await pending;
+
+  // Test 2: omit withLcsc — defaults to true on the platform side
+  pending = platform.exportBom({});
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected export_bom command (2)");
+  assert.equal(cmd.params.withLcsc, true,
+    "platform must default withLcsc to true when caller omits the flag");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: { id: "art-bom-2", byteSize: 100, format: "csv-bom" },
+  });
+  await pending;
+
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform exports: no relay → all four return supported:false NO_BRIDGE", async () => {
+  // Pin the no-bridge contract for every export so AI clients
+  // get a consistent reason regardless of which export was tried.
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  for (const result of [
+    await platform.exportGerbers(),
+    await platform.exportDrill(),
+    await platform.exportBom({}),
+    await platform.exportPickAndPlace(),
+  ]) {
+    assert.equal(result.supported, false);
+    if (result.supported === false) {
+      assert.match(result.reason, /extension is not connected/i);
+    }
+  }
+});
+
 // ─── xSignals status — Sprint 12 PR 12.6 ─────────────────────────────
 
 import { parseXSignalMessages } from "./altium.js";

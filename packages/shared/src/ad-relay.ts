@@ -38,6 +38,10 @@ export const AdMethod = z.enum([
   "unroute_net",
   "route_diff_pair",
   "create_vias",
+  "export_gerbers",
+  "export_drill",
+  "export_bom",
+  "export_pick_and_place",
 ]);
 export type AdMethod = z.infer<typeof AdMethod>;
 

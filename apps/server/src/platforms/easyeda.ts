@@ -62,6 +62,7 @@ import {
   type RouteDiffPairResult,
   type SetRouteRuleParams,
   type UnrouteResult,
+  type ExportResult,
   type ViaStitchResult,
   type XSignalsStatusResult,
   type Page,
@@ -80,6 +81,7 @@ import {
 } from "./types.js";
 import { placeByGroupShared } from "./place-by-group.js";
 import { viaStitchPlaneShared } from "./via-stitching.js";
+import { readEasyedaArtifactFromUpload } from "./exports.js";
 
 export interface EasyedaPlatformDeps {
   /**
@@ -591,6 +593,66 @@ export class EasyedaPlatform implements Platform {
         params as unknown as Record<string, unknown>
       );
       return ok(buildUnrouteResult(params.net, raw));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async exportGerbers(): Promise<PlatformResponse<ExportResult>> {
+    return this.runEasyedaExport("export_gerbers", "gerber-zip", {});
+  }
+
+  async exportDrill(): Promise<PlatformResponse<ExportResult>> {
+    return this.runEasyedaExport("export_drill", "excellon-drill", {});
+  }
+
+  async exportBom(params: {
+    withLcsc?: boolean;
+  }): Promise<PlatformResponse<ExportResult>> {
+    return this.runEasyedaExport("export_bom", "csv-bom", {
+      withLcsc: params.withLcsc ?? true,
+    });
+  }
+
+  async exportPickAndPlace(): Promise<PlatformResponse<ExportResult>> {
+    return this.runEasyedaExport(
+      "export_pick_and_place",
+      "csv-pick-and-place",
+      {}
+    );
+  }
+
+  /**
+   * Shared per-export pipeline. The extension does the heavy
+   * lifting: calls the appropriate sch/pcb_ManufactureData
+   * accessor, gets a browser File, uploads it to /api/artifacts
+   * via sys_ClientUrl.request. The relay's response is the
+   * upload-route's JSON envelope; readEasyedaArtifactFromUpload
+   * unpacks it into the cross-platform ExportResult.
+   */
+  private async runEasyedaExport(
+    method:
+      | "export_gerbers"
+      | "export_drill"
+      | "export_bom"
+      | "export_pick_and_place",
+    format:
+      | "gerber-zip"
+      | "excellon-drill"
+      | "csv-bom"
+      | "csv-pick-and-place",
+    params: Record<string, unknown>
+  ): Promise<PlatformResponse<ExportResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        method,
+        params
+      );
+      return readEasyedaArtifactFromUpload(format, raw);
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }

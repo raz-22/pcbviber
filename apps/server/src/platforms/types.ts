@@ -350,6 +350,40 @@ export interface XSignalsStatusResult {
   rawMessages: PlatformMessage[];
 }
 
+/**
+ * Sprint 13 PR 13.1: result of any of the four export tools.
+ * Identical shape across formats — what changes is `format`,
+ * `meta` (format-specific), and the underlying bytes.
+ *
+ * AI clients see metadata + an artifact ID/URL. The bytes never
+ * pass through the AI's context window — that's the whole point
+ * of the artifact store. Downstream tools that need the file
+ * content download via `downloadUrl` (returned authed by the
+ * same API key); humans can also click through the URL.
+ *
+ * `expiresAt` defaults to +1h from creation. AI clients that
+ * need to persist artifacts longer should download + re-host.
+ */
+export interface ExportResult {
+  format:
+    | "gerber-zip"
+    | "excellon-drill"
+    | "csv-bom"
+    | "csv-pick-and-place";
+  artifactId: string;
+  /** GET URL, authed by the same workspace API key. */
+  downloadUrl: string;
+  byteSize: number;
+  /** ISO 8601 timestamp. */
+  expiresAt: string;
+  /** Format-specific metadata: e.g. `{layers, fileCount}` for
+   *  gerber-zip, `{lines}` for csv-bom. AI clients can read this
+   *  without downloading the bytes. */
+  meta: Record<string, unknown>;
+  /** Suggested filename for human downloads. */
+  filename: string;
+}
+
 export interface ViaStitchResult {
   net: string;
   placed: number;
@@ -860,6 +894,52 @@ export interface Platform {
    * Pair with `run_drc` to refresh the panel before reading.
    */
   getXSignalsStatus(): Promise<PlatformResponse<XSignalsStatusResult>>;
+
+  /**
+   * Sprint 13 PR 13.1: export the active project as a Gerber zip.
+   * Altium: triggers OutJob's Gerber output; relay reads the
+   * resulting zip from disk + uploads to the artifact store.
+   * EasyEDA: extension calls `pcb_ManufactureData.getGerberFile`
+   * (BETA per spike) + uploads via `sys_ClientUrl.request`.
+   *
+   * Returns metadata + an artifact ID/URL — AI clients reference
+   * the artifact downstream (e.g. JLCPCB upload) but never see
+   * the raw bytes through their context window.
+   */
+  exportGerbers(): Promise<PlatformResponse<ExportResult>>;
+
+  /**
+   * Sprint 13 PR 13.1: export Excellon drill files. Altium:
+   * OutJob NC Drill output. EasyEDA: extension calls
+   * `pcb_ManufactureData.getDsnFile()` / `getIdxFile()` — full
+   * Excellon may need post-processing (`[NEEDS HANDS-ON]` per
+   * spike).
+   */
+  exportDrill(): Promise<PlatformResponse<ExportResult>>;
+
+  /**
+   * Sprint 13 PR 13.1: export the project's BOM as CSV. When
+   * `withLcsc` is true (EasyEDA only), the CSV includes LCSC
+   * part numbers — useful for one-click JLCPCB ordering. On
+   * Altium the flag is no-op (Altium BOMs don't carry LCSC by
+   * default).
+   *
+   * Altium: BOM via OutJob (or direct GraphQL fallback).
+   * EasyEDA: `sch_ManufactureData.getBomFile(...)` (BETA).
+   */
+  exportBom(params: {
+    /** Include LCSC part numbers in the CSV (EasyEDA only). */
+    withLcsc?: boolean;
+  }): Promise<PlatformResponse<ExportResult>>;
+
+  /**
+   * Sprint 13 PR 13.1: export pick-and-place CSV (designator,
+   * footprint, x, y, rotation, layer). Altium: OutJob P&P
+   * output. EasyEDA:
+   * `pcb_ManufactureData.getPickAndPlaceFile(fileName, fileType,
+   * unit)`.
+   */
+  exportPickAndPlace(): Promise<PlatformResponse<ExportResult>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

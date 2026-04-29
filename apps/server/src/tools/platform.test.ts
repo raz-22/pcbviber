@@ -196,6 +196,10 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     routeDiffPair: async () => ({ supported: false, reason: "stub" }),
     viaStitchPlane: async () => ({ supported: false, reason: "stub" }),
     getXSignalsStatus: async () => ({ supported: false, reason: "stub" }),
+    exportGerbers: async () => ({ supported: false, reason: "stub" }),
+    exportDrill: async () => ({ supported: false, reason: "stub" }),
+    exportBom: async () => ({ supported: false, reason: "stub" }),
+    exportPickAndPlace: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -307,6 +311,10 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     routeDiffPair: async () => ({ supported: false, reason: "stub" }),
     viaStitchPlane: async () => ({ supported: false, reason: "stub" }),
     getXSignalsStatus: async () => ({ supported: false, reason: "stub" }),
+    exportGerbers: async () => ({ supported: false, reason: "stub" }),
+    exportDrill: async () => ({ supported: false, reason: "stub" }),
+    exportBom: async () => ({ supported: false, reason: "stub" }),
+    exportPickAndPlace: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -995,6 +1003,107 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── export_* tools — Sprint 13 PR 13.1 ──────────────────────────────
+
+type ExportToolHandler = (args: {
+  withLcsc?: boolean;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureExportToolHandler(
+  ctx: ToolContext,
+  toolName:
+    | "export_gerbers"
+    | "export_drill"
+    | "export_bom"
+    | "export_pick_and_place"
+): ExportToolHandler {
+  let handler: ExportToolHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: ExportToolHandler) => {
+      if (name === toolName) handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error(`registerPlatformTools didn't register \`${toolName}\``);
+  return handler;
+}
+
+test("export_gerbers tool: success → KB-rounded size + downloadUrl + expires-by line", async () => {
+  // Pin the cross-format rendering: size in KB, format tag,
+  // downloadUrl, expires-by. Same shape used by all four export
+  // tools so AI clients get consistent output regardless of which
+  // export they ran.
+  const stubPlatform = {
+    name: "easyeda" as const,
+    exportGerbers: async () => ({
+      supported: true as const,
+      data: {
+        format: "gerber-zip" as const,
+        artifactId: "art-1",
+        downloadUrl: "/api/artifacts/art-1",
+        byteSize: 65536, // 64 KB
+        expiresAt: "2026-04-29T11:00:00.000Z",
+        meta: { layers: 6, fileCount: 14 },
+        filename: "Gerber.zip",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureExportToolHandler(buildToolCtx(stubPlatform), "export_gerbers");
+  const res = await handler({});
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Exported gerber-zip from easyeda/);
+  assert.match(text, /64\.0 KB/);
+  // Meta fields surface inline so AI can scan without downloading
+  assert.match(text, /layers=6/);
+  assert.match(text, /fileCount=14/);
+  assert.match(text, /\/api\/artifacts\/art-1/);
+  assert.match(text, /expires 2026-04-29T11:00:00\.000Z/);
+});
+
+test("export_bom tool: passes withLcsc:false through to the platform", async () => {
+  // Pin the arg passthrough — caller controls whether LCSC
+  // columns get included.
+  const captured: Array<{ withLcsc?: boolean }> = [];
+  const stubPlatform = {
+    name: "easyeda" as const,
+    exportBom: async (params: { withLcsc?: boolean }) => {
+      captured.push(params);
+      return {
+        supported: true as const,
+        data: {
+          format: "csv-bom" as const,
+          artifactId: "art-bom",
+          downloadUrl: "/api/artifacts/art-bom",
+          byteSize: 1024,
+          expiresAt: "2026-04-29T11:00:00.000Z",
+          meta: { withLcsc: false },
+          filename: "BOM.csv",
+        },
+      };
+    },
+  } as unknown as Platform;
+  const handler = captureExportToolHandler(buildToolCtx(stubPlatform), "export_bom");
+  await handler({ withLcsc: false });
+  assert.equal(captured[0].withLcsc, false);
+});
+
+test("export_gerbers tool: supported:false → MCP error result with reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    exportGerbers: async () => ({
+      supported: false as const,
+      reason: "AD-side Gerber export needs hands-on wiring against OutJob output paths.",
+    }),
+  } as unknown as Platform;
+  const handler = captureExportToolHandler(buildToolCtx(stubPlatform), "export_gerbers");
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not export Gerbers/);
+  assert.match(text, /hands-on wiring/);
 });
 
 // ─── xsignals_status tool — Sprint 12 PR 12.6 ────────────────────────
