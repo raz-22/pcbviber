@@ -1743,6 +1743,141 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── unrouteNet — Sprint 12 PR 12.3 ──────────────────────────────────
+
+import { buildUnrouteResult } from "./altium.js";
+
+test("buildUnrouteResult: forwards relay's count fields + message verbatim", () => {
+  // Pin the happy path: when the relay supplies all four fields,
+  // the helper returns them unchanged. Used by both platforms;
+  // ensures the count contract is single-sourced.
+  const result = buildUnrouteResult("VCC", {
+    deletedTraces: 23,
+    deletedVias: 4,
+    skippedLocked: 1,
+    message: "Unrouted 'VCC': deleted 23 trace(s), 4 via(s), 1 locked skipped on Altium.",
+  });
+  assert.equal(result.net, "VCC");
+  assert.equal(result.deletedTraces, 23);
+  assert.equal(result.deletedVias, 4);
+  assert.equal(result.skippedLocked, 1);
+  assert.match(result.message, /Unrouted 'VCC'/);
+});
+
+test("buildUnrouteResult: synthesizes message when relay didn't supply one (older relay version)", () => {
+  // Defense in depth: an older relay version that returns counts
+  // without a message gets a synthesized fallback so AI clients
+  // still see a coherent confirmation.
+  const result = buildUnrouteResult("GND", {
+    deletedTraces: 5,
+    deletedVias: 0,
+    skippedLocked: 0,
+  });
+  assert.equal(result.deletedTraces, 5);
+  assert.match(result.message, /Unrouted 'GND'/);
+  assert.match(result.message, /5 trace\(s\), 0 via\(s\)/);
+});
+
+test("buildUnrouteResult: empty result (no traces) → 'already unrouted or doesn't exist' message", () => {
+  // Pin the disambiguation message: zero deletions + zero
+  // skipped means the net was either already clean or
+  // doesn't exist on this board. Distinct from a successful
+  // unroute that happened to have only locked traces.
+  const result = buildUnrouteResult("MysteryNet", {
+    deletedTraces: 0,
+    deletedVias: 0,
+    skippedLocked: 0,
+  });
+  assert.match(result.message, /already unrouted or doesn't exist/);
+});
+
+test("AltiumPlatform.unrouteNet: forwards net to relay; returns count envelope", async () => {
+  const captured: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string, params: Record<string, unknown>) => {
+      captured.push({ method, params });
+      return {
+        net: "VCC",
+        deletedTraces: 12,
+        deletedVias: 2,
+        skippedLocked: 0,
+        message: "Unrouted 'VCC': deleted 12 trace(s), 2 via(s) on Altium.",
+      };
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.unrouteNet({ net: "VCC" });
+  assert.equal(captured[0].method, "unroute_net");
+  assert.deepEqual(captured[0].params, { net: "VCC" });
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.deletedTraces, 12);
+    assert.equal(result.data.deletedVias, 2);
+  }
+});
+
+test("AltiumPlatform.unrouteNet: relay disconnected → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.unrouteNet({ net: "VCC" });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.unrouteNet: round-trips with locked-skipped count surfaced", async () => {
+  // Pin the locked-skipped path: extension reports that some
+  // traces couldn't be deleted due to lock state. AI client must
+  // see the count so it can decide whether to call lock_component
+  // (when implemented for traces) or accept the partial unroute.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.unrouteNet({ net: "GND" });
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected unroute_net command");
+  assert.equal(cmd.method, "unroute_net");
+  assert.equal(cmd.params.net, "GND");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      net: "GND",
+      deletedTraces: 8,
+      deletedVias: 0,
+      skippedLocked: 3,
+      message: "Unrouted 'GND': deleted 8 trace(s), 0 via(s), 3 locked skipped on EasyEDA.",
+    },
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.deletedTraces, 8);
+    assert.equal(result.data.skippedLocked, 3);
+    assert.match(result.data.message, /3 locked skipped/);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.unrouteNet: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.unrouteNet({ net: "VCC" });
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── Design rules — Sprint 12 PR 12.2 ────────────────────────────────
 
 import { normalizeRuleKind } from "./altium.js";

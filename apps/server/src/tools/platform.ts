@@ -248,6 +248,26 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "unroute_net",
+    "Delete all traces + vias on a given net. Locked traces/vias are skipped (user-intentional placement) and counted separately so the AI can decide whether to unlock + retry. Net-not-found and 'net has no traces' both succeed with zero counts. No undo — pair with `screenshot` for visual confirmation. Cross-platform.",
+    {
+      net: z.string().min(1).describe("Net name to unroute, e.g. 'VCC' or 'GND'."),
+    },
+    async (args) => {
+      const result = await ctx.platform.unrouteNet({ net: args.net });
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not unroute net: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      return { content: [{ type: "text" as const, text: result.data.message }] };
+    }
+  );
+
+  server.tool(
     "get_design_rules",
     "Read all design rules on the active PCB. Each entry has name + kind (clearance/width/via/other) + scope (all/net/net-class) + kind-specific values (clearanceMm, widthMm.{min,preferred,max}, viaMm.{holeDiameter,padDiameter}). Cross-platform; coordinates in mm. Pair with `set_route_rule` to mutate one. The `other` kind preserves any rule category v1 doesn't normalize — read its raw payload for finer detail.",
     {},

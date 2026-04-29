@@ -281,6 +281,26 @@ export type SetRouteRuleParams = {
   | { kind: "via"; viaMm: { holeDiameter: number; padDiameter: number } }
 );
 
+/**
+ * Sprint 12 PR 12.3: result of `unrouteNet`. Carries the
+ * counts the AI client needs to verify the operation:
+ *   - deletedTraces: traces successfully removed
+ *   - deletedVias: vias successfully removed
+ *   - skippedLocked: locked traces/vias preserved (user-intentional)
+ *
+ * Net-not-found and "net has no traces" both return successfully
+ * with zero counts and a message explaining which case it was;
+ * AI clients can call get_net_routing first to disambiguate
+ * before unrouting if the distinction matters.
+ */
+export interface UnrouteResult {
+  net: string;
+  deletedTraces: number;
+  deletedVias: number;
+  skippedLocked: number;
+  message: string;
+}
+
 export interface NetRouting {
   netName: string;
   totalLengthMm: number;
@@ -689,6 +709,22 @@ export interface Platform {
   setRouteRule(
     params: SetRouteRuleParams
   ): Promise<PlatformResponse<MutateResult>>;
+
+  /**
+   * Sprint 12 PR 12.3: delete all traces + vias on a given net.
+   * Locked traces/vias are skipped (user-intentional) and counted
+   * separately so AI clients know whether to unlock + retry.
+   *
+   * Net-not-found and "net has no traces" both return successfully
+   * with zero deletion counts. If the distinction matters, call
+   * `getNetRouting(net)` first to confirm the net exists.
+   *
+   * No undo: the relay doesn't expose the editor's undo stack.
+   * Pair with `screenshot` for visual confirmation.
+   */
+  unrouteNet(params: {
+    net: string;
+  }): Promise<PlatformResponse<UnrouteResult>>;
 
   /**
    * Sprint 11 PR 11.4: check the active PCB for component overlap

@@ -150,6 +150,7 @@ function Dispatch(cmd) {
         case "get_net_routing":    return CmdGetNetRouting(cmd.params);
         case "get_design_rules":   return CmdGetDesignRules(cmd.params);
         case "set_route_rule":     return CmdSetRouteRule(cmd.params);
+        case "unroute_net":        return CmdUnrouteNet(cmd.params);
     }
     throw MakeError("unknown method: " + cmd.method);
 }
@@ -1189,6 +1190,112 @@ function CmdSetRouteRule(params) {
     return {
         name: params.name,
         message: "Updated rule '" + params.name + "' (" + params.kind + ") on Altium."
+    };
+}
+
+// Sprint 12 PR 12.3: delete all traces + vias on a given net.
+// Walks BoardIterator filtered to eTrackObject (=3) + eViaObject
+// (=5), matches obj.Net.Name === params.net, skips locked objects
+// with a counted skip, then RemovePCBObject on each match.
+//
+// Two-pass collection-then-delete pattern: collecting matches into
+// an array and deleting after the iterator finishes avoids
+// invalidating the iterator mid-walk. Per-object try/catch on
+// each delete keeps a single failed delete from aborting the
+// rest of the unroute.
+function CmdUnrouteNet(params) {
+    if (!params || typeof params.net !== "string" || params.net.length === 0) {
+        throw MakeError("net is required");
+    }
+    var server = null;
+    try { server = PCBServer; } catch (_) { }
+    if (!server) {
+        try { server = GetBoardEnv_GetPCBServer(); } catch (_) { }
+    }
+    if (!server) throw MakeError("PCBServer not available in this script context.");
+    var board = null;
+    try { board = server.GetCurrentPCBBoard(); } catch (e) {
+        throw MakeError("GetCurrentPCBBoard threw: " + (e.message || e));
+    }
+    if (!board) throw MakeError("No PCB document is currently focused.");
+
+    // First pass: collect matching trace + via objects, separated
+    // into to-delete and skipped-locked buckets.
+    var iter = board.BoardIterator_Create();
+    iter.AddFilter_ObjectSet(SetOf([3, 5])); // eTrackObject + eViaObject
+    iter.AddFilter_LayerSet(null);
+    iter.AddFilter_Method(null);
+    var traces = [];
+    var vias = [];
+    var skippedLocked = 0;
+    var obj = iter.FirstPCBObject();
+    while (obj) {
+        var thisNet = "";
+        try {
+            var n = obj.Net;
+            if (n && n.Name) thisNet = String(n.Name);
+        } catch (_) { }
+        if (thisNet === params.net) {
+            var locked = false;
+            try { locked = Boolean(obj.Locked); } catch (_) { }
+            if (locked) {
+                skippedLocked++;
+            } else {
+                var kind = 0;
+                try { kind = Number(obj.ObjectId); } catch (_) { }
+                if (kind === 3) traces.push(obj);
+                else if (kind === 5) vias.push(obj);
+            }
+        }
+        obj = iter.NextPCBObject();
+    }
+    board.BoardIterator_Destroy(iter);
+
+    // Second pass: delete. Per-object try/catch — a single failed
+    // delete (e.g., AD policy refusing to remove a particular
+    // object) shouldn't abort the rest of the unroute.
+    var deletedTraces = 0;
+    for (var i = 0; i < traces.length; i++) {
+        try {
+            if (typeof board.RemovePCBObject === "function") {
+                board.RemovePCBObject(traces[i]);
+            } else if (typeof traces[i].Delete === "function") {
+                traces[i].Delete();
+            } else {
+                continue;
+            }
+            deletedTraces++;
+        } catch (_) { }
+    }
+    var deletedVias = 0;
+    for (var j = 0; j < vias.length; j++) {
+        try {
+            if (typeof board.RemovePCBObject === "function") {
+                board.RemovePCBObject(vias[j]);
+            } else if (typeof vias[j].Delete === "function") {
+                vias[j].Delete();
+            } else {
+                continue;
+            }
+            deletedVias++;
+        } catch (_) { }
+    }
+
+    var msg;
+    if (deletedTraces + deletedVias === 0 && skippedLocked === 0) {
+        msg = "No traces or vias on net '" + params.net + "' — already unrouted or doesn't exist.";
+    } else {
+        msg = "Unrouted '" + params.net + "': deleted " + deletedTraces +
+              " trace(s), " + deletedVias + " via(s)" +
+              (skippedLocked > 0 ? ", " + skippedLocked + " locked skipped" : "") +
+              " on Altium.";
+    }
+    return {
+        net: params.net,
+        deletedTraces: deletedTraces,
+        deletedVias: deletedVias,
+        skippedLocked: skippedLocked,
+        message: msg
     };
 }
 

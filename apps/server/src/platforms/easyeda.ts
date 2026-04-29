@@ -37,6 +37,7 @@
 import type { EdaRelay } from "../eda-relay/relay.js";
 import type { NexarService } from "../services/nexar.js";
 import {
+  buildUnrouteResult,
   extractVertices,
   makeMutateResult,
   normalizeDesignRule,
@@ -58,6 +59,7 @@ import {
   type Keepout,
   type NetRouting,
   type SetRouteRuleParams,
+  type UnrouteResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -551,6 +553,28 @@ export class EasyedaPlatform implements Platform {
         params as unknown as Record<string, unknown>
       );
       return ok(makeMutateResult(params.name, raw, "Updated"));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async unrouteNet(params: {
+    net: string;
+  }): Promise<PlatformResponse<UnrouteResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Extension handles trace + via enumeration via
+      // pcb_PrimitiveLine.getAll(net) + pcb_PrimitiveVia.getAll(net),
+      // filters locked items, then batches delete(idsArray) per
+      // primitive type. Server consumes the count envelope.
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "unroute_net",
+        params as unknown as Record<string, unknown>
+      );
+      return ok(buildUnrouteResult(params.net, raw));
     } catch (err) {
       return notSupported(err instanceof Error ? err.message : String(err));
     }

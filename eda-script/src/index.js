@@ -321,6 +321,119 @@
     },
 
     /**
+     * Sprint 12 PR 12.3: delete all traces + vias on a given net.
+     *
+     * Two API calls per primitive type — getAll(net) for
+     * enumeration, then delete(idsArray) for batch removal.
+     * Locked items filtered out before delete and counted as
+     * skipped (matches the AD relay's locked-guard semantics).
+     *
+     * The Pro API doesn't reliably expose a `locked` flag on
+     * pcb_PrimitiveLine/Via results across versions, so the
+     * locked filter is best-effort: skipped count may be 0 on
+     * older Pro versions even when traces are technically locked.
+     * Live test post-merge to confirm the locked-flag path on
+     * current Pro builds.
+     */
+    unroute_net: async function (params) {
+      const net = params && typeof params.net === "string" ? params.net : "";
+      if (!net) throw new Error("net is required");
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_PrimitiveLine || !eda.pcb_PrimitiveVia) {
+        throw new Error("EasyEDA Pro pcb_Primitive* APIs are not exposed in this extension version.");
+      }
+
+      let traceIds = [];
+      let viaIds = [];
+      let skippedLocked = 0;
+
+      try {
+        // eslint-disable-next-line no-undef
+        const lines = await eda.pcb_PrimitiveLine.getAll(net);
+        if (Array.isArray(lines)) {
+          for (let i = 0; i < lines.length; i++) {
+            const ln = lines[i] || {};
+            if (ln.locked === true) {
+              skippedLocked++;
+            } else if (typeof ln.primitiveId === "string") {
+              traceIds.push(ln.primitiveId);
+            }
+          }
+        }
+      } catch (_) { /* getAll may throw on no-net — fall through with empty list */ }
+
+      try {
+        // eslint-disable-next-line no-undef
+        const vias = await eda.pcb_PrimitiveVia.getAll(net);
+        if (Array.isArray(vias)) {
+          for (let i = 0; i < vias.length; i++) {
+            const v = vias[i] || {};
+            if (v.locked === true) {
+              skippedLocked++;
+            } else if (typeof v.primitiveId === "string") {
+              viaIds.push(v.primitiveId);
+            }
+          }
+        }
+      } catch (_) { /* getAll may throw on no-net — fall through */ }
+
+      let deletedTraces = 0;
+      let deletedVias = 0;
+
+      if (traceIds.length > 0) {
+        try {
+          // eslint-disable-next-line no-undef
+          await eda.pcb_PrimitiveLine.delete(traceIds);
+          deletedTraces = traceIds.length;
+        } catch (_) {
+          // Batch delete failed — try one at a time so partial
+          // success isn't silent.
+          for (let i = 0; i < traceIds.length; i++) {
+            try {
+              // eslint-disable-next-line no-undef
+              await eda.pcb_PrimitiveLine.delete([traceIds[i]]);
+              deletedTraces++;
+            } catch (_) { /* one failed delete shouldn't abort the loop */ }
+          }
+        }
+      }
+
+      if (viaIds.length > 0) {
+        try {
+          // eslint-disable-next-line no-undef
+          await eda.pcb_PrimitiveVia.delete(viaIds);
+          deletedVias = viaIds.length;
+        } catch (_) {
+          for (let i = 0; i < viaIds.length; i++) {
+            try {
+              // eslint-disable-next-line no-undef
+              await eda.pcb_PrimitiveVia.delete([viaIds[i]]);
+              deletedVias++;
+            } catch (_) { /* see above */ }
+          }
+        }
+      }
+
+      let message;
+      if (deletedTraces + deletedVias === 0 && skippedLocked === 0) {
+        message = "No traces or vias on net '" + net + "' — already unrouted or doesn't exist.";
+      } else {
+        message = "Unrouted '" + net + "': deleted " + deletedTraces +
+                  " trace(s), " + deletedVias + " via(s)" +
+                  (skippedLocked > 0 ? ", " + skippedLocked + " locked skipped" : "") +
+                  " on EasyEDA.";
+      }
+
+      return {
+        net: net,
+        deletedTraces: deletedTraces,
+        deletedVias: deletedVias,
+        skippedLocked: skippedLocked,
+        message: message
+      };
+    },
+
+    /**
      * Sprint 12 PR 12.2: read all design rules from the current
      * EasyEDA Pro DRC config. The Pro API exposes the full config
      * as a single object via getCurrentRuleConfiguration; we walk

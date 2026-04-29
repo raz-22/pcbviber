@@ -192,6 +192,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     getNetRouting: async () => ({ supported: false, reason: "stub" }),
     getDesignRules: async () => ({ supported: false, reason: "stub" }),
     setRouteRule: async () => ({ supported: false, reason: "stub" }),
+    unrouteNet: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -299,6 +300,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     getNetRouting: async () => ({ supported: false, reason: "stub" }),
     getDesignRules: async () => ({ supported: false, reason: "stub" }),
     setRouteRule: async () => ({ supported: false, reason: "stub" }),
+    unrouteNet: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -987,6 +989,86 @@ test("get_components tool: empty board → 'No components' caption (not isError)
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /No components on the active easyeda PCB/);
   relay.__resetForTests();
+});
+
+// ─── unroute_net tool — Sprint 12 PR 12.3 ────────────────────────────
+
+type UnrouteNetHandler = (args: {
+  net: string;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureUnrouteNetHandler(ctx: ToolContext): UnrouteNetHandler {
+  let handler: UnrouteNetHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: UnrouteNetHandler) => {
+      if (name === "unroute_net") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `unroute_net`");
+  return handler;
+}
+
+test("unroute_net tool: renders the platform's confirmation verbatim", async () => {
+  const stubPlatform = {
+    name: "easyeda" as const,
+    unrouteNet: async (params: { net: string }) => ({
+      supported: true as const,
+      data: {
+        net: params.net,
+        deletedTraces: 12,
+        deletedVias: 2,
+        skippedLocked: 0,
+        message: "Unrouted 'VCC': deleted 12 trace(s), 2 via(s) on EasyEDA.",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureUnrouteNetHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ net: "VCC" });
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  // Pin the platform-supplied message reaches the AI verbatim
+  assert.equal(text, "Unrouted 'VCC': deleted 12 trace(s), 2 via(s) on EasyEDA.");
+});
+
+test("unroute_net tool: skipped-locked count visible in confirmation", async () => {
+  // AI reasoning about partial unroutes needs to see the locked
+  // count tagged in the message — pin that the message format
+  // doesn't drop the skipped-count info.
+  const stubPlatform = {
+    name: "altium" as const,
+    unrouteNet: async () => ({
+      supported: true as const,
+      data: {
+        net: "GND",
+        deletedTraces: 8,
+        deletedVias: 0,
+        skippedLocked: 3,
+        message: "Unrouted 'GND': deleted 8 trace(s), 0 via(s), 3 locked skipped on Altium.",
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureUnrouteNetHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ net: "GND" });
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /3 locked skipped/);
+});
+
+test("unroute_net tool: supported:false → MCP error result with reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    unrouteNet: async () => ({
+      supported: false as const,
+      reason: "Altium Designer relay is not connected.",
+    }),
+  } as unknown as Platform;
+  const handler = captureUnrouteNetHandler(buildToolCtx(stubPlatform));
+  const res = await handler({ net: "VCC" });
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not unroute net/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── design rules tools — Sprint 12 PR 12.2 ─────────────────────────

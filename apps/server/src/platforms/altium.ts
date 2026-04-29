@@ -30,6 +30,7 @@ import {
   type Keepout,
   type NetRouting,
   type SetRouteRuleParams,
+  type UnrouteResult,
   type Page,
   type PaginationParams,
   type PcbComponent,
@@ -390,6 +391,26 @@ export class AltiumPlatform implements Platform {
     }
   }
 
+  async unrouteNet(params: {
+    net: string;
+  }): Promise<PlatformResponse<UnrouteResult>> {
+    if (!this.deps.relay || !this.deps.relay.status().connected) {
+      return notSupported(RELAY_DISCONNECTED);
+    }
+    try {
+      // AltiumRelay.js's unroute_net does the BoardIterator walk +
+      // locked-guard + per-object delete. Server stays out of
+      // routing/AD-object math; just consumes the count envelope.
+      const raw = await this.deps.relay.execute<unknown>(
+        "unroute_net",
+        params as unknown as Record<string, unknown>
+      );
+      return ok(buildUnrouteResult(params.net, raw));
+    } catch (err) {
+      return notSupported(errorReason(err));
+    }
+  }
+
   async getNetRouting(
     params: PaginationParams
   ): Promise<PlatformResponse<Page<NetRouting>>> {
@@ -546,6 +567,38 @@ export class AltiumPlatform implements Platform {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Sprint 12 PR 12.3: build an UnrouteResult from a relay/extension
+ * payload. Defensive extraction with sensible defaults — the
+ * platforms send count fields directly, but if any are missing or
+ * non-numeric we treat them as 0 rather than dropping the whole
+ * result. Constructs a fallback message when the relay didn't
+ * supply one (older relay version, malformed extension response).
+ *
+ * Exported because both AltiumPlatform and EasyedaPlatform call it
+ * — keeps the count + message format single-sourced so the two
+ * platforms can't drift on what AI clients see.
+ */
+export function buildUnrouteResult(
+  net: string,
+  raw: unknown
+): UnrouteResult {
+  const obj = isRecord(raw) ? raw : {};
+  const deletedTraces =
+    typeof obj.deletedTraces === "number" ? Math.floor(obj.deletedTraces) : 0;
+  const deletedVias =
+    typeof obj.deletedVias === "number" ? Math.floor(obj.deletedVias) : 0;
+  const skippedLocked =
+    typeof obj.skippedLocked === "number" ? Math.floor(obj.skippedLocked) : 0;
+  const message =
+    typeof obj.message === "string"
+      ? obj.message
+      : deletedTraces + deletedVias === 0 && skippedLocked === 0
+        ? `No traces or vias on net '${net}' — already unrouted or doesn't exist.`
+        : `Unrouted '${net}': deleted ${deletedTraces} trace(s), ${deletedVias} via(s)${skippedLocked > 0 ? `, ${skippedLocked} locked skipped` : ""}.`;
+  return { net, deletedTraces, deletedVias, skippedLocked, message };
 }
 
 /**
