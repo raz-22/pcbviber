@@ -1743,6 +1743,264 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── production-readiness wiring — Sprint 13 PR 13.3 ────────────────
+
+test("EasyedaPlatform.checkProductionReadiness: orchestrates DRC + getComponents + exports → 5 checks", async () => {
+  // End-to-end pin: orchestrator calls each Platform method,
+  // aggregates into a 5-check ProductionReadinessResult.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.checkProductionReadiness({});
+
+  // Step 1: run_drc → empty array (clean DRC)
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected run_drc");
+  assert.equal(cmd.method, "run_drc");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: [] });
+
+  // Step 2: get_components → two well-spaced components
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_components");
+  assert.equal(cmd.method, "get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p1",
+          designator: "U1",
+          x: 10,
+          y: 10,
+          width: 5,
+          height: 5,
+          layer: "top",
+          rotation: 0,
+        },
+        // FID1 has the fiducial substring in designator
+        {
+          primitiveId: "p2",
+          designator: "FID1",
+          footprint: "FIDUCIAL_1mm",
+          x: 50,
+          y: 50,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  // Steps 3 & 4: exports run in parallel via Promise.all. Both
+  // fail (no extension wired up here — EasyEDA returns whatever
+  // the relay sends). For this test, simulate both throwing.
+  // The orchestrator's buildExportsCheck downgrades to warning.
+  // We need to handle two parallel commands — accept either order.
+  const cmds = [];
+  cmd = await relay.nextCommand("ws-a", 500);
+  if (cmd) cmds.push(cmd);
+  cmd = await relay.nextCommand("ws-a", 500);
+  if (cmd) cmds.push(cmd);
+  assert.equal(cmds.length, 2,
+    "exports phase issues two commands (gerbers + pick-and-place)");
+  // Reply to both as failures (extension missing API)
+  for (const c of cmds) {
+    relay.postResult("ws-a", {
+      id: c.id,
+      ok: false,
+      error: { message: `${c.method} failed (extension missing API)` },
+    });
+  }
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    // 5 checks total: drc, drill-aspect, copper-edge, fiducials, exports
+    assert.equal(result.data.checks.length, 5);
+    const byCategory = Object.fromEntries(
+      result.data.checks.map((c) => [c.category, c])
+    );
+    assert.ok(byCategory.drc.passed);
+    assert.equal(byCategory.drc.severity, "info");
+    assert.ok(byCategory["drill-aspect"].passed,
+      "drill-aspect is informational pass in v1");
+    // copper-edge: two components define a 40×40 extent; both
+    // sit AT the corners → fails clearance.
+    assert.equal(byCategory["copper-edge"].passed, false);
+    // Fiducials: only 1 found (FID1), default min is 3 → fails
+    // with severity:warning (not error → ready can still depend
+    // on whether DRC failed).
+    assert.equal(byCategory.fiducials.passed, false);
+    assert.equal(byCategory.fiducials.severity, "warning");
+    relay.__resetForTests();
+  }
+});
+
+test("EasyedaPlatform.checkProductionReadiness: clean board with default thresholds → fiducial warning surfaces but DRC passes", async () => {
+  // Fresh wire-format pin focused on the per-check breakdown.
+  // Default minFiducials=3; we provide 0 → fiducial check fails
+  // with severity:warning (NOT error → ready stays true).
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+
+  const pending = platform.checkProductionReadiness({});
+
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected run_drc");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: [] });
+
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p1",
+          designator: "U1",
+          x: 5,
+          y: 5,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+        {
+          primitiveId: "p2",
+          designator: "U2",
+          x: 50,
+          y: 50,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  // Two parallel exports — fail both
+  for (let i = 0; i < 2; i++) {
+    const c = await relay.nextCommand("ws-a", 500);
+    if (!c) throw new Error("expected export command");
+    relay.postResult("ws-a", {
+      id: c.id,
+      ok: false,
+      error: { message: "extension missing API" },
+    });
+  }
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    // No errors → ready=true even with warnings
+    assert.equal(result.data.errorCount, 0);
+    assert.equal(result.data.ready, true,
+      "warnings don't block — only error-severity does");
+    assert.ok(result.data.warningCount >= 1,
+      "fiducial check should fail (0 found, default min 3) as warning");
+  }
+  relay.__resetForTests();
+});
+
+test("AltiumPlatform.checkProductionReadiness: DRC supported:false propagates as whole-result supported:false", async () => {
+  // Pin upstream-error passthrough — when DRC can't run, the
+  // whole readiness check fails with the upstream reason. AI
+  // sees "couldn't run readiness check: relay is not connected"
+  // rather than a confusing partial result.
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.checkProductionReadiness({});
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.checkProductionReadiness: DRC error → ready:false; warnings alone keep ready:true", async () => {
+  // Two-axis pin: ready=false ONLY when error-severity check
+  // fails. The DRC check uses error severity when it fails;
+  // other checks use warning severity. Test the error path.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.checkProductionReadiness({ minFiducials: 0 });
+
+  let cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected run_drc");
+  // DRC returns one error-severity violation
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: [
+      {
+        severity: "error",
+        category: "Clearance",
+        message: "Trace too close to via",
+      },
+    ],
+  });
+
+  cmd = await relay.nextCommand("ws-a", 200);
+  if (!cmd) throw new Error("expected get_components");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: {
+      items: [
+        {
+          primitiveId: "p1",
+          designator: "U1",
+          x: 10,
+          y: 10,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+        {
+          primitiveId: "p2",
+          designator: "U2",
+          x: 50,
+          y: 50,
+          width: 1,
+          height: 1,
+          layer: "top",
+          rotation: 0,
+        },
+      ],
+      total: 2,
+    },
+  });
+
+  // Exports — fail both
+  for (let i = 0; i < 2; i++) {
+    const c = await relay.nextCommand("ws-a", 500);
+    if (!c) throw new Error("expected export command");
+    relay.postResult("ws-a", {
+      id: c.id,
+      ok: false,
+      error: { message: "extension missing API" },
+    });
+  }
+
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.errorCount, 1, "DRC error counted as error");
+    assert.equal(result.data.ready, false, "any error → ready=false");
+  }
+  relay.__resetForTests();
+});
+
 // ─── runDrc — Sprint 13 PR 13.2 ──────────────────────────────────────
 
 test("AltiumPlatform.runDrc: triggers DRC, parses Messages-panel for structured violations", async () => {

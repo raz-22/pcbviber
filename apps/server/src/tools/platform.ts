@@ -353,6 +353,87 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "production_readiness_check",
+    "Composite 'is this board ready for fab?' check. Runs DRC + manufacturing exports + three DFM rules (drill aspect ratio, copper-near-edge clearance, fiducial presence) in one call. Returns a structured pass/fail per category with actionable details. The `ready` field is true iff zero error-severity checks failed — warnings (export failures, fiducial count below recommendation) are surfaced for AI reasoning but don't block. Cross-platform; reuses the primitives from PR 13.1 (exports), PR 13.2 (DRC), PR 11.1 (components).",
+    {
+      drillAspectThreshold: z.coerce
+        .number()
+        .min(0.05)
+        .max(2)
+        .optional()
+        .describe(
+          "Drill aspect ratio threshold (hole / board thickness). Default 0.4 — typical for plated through-holes."
+        ),
+      copperEdgeClearanceMm: z.coerce
+        .number()
+        .min(0)
+        .max(10)
+        .optional()
+        .describe(
+          "Min copper-to-edge clearance in mm. Default 0.2."
+        ),
+      minFiducials: z.coerce
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "Min number of fiducials required. Default 3 (industry standard for SMT alignment). Pass 0 to skip the check entirely."
+        ),
+      boardThicknessMm: z.coerce
+        .number()
+        .min(0.1)
+        .max(20)
+        .optional()
+        .describe(
+          "Board thickness for drill-aspect calculation, mm. Default 1.6 (typical 2-layer FR4)."
+        ),
+    },
+    async (args) => {
+      const result = await ctx.platform.checkProductionReadiness({
+        drillAspectThreshold: args.drillAspectThreshold,
+        copperEdgeClearanceMm: args.copperEdgeClearanceMm,
+        minFiducials: args.minFiducials,
+        boardThicknessMm: args.boardThicknessMm,
+      });
+      if (!result.supported) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Could not run production readiness check: ${result.reason}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const data = result.data;
+      // Header: READY/NOT READY tag + per-category counts. AI
+      // clients scanning for "READY" or "NOT READY" + the numbers
+      // get the one-bit answer immediately.
+      const tag = data.ready ? "READY" : "NOT READY";
+      const counts: string[] = [];
+      if (data.errorCount > 0) counts.push(`${data.errorCount} error(s)`);
+      if (data.warningCount > 0) counts.push(`${data.warningCount} warning(s)`);
+      counts.push(`${data.passedCount} passed`);
+      const header = `Production readiness on ${ctx.platform.name}: ${tag} (${counts.join(", ")}).`;
+      const lines = data.checks.map((c) => {
+        const sev = c.severity.toUpperCase();
+        const passed = c.passed ? "✓" : "✗";
+        return `${passed} [${sev}] ${c.category}: ${c.message}`;
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n"),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "run_drc",
     "Run Design Rule Check on the active PCB and return structured violations. Each entry has category (Clearance/Width/etc.), severity (info/warning/error), human-readable message, optional location (mm), and optional designators/nets involved. The `passed` field is true only when there are zero error-severity violations — warnings and info are surfaced for AI reasoning but don't fail the run. Cross-platform: Altium parses the Messages panel after triggering DRC; EasyEDA uses pcb_Drc.check verbose-error mode (BETA).",
     {},

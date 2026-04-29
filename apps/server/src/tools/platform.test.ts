@@ -200,6 +200,7 @@ test("screenshot tool: Altium supported:true → MCP image content + 'altium' ca
     exportDrill: async () => ({ supported: false, reason: "stub" }),
     exportBom: async () => ({ supported: false, reason: "stub" }),
     exportPickAndPlace: async () => ({ supported: false, reason: "stub" }),
+    checkProductionReadiness: async () => ({ supported: false, reason: "stub" }),
     screenshot: async (): Promise<PlatformResponse<ScreenshotResult>> => ({
       supported: true,
       data: { base64Png: "fakePngBase64Body", byteLength: 12 },
@@ -315,6 +316,7 @@ test("get_active_project tool: stubbed Altium Platform supported:true → 'altiu
     exportDrill: async () => ({ supported: false, reason: "stub" }),
     exportBom: async () => ({ supported: false, reason: "stub" }),
     exportPickAndPlace: async () => ({ supported: false, reason: "stub" }),
+    checkProductionReadiness: async () => ({ supported: false, reason: "stub" }),
     screenshot: async () => ({ supported: false, reason: "stub" }),
     runDrc: async () => ({ supported: false, reason: "stub" }),
     getMessages: async () => ({ supported: false, reason: "stub" }),
@@ -1104,6 +1106,122 @@ test("export_gerbers tool: supported:false → MCP error result with reason", as
   const text = (res.content[0] as unknown as { text: string }).text;
   assert.match(text, /Could not export Gerbers/);
   assert.match(text, /hands-on wiring/);
+});
+
+// ─── production_readiness_check tool — Sprint 13 PR 13.3 ────────────
+
+type ProdReadinessHandler = (args: {
+  drillAspectThreshold?: number;
+  copperEdgeClearanceMm?: number;
+  minFiducials?: number;
+  boardThicknessMm?: number;
+}) => Promise<{ content: Array<{ type: string }>; isError?: boolean }>;
+
+function captureProdReadinessHandler(ctx: ToolContext): ProdReadinessHandler {
+  let handler: ProdReadinessHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: ProdReadinessHandler) => {
+      if (name === "production_readiness_check") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `production_readiness_check`");
+  return handler;
+}
+
+test("production_readiness_check tool: ready:true → 'READY' tag + per-check breakdown with checkmarks", async () => {
+  const stubPlatform = {
+    name: "easyeda" as const,
+    checkProductionReadiness: async () => ({
+      supported: true as const,
+      data: {
+        ready: true,
+        checks: [
+          { category: "drc" as const, passed: true, severity: "info" as const, message: "DRC passed." },
+          { category: "drill-aspect" as const, passed: true, severity: "info" as const, message: "Drill aspect informational." },
+          { category: "copper-edge" as const, passed: true, severity: "info" as const, message: "Edge clearance OK." },
+          { category: "fiducials" as const, passed: true, severity: "info" as const, message: "3 fiducials found." },
+          { category: "exports" as const, passed: true, severity: "info" as const, message: "Exports succeeded." },
+        ],
+        errorCount: 0,
+        warningCount: 0,
+        passedCount: 5,
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureProdReadinessHandler(buildToolCtx(stubPlatform));
+  const res = await handler({});
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Production readiness on easyeda: READY \(5 passed\)/);
+  // Each check renders with checkmark + INFO + category + message
+  assert.match(text, /✓ \[INFO\] drc:/);
+  assert.match(text, /✓ \[INFO\] copper-edge:/);
+  assert.match(text, /✓ \[INFO\] fiducials:/);
+});
+
+test("production_readiness_check tool: ready:false → 'NOT READY' tag + ✗ marks on failed checks", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    checkProductionReadiness: async () => ({
+      supported: true as const,
+      data: {
+        ready: false,
+        checks: [
+          {
+            category: "drc" as const,
+            passed: false,
+            severity: "error" as const,
+            message: "DRC failed: 2 error(s).",
+          },
+          {
+            category: "fiducials" as const,
+            passed: false,
+            severity: "warning" as const,
+            message: "Found 1 fiducial — fewer than 3 recommended.",
+          },
+          {
+            category: "drill-aspect" as const,
+            passed: true,
+            severity: "info" as const,
+            message: "OK.",
+          },
+        ],
+        errorCount: 1,
+        warningCount: 1,
+        passedCount: 1,
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureProdReadinessHandler(buildToolCtx(stubPlatform));
+  const res = await handler({});
+  assert.equal(res.isError, undefined,
+    "ready:false is NOT isError — the check ran successfully and reported failures");
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Production readiness on altium: NOT READY \(1 error\(s\), 1 warning\(s\), 1 passed\)/);
+  assert.match(text, /✗ \[ERROR\] drc:/);
+  assert.match(text, /✗ \[WARNING\] fiducials:/);
+  assert.match(text, /✓ \[INFO\] drill-aspect:/);
+});
+
+test("production_readiness_check tool: supported:false → MCP error result with reason", async () => {
+  // When DRC itself can't run (e.g., relay disconnected), the
+  // whole readiness check fails. AI sees "Could not run
+  // production readiness check: ..." rather than a confusing
+  // partial result.
+  const stubPlatform = {
+    name: "altium" as const,
+    checkProductionReadiness: async () => ({
+      supported: false as const,
+      reason: "Altium Designer relay is not connected.",
+    }),
+  } as unknown as Platform;
+  const handler = captureProdReadinessHandler(buildToolCtx(stubPlatform));
+  const res = await handler({});
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not run production readiness check/);
+  assert.match(text, /relay is not connected/i);
 });
 
 // ─── run_drc tool — Sprint 13 PR 13.2 ────────────────────────────────

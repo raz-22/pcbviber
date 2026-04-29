@@ -131,6 +131,48 @@ export interface DrcViolation {
  * `passed` get a one-bit answer; reading `violations[]` get the
  * full list to reason about.
  */
+/**
+ * Sprint 13 PR 13.3: a single check from the production-readiness
+ * composite. Five categories cover the typical fab-readiness
+ * surface: DRC, manufacturing-output exports, drill aspect ratio,
+ * copper-near-edge clearance, fiducial presence.
+ *
+ * `severity` is for AI prioritization — `error` blocks fab,
+ * `warning` is fixable but not blocking, `info` is FYI. The
+ * `passed` flag is independent: a check can fail with `warning`
+ * severity (e.g. fiducial count below recommendation) without
+ * blocking production.
+ *
+ * `details` carries category-specific data (current vs. expected
+ * values, lists of offending components, etc.). AI clients read
+ * these for the "what specifically failed" follow-up.
+ */
+export interface ReadinessCheck {
+  category:
+    | "drc"
+    | "exports"
+    | "drill-aspect"
+    | "copper-edge"
+    | "fiducials";
+  passed: boolean;
+  severity: "info" | "warning" | "error";
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Sprint 13 PR 13.3: full production-readiness composite result.
+ * `ready` is the one-bit "send this to fab?" signal — true iff
+ * zero error-severity checks failed. Warnings + info don't block.
+ */
+export interface ProductionReadinessResult {
+  ready: boolean;
+  checks: ReadinessCheck[];
+  errorCount: number;
+  warningCount: number;
+  passedCount: number;
+}
+
 export interface DrcResult {
   /** True when no error-severity violations are present. */
   passed: boolean;
@@ -1050,6 +1092,36 @@ export interface Platform {
    * existing `ad_run_drc`.
    */
   runDrc(): Promise<PlatformResponse<DrcResult>>;
+
+  /**
+   * Sprint 13 PR 13.3: composite production-readiness check.
+   * Runs DRC, attempts manufacturing-output exports, and applies
+   * three DFM rules (drill aspect ratio, copper-near-edge,
+   * fiducial presence). Returns a structured result the AI can
+   * scan for "ready for fab?" without juggling 5+ separate tool
+   * calls.
+   *
+   * Server-side composite — both platforms route through the
+   * shared `runReadinessChecks` orchestrator, which calls the
+   * per-platform primitives (runDrc / getComponents / exportXxx)
+   * via this same Platform interface.
+   *
+   * Heuristic DFM checks: drill aspect uses `boardThicknessMm`
+   * (default 1.6mm = typical 2-layer FR4) and component-bbox
+   * proxies for copper presence. Real polygon-plane reads land
+   * in a future PR.
+   */
+  checkProductionReadiness(params: {
+    /** Drill aspect ratio threshold (hole / board thickness).
+     *  Default 0.4 — typical for plated through-holes. */
+    drillAspectThreshold?: number;
+    /** Min copper-to-edge clearance in mm. Default 0.2. */
+    copperEdgeClearanceMm?: number;
+    /** Min number of fiducials. Default 3. */
+    minFiducials?: number;
+    /** Board thickness for aspect-ratio calc, mm. Default 1.6. */
+    boardThicknessMm?: number;
+  }): Promise<PlatformResponse<ProductionReadinessResult>>;
 
   /**
    * Read the platform's messages panel (DRC violations, ERC errors,

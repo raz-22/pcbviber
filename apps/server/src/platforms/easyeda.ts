@@ -53,6 +53,7 @@ import {
   ok,
   type ActiveProject,
   type DrcResult,
+  type ProductionReadinessResult,
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
@@ -83,6 +84,7 @@ import { placeByGroupShared } from "./place-by-group.js";
 import { viaStitchPlaneShared } from "./via-stitching.js";
 import { readEasyedaArtifactFromUpload } from "./exports.js";
 import { parseEasyedaDrcArray, summarizeDrc } from "./drc.js";
+import { runReadinessChecks } from "./production-readiness.js";
 
 export interface EasyedaPlatformDeps {
   /**
@@ -1065,6 +1067,15 @@ export class EasyedaPlatform implements Platform {
         err instanceof Error ? err.message : String(err)
       );
     }
+  }
+
+  async checkProductionReadiness(params: {
+    drillAspectThreshold?: number;
+    copperEdgeClearanceMm?: number;
+    minFiducials?: number;
+    boardThicknessMm?: number;
+  }): Promise<PlatformResponse<ProductionReadinessResult>> {
+    return runReadinessChecks(this, params);
   }
 
   async runDrc(): Promise<PlatformResponse<DrcResult>> {
