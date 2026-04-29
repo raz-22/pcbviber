@@ -22,7 +22,6 @@ import {
   TailLogParams,
   SelfTestParams,
   CompileProjectParams,
-  RunDrcParams,
   AnnotateSchematicParams,
   GenerateOutputsParams,
   AutoPlaceParams,
@@ -152,12 +151,10 @@ export function registerAltiumTools(server: McpServer, relay: AdRelay) {
     async (args) => toMcpResponse(() => h.adCompileProject(relay, args))
   );
 
-  server.tool(
-    "ad_run_drc",
-    "Run the Design Rule Check on the active PCB document. Returns the list of violations with rule name, location, and net.",
-    RunDrcParams.shape,
-    async (args) => toMcpResponse(() => h.adRunDrc(relay, args))
-  );
+  // Sprint 13 PR 13.2 moved this to the cross-platform `run_drc`
+  // tool registered in `tools/platform.ts`. The handler `adRunDrc`
+  // stays — `AltiumPlatform.runDrc` calls it before reading + parsing
+  // the Messages panel for structured violations.
 
   server.tool(
     "ad_annotate_schematic",

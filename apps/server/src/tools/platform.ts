@@ -353,6 +353,66 @@ export function registerPlatformTools(
   );
 
   server.tool(
+    "run_drc",
+    "Run Design Rule Check on the active PCB and return structured violations. Each entry has category (Clearance/Width/etc.), severity (info/warning/error), human-readable message, optional location (mm), and optional designators/nets involved. The `passed` field is true only when there are zero error-severity violations — warnings and info are surfaced for AI reasoning but don't fail the run. Cross-platform: Altium parses the Messages panel after triggering DRC; EasyEDA uses pcb_Drc.check verbose-error mode (BETA).",
+    {},
+    async () => {
+      const result = await ctx.platform.runDrc();
+      if (!result.supported) {
+        return {
+          content: [
+            { type: "text" as const, text: `Could not run DRC: ${result.reason}` },
+          ],
+          isError: true,
+        };
+      }
+      const data = result.data;
+      // Header: pass/fail tag + severity-counts. AI clients
+      // scanning for "passed" or "failed" + "X errors" get the
+      // one-bit answer immediately.
+      const tag = data.passed ? "PASSED" : "FAILED";
+      const counts: string[] = [];
+      if (data.errorCount > 0) counts.push(`${data.errorCount} error(s)`);
+      if (data.warningCount > 0) counts.push(`${data.warningCount} warning(s)`);
+      if (data.infoCount > 0) counts.push(`${data.infoCount} info`);
+      const countStr = counts.length > 0 ? ` (${counts.join(", ")})` : "";
+      const header = `DRC ${tag} on ${ctx.platform.name}${countStr}.`;
+      if (data.violations.length === 0) {
+        return { content: [{ type: "text" as const, text: header }] };
+      }
+      // Cap rendered lines at 200 — boards with hundreds of
+      // violations would otherwise blow the AI's context window.
+      // Counts in the header always reflect the full set; the
+      // truncation footer points at the cap if hit.
+      const RENDER_CAP = 200;
+      const visible = data.violations.slice(0, RENDER_CAP);
+      const lines = visible.map((v) => {
+        const sevTag = `[${v.severity.toUpperCase()}]`;
+        const objStr =
+          v.objects && v.objects.length > 0
+            ? ` ${v.objects.join(", ")}`
+            : "";
+        const locStr = v.location
+          ? ` at (${v.location.x.toFixed(2)}, ${v.location.y.toFixed(2)})mm`
+          : "";
+        return `${sevTag} ${v.category}:${objStr} ${v.message}${locStr}`;
+      });
+      const footer =
+        data.violations.length > RENDER_CAP
+          ? `\n\n${data.violations.length - RENDER_CAP} more violation(s) hidden — render cap is ${RENDER_CAP}.`
+          : "";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: header + "\n" + lines.join("\n") + footer,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "xsignals_status",
     "Read current xSignal length-tuning state. Each entry has signal name, target length, current routed length, and matched percent. Cross-platform contract: Altium parses status from the Messages panel (best-effort — pair with `run_drc` first to refresh); EasyEDA returns supported:false by design (xSignals is an AD-only concept). The supported:false case is NOT a tool failure — it's the documented platform exclusivity.",
     {},

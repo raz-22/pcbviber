@@ -22,7 +22,7 @@ import {
   notSupported,
   ok,
   type ActiveProject,
-  type DrcSummary,
+  type DrcResult,
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
@@ -54,6 +54,7 @@ import { validateComponents, DEFAULT_SPACING_MM } from "./placement-validation.j
 import { placeByGroupShared } from "./place-by-group.js";
 import { viaStitchPlaneShared } from "./via-stitching.js";
 import { readAltiumArtifactFromPath } from "./exports.js";
+import { parseDrcViolations, summarizeDrc } from "./drc.js";
 
 export interface AltiumPlatformDeps {
   /** Local Altium Designer relay (HTTP long-poll bridge). Optional —
@@ -658,19 +659,26 @@ export class AltiumPlatform implements Platform {
     }
   }
 
-  async runDrc(): Promise<PlatformResponse<DrcSummary>> {
+  async runDrc(): Promise<PlatformResponse<DrcResult>> {
     if (!this.deps.relay || !this.deps.relay.status().connected) {
       return notSupported(RELAY_DISCONNECTED);
     }
     try {
-      const raw = await adHandlers.adRunDrc(this.deps.relay, {
+      // Sprint 13 PR 13.2: trigger DRC, then read the Messages
+      // panel for structured violations. The AD-side
+      // `returnViolations: true` flag asks the legacy handler to
+      // populate the Messages panel with violation entries; we
+      // then read them via `getMessages` and parse via the shared
+      // `parseDrcViolations` helper. This bypasses the README's
+      // long-standing DRC-violation-enumeration gap on Altium.
+      await adHandlers.adRunDrc(this.deps.relay, {
         returnViolations: true,
       });
-      // The legacy `ad_run_drc` returns whatever Altium posts back.
-      // For Sprint 9 we surface it as `ok: true` if the call didn't
-      // throw — Sprint 13 PR 13.2 introduces structured violation
-      // enumeration and tightens this.
-      return ok({ ok: true, raw });
+      // The DRC run populated the Messages panel. Read + parse.
+      const messages = await this.getMessages();
+      if (!messages.supported) return messages;
+      const violations = parseDrcViolations(messages.data);
+      return ok(summarizeDrc(violations));
     } catch (err) {
       return notSupported(errorReason(err));
     }

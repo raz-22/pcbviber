@@ -94,17 +94,50 @@ export interface ScreenshotResult {
 }
 
 /**
- * DRC run summary. Sprint 13 will widen this with a structured
- * violations array (the EasyEDA Pro extension API supports
- * `pcb_Drc.check(verbose=true)` returning an array; Altium's
- * Messages-panel parsing produces the same shape). For Sprint 9
- * the return is just a pass/fail summary — matches the existing
- * `ad_run_drc` behavior.
+ * Sprint 13 PR 13.2: a single DRC violation. Cross-platform shape
+ * — Altium's Messages-panel entries and EasyEDA's
+ * `pcb_Drc.check(includeVerboseError=true)` array elements both
+ * normalize through `parseDrcViolations` / `parseEasyedaDrcArray`
+ * to this shape.
+ *
+ * `category` is platform-specific text ("Clearance", "Width Rule",
+ * "Net Antennae", etc.) — we don't collapse to a closed enum
+ * because the rule taxonomy varies per platform AND per project's
+ * rule configuration. AI clients reading specific categories
+ * should match by substring rather than exact equality.
+ *
+ * `location` is in mm, board-local origin. Optional because not
+ * every violation has a positional component (e.g., "schematic has
+ * floating pins").
+ *
+ * `objects` are the cross-platform stable identifiers — designators
+ * for components, net names for nets. Empty array when the
+ * violation isn't tied to specific objects (e.g., a board-wide
+ * keepout violation).
  */
-export interface DrcSummary {
-  ok: boolean;
-  /** Platform-specific raw payload from the DRC engine. */
+export interface DrcViolation {
+  category: string;
+  severity: "info" | "warning" | "error";
+  message: string;
+  location?: { x: number; y: number };
+  objects?: string[];
   raw: unknown;
+}
+
+/**
+ * Sprint 13 PR 13.2: full DRC run result. Replaces the old
+ * `DrcSummary` (`{ok, raw}`) — same passed/raw signal but with
+ * structured violations + per-severity counts. AI clients reading
+ * `passed` get a one-bit answer; reading `violations[]` get the
+ * full list to reason about.
+ */
+export interface DrcResult {
+  /** True when no error-severity violations are present. */
+  passed: boolean;
+  violations: DrcViolation[];
+  errorCount: number;
+  warningCount: number;
+  infoCount: number;
 }
 
 /**
@@ -1016,7 +1049,7 @@ export interface Platform {
    * this one returns just the pass/fail summary that matches the
    * existing `ad_run_drc`.
    */
-  runDrc(): Promise<PlatformResponse<DrcSummary>>;
+  runDrc(): Promise<PlatformResponse<DrcResult>>;
 
   /**
    * Read the platform's messages panel (DRC violations, ERC errors,

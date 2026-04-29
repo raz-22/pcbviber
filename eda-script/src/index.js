@@ -1068,6 +1068,36 @@
     },
 
     /**
+     * Sprint 13 PR 13.2: structured DRC run.
+     * pcb_Drc.check(strict=true, userInterface=false,
+     * includeVerboseError=true) returns Array<any> per the SDK
+     * (shape [NEEDS HANDS-ON]). Server parses via
+     * parseEasyedaDrcArray with defensive field-name fallbacks.
+     *
+     * Distinct from get_messages (PR 10.5): get_messages reads
+     * everything, run_drc returns only DRC entries with full
+     * structured detail (location, objects, category).
+     */
+    run_drc: async function () {
+      // eslint-disable-next-line no-undef
+      if (!eda || !eda.pcb_Drc || typeof eda.pcb_Drc.check !== "function") {
+        throw new Error("EasyEDA Pro pcb_Drc.check is not exposed in this extension version (BETA API).");
+      }
+      // strict=true: report all violations, not just blockers.
+      // userInterface=false: don't pop a modal — AI workflow should
+      // never block on a dialog.
+      // includeVerboseError=true: return structured violations,
+      // not just a pass/fail boolean.
+      // eslint-disable-next-line no-undef
+      const result = await eda.pcb_Drc.check(true, false, true);
+      // The Pro API may return either an array directly OR an
+      // object wrapping the array. Defensive: pass whatever
+      // through and let the server's parseEasyedaDrcArray sort
+      // it out.
+      return result;
+    },
+
+    /**
      * Sprint 10 PR 10.5: read DRC + ERC outputs from EasyEDA Pro.
      *
      * Altium's `Messages` panel accumulates state across runs;

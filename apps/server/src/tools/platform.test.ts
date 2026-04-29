@@ -1106,6 +1106,139 @@ test("export_gerbers tool: supported:false → MCP error result with reason", as
   assert.match(text, /hands-on wiring/);
 });
 
+// ─── run_drc tool — Sprint 13 PR 13.2 ────────────────────────────────
+
+type RunDrcHandler = () => Promise<{
+  content: Array<{ type: string }>;
+  isError?: boolean;
+}>;
+
+function captureRunDrcHandler(ctx: ToolContext): RunDrcHandler {
+  let handler: RunDrcHandler | null = null;
+  const fakeServer = {
+    tool: (name: string, _desc: string, _shape: unknown, fn: RunDrcHandler) => {
+      if (name === "run_drc") handler = fn;
+    },
+  } as unknown as McpServer;
+  registerPlatformTools(fakeServer, ctx);
+  if (!handler) throw new Error("registerPlatformTools didn't register `run_drc`");
+  return handler;
+}
+
+test("run_drc tool: passed=true → 'PASSED' tag in header + zero counts", async () => {
+  const stubPlatform = {
+    name: "easyeda" as const,
+    runDrc: async () => ({
+      supported: true as const,
+      data: {
+        passed: true,
+        violations: [],
+        errorCount: 0,
+        warningCount: 0,
+        infoCount: 0,
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureRunDrcHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, undefined);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /DRC PASSED on easyeda\./);
+});
+
+test("run_drc tool: violations rendered with severity tags + objects + location, FAILED tag when error present", async () => {
+  // Pin the rendered shape: header counts, per-line severity tag,
+  // category, objects, location. AI clients scanning the output
+  // get the structured signal without parsing JSON.
+  const stubPlatform = {
+    name: "altium" as const,
+    runDrc: async () => ({
+      supported: true as const,
+      data: {
+        passed: false,
+        violations: [
+          {
+            category: "Clearance",
+            severity: "error" as const,
+            message: "U1 ↔ R7 — 0.05mm gap (rule 0.20mm)",
+            location: { x: 15.3, y: 22.1 },
+            objects: ["U1", "R7"],
+            raw: null,
+          },
+          {
+            category: "Width",
+            severity: "warning" as const,
+            message: "Trace narrower than minimum",
+            raw: null,
+          },
+        ],
+        errorCount: 1,
+        warningCount: 1,
+        infoCount: 0,
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureRunDrcHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, undefined,
+    "violations are not isError — DRC ran successfully and reported violations");
+  const text = (res.content[0] as unknown as { text: string }).text;
+  // Header
+  assert.match(text, /DRC FAILED on altium \(1 error\(s\), 1 warning\(s\)\)/);
+  // First violation
+  assert.match(text, /\[ERROR\] Clearance: U1, R7 .+ at \(15\.30, 22\.10\)mm/);
+  // Second violation (no location, no objects)
+  assert.match(text, /\[WARNING\] Width: Trace narrower than minimum/);
+});
+
+test("run_drc tool: render cap of 200 hides excess + footer notes the truncation", async () => {
+  // Defense in depth: dense boards may have hundreds of
+  // violations; rendering all of them would blow the AI's
+  // context window. Pin the cap behavior + truncation footer.
+  const violations = Array.from({ length: 250 }, (_, i) => ({
+    category: "Clearance",
+    severity: "warning" as const,
+    message: `violation ${i}`,
+    raw: null,
+  }));
+  const stubPlatform = {
+    name: "altium" as const,
+    runDrc: async () => ({
+      supported: true as const,
+      data: {
+        passed: true, // all warnings, no errors
+        violations,
+        errorCount: 0,
+        warningCount: 250,
+        infoCount: 0,
+      },
+    }),
+  } as unknown as Platform;
+  const handler = captureRunDrcHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  const text = (res.content[0] as unknown as { text: string }).text;
+  // Header still reports the full count (250 warnings)
+  assert.match(text, /250 warning\(s\)/);
+  // But only 200 lines rendered, with truncation footer
+  assert.match(text, /50 more violation\(s\) hidden/);
+});
+
+test("run_drc tool: supported:false → MCP error result with reason", async () => {
+  const stubPlatform = {
+    name: "altium" as const,
+    runDrc: async () => ({
+      supported: false as const,
+      reason: "Altium Designer relay is not connected.",
+    }),
+  } as unknown as Platform;
+  const handler = captureRunDrcHandler(buildToolCtx(stubPlatform));
+  const res = await handler();
+  assert.equal(res.isError, true);
+  const text = (res.content[0] as unknown as { text: string }).text;
+  assert.match(text, /Could not run DRC/);
+  assert.match(text, /relay is not connected/i);
+});
+
 // ─── xsignals_status tool — Sprint 12 PR 12.6 ────────────────────────
 
 type GetXSignalsStatusHandler = () => Promise<{

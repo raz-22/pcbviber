@@ -52,7 +52,7 @@ import {
   notSupported,
   ok,
   type ActiveProject,
-  type DrcSummary,
+  type DrcResult,
   type LibraryComponent,
   type ListLibraryComponentsParams,
   type MutateResult,
@@ -82,6 +82,7 @@ import {
 import { placeByGroupShared } from "./place-by-group.js";
 import { viaStitchPlaneShared } from "./via-stitching.js";
 import { readEasyedaArtifactFromUpload } from "./exports.js";
+import { parseEasyedaDrcArray, summarizeDrc } from "./drc.js";
 
 export interface EasyedaPlatformDeps {
   /**
@@ -1066,8 +1067,26 @@ export class EasyedaPlatform implements Platform {
     }
   }
 
-  async runDrc(): Promise<PlatformResponse<DrcSummary>> {
-    return notSupported(STUB_REASON);
+  async runDrc(): Promise<PlatformResponse<DrcResult>> {
+    if (!this.deps.relay || !this.deps.workspaceId) {
+      return notSupported(NO_BRIDGE_REASON);
+    }
+    try {
+      // Sprint 13 PR 13.2: extension calls
+      // pcb_Drc.check(strict=true, userInterface=false,
+      // includeVerboseError=true) and returns the verbose-error
+      // array. Server parses via parseEasyedaDrcArray (shape
+      // [NEEDS HANDS-ON] per spike — defensive extraction).
+      const raw = await this.deps.relay.execute<unknown>(
+        this.deps.workspaceId,
+        "run_drc",
+        {}
+      );
+      const violations = parseEasyedaDrcArray(raw);
+      return ok(summarizeDrc(violations));
+    } catch (err) {
+      return notSupported(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async getMessages(): Promise<PlatformResponse<PlatformMessage[]>> {

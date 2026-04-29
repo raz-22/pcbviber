@@ -1743,6 +1743,147 @@ test("EasyedaPlatform.getComponents: extracts width/height from boundingBox fall
   relay.__resetForTests();
 });
 
+// ─── runDrc — Sprint 13 PR 13.2 ──────────────────────────────────────
+
+test("AltiumPlatform.runDrc: triggers DRC, parses Messages-panel for structured violations", async () => {
+  // End-to-end pin: relay's run_drc populates the Messages panel,
+  // server reads via get_messages, parses DRC entries via the
+  // shared parseDrcViolations, returns DrcResult with counts.
+  let runDrcCalled = false;
+  let getMessagesCalled = false;
+  const stubRelay = {
+    status: () => ({ connected: true, polling: true }),
+    execute: async (method: string) => {
+      if (method === "run_drc") {
+        runDrcCalled = true;
+        return { ok: true };
+      }
+      if (method === "get_messages") {
+        getMessagesCalled = true;
+        return {
+          messages: [
+            {
+              severity: "error",
+              source: "DRC",
+              message: "Clearance: U1 ↔ R7 — 0.05mm gap (rule 0.20mm) at (15.3, 22.1)mm",
+            },
+            {
+              severity: "warning",
+              source: "DRC",
+              message: "Width: trace 0.15mm below minimum",
+            },
+            {
+              severity: "info",
+              source: "Compiler",
+              message: "Compile completed", // not DRC, should be filtered
+            },
+          ],
+        };
+      }
+      return null;
+    },
+  } as unknown as import("../ad-relay/relay.js").AdRelay;
+
+  const platform = new AltiumPlatform({
+    relay: stubRelay,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.runDrc();
+  assert.equal(runDrcCalled, true, "must trigger DRC first");
+  assert.equal(getMessagesCalled, true, "must read Messages panel after");
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.violations.length, 2,
+      "Compiler entries filtered out; only DRC entries surface");
+    assert.equal(result.data.errorCount, 1);
+    assert.equal(result.data.warningCount, 1);
+    assert.equal(result.data.passed, false, "any error → failed");
+    // Pin that location parsing worked on the first violation
+    assert.deepEqual(result.data.violations[0].location, { x: 15.3, y: 22.1 });
+    assert.deepEqual(result.data.violations[0].objects, ["U1", "R7"]);
+  }
+});
+
+test("AltiumPlatform.runDrc: relay disconnected → supported:false", async () => {
+  const platform = new AltiumPlatform({
+    relay: null,
+    nexar: null,
+    altiumWorkspaceUrl: null,
+  });
+  const result = await platform.runDrc();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /relay is not connected/i);
+  }
+});
+
+test("EasyedaPlatform.runDrc: relay round-trip with verbose-error array, parsed to DrcResult", async () => {
+  // Pin the EasyEDA verbose-error path: extension calls
+  // pcb_Drc.check(true, false, true), returns Array<any>; server
+  // unpacks via parseEasyedaDrcArray.
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.runDrc();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected run_drc command");
+  assert.equal(cmd.method, "run_drc");
+  relay.postResult("ws-a", {
+    id: cmd.id,
+    ok: true,
+    result: [
+      {
+        severity: "error",
+        category: "Clearance",
+        message: "Trace too close to via",
+        x: 12,
+        y: 34,
+        objects: ["R1"],
+      },
+      {
+        severity: "warning",
+        kind: "Width Rule",
+        text: "Trace narrower than minimum",
+      },
+    ],
+  });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.violations.length, 2);
+    assert.equal(result.data.errorCount, 1);
+    assert.equal(result.data.warningCount, 1);
+    assert.equal(result.data.passed, false);
+    assert.deepEqual(result.data.violations[0].location, { x: 12, y: 34 });
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.runDrc: clean board (empty array) → passed:true with zero counts", async () => {
+  const relay = new EdaRelay();
+  const platform = new EasyedaPlatform({ relay, workspaceId: "ws-a" });
+  const pending = platform.runDrc();
+  const cmd = await relay.nextCommand("ws-a", 0);
+  if (!cmd) throw new Error("expected run_drc command");
+  relay.postResult("ws-a", { id: cmd.id, ok: true, result: [] });
+  const result = await pending;
+  assert.equal(result.supported, true);
+  if (result.supported) {
+    assert.equal(result.data.passed, true);
+    assert.equal(result.data.violations.length, 0);
+  }
+  relay.__resetForTests();
+});
+
+test("EasyedaPlatform.runDrc: no relay → supported:false NO_BRIDGE", async () => {
+  const platform = new EasyedaPlatform({ relay: null, workspaceId: null });
+  const result = await platform.runDrc();
+  assert.equal(result.supported, false);
+  if (result.supported === false) {
+    assert.match(result.reason, /extension is not connected/i);
+  }
+});
+
 // ─── Manufacturing exports — Sprint 13 PR 13.1 ───────────────────────
 
 import { readEasyedaArtifactFromUpload } from "./exports.js";
