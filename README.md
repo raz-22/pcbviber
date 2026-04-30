@@ -79,36 +79,19 @@ Nexar / Altium-365 routes under that workspace's id.
 
 ## Tool surface
 
-Working (Phase 1): `search_parts`, `check_part_availability`,
-`list_library_components`, `find_alternative_parts`, `list_workspaces`,
-`list_projects`.
+PCBviber exposes ~30 MCP tools spanning project setup, schematic, PCB layout, routing, validation, and manufacturing — most of them **cross-platform** (work on both Altium Designer and EasyEDA Pro). Highlights:
 
-Stubbed (Phase 2, see [SPEC.md](SPEC.md)): `get_project_bom`,
-`analyze_bom_cost`, `export_manufacturing_data`, `run_drc_summary`,
-`check_production_readiness`, `get_project_details`, `create_project`.
-
-Desktop command & control (requires AD 24 running with
-`ad-script/AltiumRelay.js` loaded):
-
-| Tool | What it does |
+| Stage | Representative tools |
 |---|---|
-| `ad_ping` | Smoke test. Round-trips AD's version string. |
-| `ad_status` | Relay diagnostics. Safe to call without AD. |
-| `ad_screenshot` | **PNG of Altium's window** — Claude actually sees the pixels. Server-side via PowerShell; no relay needed. |
-| `ad_get_active_project` | Current project's path, name, documents. |
-| `ad_list_documents` | Enumerate schematic / PCB / OutJob / script documents. |
-| `ad_get_messages` | Read the Messages panel as structured data. Filter by severity + source. |
-| `ad_open_project` | Open a `.PrjPcb` / `.PrjSch` by path. |
-| `ad_new_project` | Create a fresh PCB project (+ optional blank schematic). |
-| `ad_save_project` | Save the active or named project. |
-| `ad_compile_project` | Compile + return ERC messages. |
-| `ad_run_drc` | Trigger the DRC on the active PCB. |
-| `ad_annotate_schematic` | Silent annotation with configurable order. |
-| `ad_generate_outputs` | Run an OutJob. |
-| `ad_auto_place` / `ad_auto_route` | Altium's built-in auto-placement / Situs auto-router. |
+| Project & Library | `get_active_project`, `list_projects`, `screenshot`, `list_library_components`, `search_parts` |
+| PCB Layout | `get_components`, `move_component` / `rotate_component` / `lock_component`, `place_by_group` |
+| Routing | `get_net_routing`, `unroute_net`, `route_diff_pair`, `via_stitch_plane` |
+| Verification | `validate_placement`, `run_drc`, `production_readiness_check` |
+| Manufacturing | `export_gerbers` / `export_drill` / `export_bom` / `export_pick_and_place` |
 
-See [ad-script/README.md](ad-script/README.md) for installing the
-in-Altium half of the relay.
+**Full tool reference**: [`docs/tools.md`](docs/tools.md) — every tool with platform support pills (`[Both]` / `[Altium only]` / `[EasyEDA only]` / `[Both — partial]`) and notes on what's wired vs. pending.
+
+Connect AD 24 with `ad-script/AltiumRelay.js` loaded for live Altium command & control; install the PCBviber EasyEDA Pro extension (see [`eda-script/README.md`](eda-script/README.md)) for EasyEDA workspaces. The cross-platform tools route through whichever platform the workspace is bound to.
 
 ## Professional PCB design flow (MCP prompts)
 
