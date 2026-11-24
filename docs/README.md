@@ -13,7 +13,6 @@ Index for the `/docs` directory.
 
 ## Launch material
 
-- **[`launch/`](launch/)** — go-to-market drafts: HN post, Product Hunt copy, design-partner outreach email, registry submission notes.
 
 ## Where else to look
 
