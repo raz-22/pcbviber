@@ -11,13 +11,10 @@ export function registerProjectTools(server: McpServer, ctx: ToolContext) {
     async () => dispatchTool("list_workspaces", ctx, () => h.listWorkspaces(ctx.nexar))
   );
 
-  server.tool(
-    "list_projects",
-    "List all projects in an Altium 365 workspace.",
-    { workspaceUrl: z.string().url().describe("Altium 365 workspace URL") },
-    async (args) =>
-      dispatchTool("list_projects", ctx, () => h.listProjects(ctx.nexar, args))
-  );
+  // `list_projects` is registered once, in tools/platform.ts, through the
+  // Platform interface (Altium 365 via Nexar, or EasyEDA). Registering the
+  // legacy Nexar-only variant here as well made McpServer throw
+  // "Tool list_projects is already registered" at startup.
 
   server.tool(
     "get_project_details",
