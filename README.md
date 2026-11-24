@@ -16,12 +16,15 @@ look up parts on Octopart.
 
 Requirements: Node.js 20+, Altium Designer 24 on Windows.
 
+The package is installed straight from the GitHub release (it is not on the npm
+registry yet), so the commands below use the release URL.
+
 **1. Add the server to your MCP client.**
 
 Claude Code:
 
 ```bash
-claude mcp add pcbviber -- npx -y pcbviber
+claude mcp add pcbviber -- npx -y https://github.com/raz-22/pcbviber/releases/download/v0.3.0/pcbviber-0.3.0.tgz
 ```
 
 Claude Desktop / Cursor (`mcpServers` in the client's config file):
@@ -29,7 +32,7 @@ Claude Desktop / Cursor (`mcpServers` in the client's config file):
 ```json
 {
   "mcpServers": {
-    "pcbviber": { "command": "npx", "args": ["-y", "pcbviber"] }
+    "pcbviber": { "command": "npx", "args": ["-y", "https://github.com/raz-22/pcbviber/releases/download/v0.3.0/pcbviber-0.3.0.tgz"] }
   }
 }
 ```
@@ -37,7 +40,7 @@ Claude Desktop / Cursor (`mcpServers` in the client's config file):
 **2. Load the relay script in Altium.**
 
 ```bash
-npx -y pcbviber --relay-script
+npx -y https://github.com/raz-22/pcbviber/releases/download/v0.3.0/pcbviber-0.3.0.tgz --relay-script
 ```
 
 prints the path of `AltiumRelay.js`. In Altium Designer: **File → Run Script…**,
