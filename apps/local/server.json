@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.raz-22/pcbviber",
+  "description": "Work inside a live Altium Designer session: audit projects, run DRC, export outputs, look up parts.",
+  "version": "0.3.0",
+  "repository": {
+    "url": "https://github.com/raz-22/pcbviber",
+    "source": "github",
+    "subfolder": "apps/local"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "pcbviber",
+      "version": "0.3.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        { "name": "NEXAR_CLIENT_ID", "description": "Nexar API client id (optional, enables part data)", "isRequired": false },
+        { "name": "NEXAR_CLIENT_SECRET", "description": "Nexar API client secret (optional)", "isRequired": false, "isSecret": true },
+        { "name": "ALTIUM_WORKSPACE_URL", "description": "Altium 365 workspace URL (optional)", "isRequired": false }
+      ]
+    }
+  ]
+}

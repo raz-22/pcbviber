@@ -1,4 +1,4 @@
-# PCBviber
+# PCBviber hosted server (multi-tenant)
 
 MCP (Model Context Protocol) server for **live command & control of Altium
 Designer**, plus Altium 365 + Octopart supply data, plus a browser UI for
@@ -89,9 +89,9 @@ PCBviber exposes ~30 MCP tools spanning project setup, schematic, PCB layout, ro
 | Verification | `validate_placement`, `run_drc`, `production_readiness_check` |
 | Manufacturing | `export_gerbers` / `export_drill` / `export_bom` / `export_pick_and_place` |
 
-**Full tool reference**: [`docs/tools.md`](docs/tools.md) — every tool with platform support pills (`[Both]` / `[Altium only]` / `[EasyEDA only]` / `[Both — partial]`) and notes on what's wired vs. pending.
+**Full tool reference**: [`docs/tools.md`](tools.md) — every tool with platform support pills (`[Both]` / `[Altium only]` / `[EasyEDA only]` / `[Both — partial]`) and notes on what's wired vs. pending.
 
-Connect AD 24 with `ad-script/AltiumRelay.js` loaded for live Altium command & control; install the PCBviber EasyEDA Pro extension (see [`eda-script/README.md`](eda-script/README.md)) for EasyEDA workspaces. The cross-platform tools route through whichever platform the workspace is bound to.
+Connect AD 24 with `../ad-script/AltiumRelay.js` loaded for live Altium command & control; install the PCBviber EasyEDA Pro extension (see [`eda-script/README.md`](../eda-script/README.md)) for EasyEDA workspaces. The cross-platform tools route through whichever platform the workspace is bound to.
 
 ## Professional PCB design flow (MCP prompts)
 

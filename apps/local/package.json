@@ -1,0 +1,51 @@
+{
+  "name": "pcbviber",
+  "version": "0.3.0",
+  "description": "MCP server for Altium Designer: let Claude, Cursor or any MCP client read, audit and drive a live Altium session, with Octopart/Nexar part data.",
+  "type": "module",
+  "bin": {
+    "pcbviber": "dist/pcbviber.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node test/smoke.mjs",
+    "prepublishOnly": "node build.mjs && node test/smoke.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "altium",
+    "altium-designer",
+    "pcb",
+    "eda",
+    "octopart",
+    "nexar",
+    "claude"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raz-22/pcbviber.git",
+    "directory": "apps/local"
+  },
+  "homepage": "https://github.com/raz-22/pcbviber#readme",
+  "bugs": {
+    "url": "https://github.com/raz-22/pcbviber/issues"
+  },
+  "mcpName": "io.github.raz-22/pcbviber",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@altium-mcp/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.27.0",
+    "zod": "^3.24.0"
+  }
+}

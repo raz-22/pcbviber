@@ -8,6 +8,24 @@ importers:
 
   .: {}
 
+  apps/local:
+    devDependencies:
+      '@altium-mcp/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.12.0
+        version: 1.29.0(zod@3.25.76)
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
+      esbuild:
+        specifier: ^0.27.0
+        version: 0.27.7
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   apps/server:
     dependencies:
       '@altium-mcp/auth':

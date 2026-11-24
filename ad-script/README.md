@@ -9,18 +9,17 @@ server will time out with a "relay not connected" error.
 
 ## Install
 
-1. **Start the MCP server** with HTTP transport:
-   ```powershell
-   pnpm -F "@altium-mcp/server" start:http
-   ```
-   You should see `Altium MCP HTTP + REST BFF listening on http://127.0.0.1:3000`.
+1. **Start the MCP server.** With the local package this happens when your
+   MCP client launches `npx -y pcbviber`; the relay endpoint is then on
+   `http://127.0.0.1:3000`. (Hosted server: `pnpm -F "@altium-mcp/server" start:http`.)
 
 2. **Open Altium Designer 24.**
 
 3. **File → Run Script…** (or `Ctrl+Alt+R` in some installs).
 
 4. In the dialog, pick **JavaScript Script (*.js)**, then browse to
-   `ad-script/AltiumRelay.js`.
+   `AltiumRelay.js` (`npx -y pcbviber --relay-script` prints its path; in a
+   clone it is `ad-script/AltiumRelay.js`).
 
 5. The script file will open in the Code Editor. In the **PRJ Panel** you
    should see a `ScriptingSystem` project with `AltiumRelay.js`.
@@ -73,7 +72,7 @@ ad_ping → { "pong": true, "adVersion": "Altium Designer", "timestamp": "..." }
 ## Troubleshooting
 
 **`status.connected = false` always:**
-- Is the MCP server running with `--transport=http`? `--transport=stdio` has no HTTP surface.
+- Is the MCP server running? The local `pcbviber` package always opens the relay endpoint; the hosted server only does with `--transport=http`.
 - Firewall blocking localhost? Check Windows Defender settings.
 - AD can't resolve `127.0.0.1`? Try `http://localhost:3000` in `RELAY_URL`.
 
