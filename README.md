@@ -24,7 +24,7 @@ the npm registry yet), so the commands below use the release URL.
 Claude Code:
 
 ```bash
-claude mcp add pcbviber -- npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz
+claude mcp add pcbviber -- npx -y pcbviber
 ```
 
 Claude Desktop / Cursor (`mcpServers` in the client's config file):
@@ -32,7 +32,7 @@ Claude Desktop / Cursor (`mcpServers` in the client's config file):
 ```json
 {
   "mcpServers": {
-    "pcbviber": { "command": "npx", "args": ["-y", "https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz"] }
+    "pcbviber": { "command": "npx", "args": ["-y", "pcbviber"] }
   }
 }
 ```
@@ -40,7 +40,7 @@ Claude Desktop / Cursor (`mcpServers` in the client's config file):
 **2. Load the relay script in Altium.**
 
 ```bash
-npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz --relay-script
+npx -y pcbviber --relay-script
 ```
 
 prints the path of `AltiumRelay.js`. In Altium Designer: **File → Run Script…**,

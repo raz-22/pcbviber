@@ -1,9 +1,9 @@
 name: publish to npm
 
 # Manual, one-shot: publishes apps/local to the npm registry as `pcbviber`,
-# then registers it in the MCP registry. Needs a repository secret NPM_TOKEN
-# (npm granular access token with publish rights). Once the package exists on
-# npm, this can be switched to npm trusted publishing and the secret removed.
+# then registers it in the MCP registry. Authenticates with npm trusted
+# publishing (OIDC): no token or secret. The trusted publisher is configured in
+# the package settings on npmjs.com for this repository and workflow file.
 on:
   workflow_dispatch:
 
@@ -19,29 +19,19 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm -F pcbviber test
-      - name: Check that the token is configured
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::error::Repository secret NPM_TOKEN is not set."
-            exit 1
-          fi
       - name: Publish to npm
         working-directory: apps/local
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           if npm view "pcbviber@$VERSION" version >/dev/null 2>&1; then
             echo "pcbviber@$VERSION is already on npm, skipping."
           else
-            npm publish --access public --provenance
+            npm publish --access public
           fi
       - name: Register in the MCP registry
         working-directory: apps/local

@@ -12,7 +12,7 @@ look up parts on Octopart.
 Requirements: Node.js 20+, Altium Designer 24 on Windows.
 
 ```bash
-claude mcp add pcbviber -- npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz
+claude mcp add pcbviber -- npx -y pcbviber
 ```
 
 or, for Claude Desktop / Cursor:
@@ -20,7 +20,7 @@ or, for Claude Desktop / Cursor:
 ```json
 {
   "mcpServers": {
-    "pcbviber": { "command": "npx", "args": ["-y", "https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz"] }
+    "pcbviber": { "command": "npx", "args": ["-y", "pcbviber"] }
   }
 }
 ```
@@ -28,7 +28,7 @@ or, for Claude Desktop / Cursor:
 Then load the relay script in Altium (**File → Run Script…**, run `Main()`):
 
 ```bash
-npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz --relay-script   # prints the path of AltiumRelay.js
+npx -y pcbviber --relay-script   # prints the path of AltiumRelay.js
 ```
 
 Ask your client to call `ad_ping` to confirm the connection.
