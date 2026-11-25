@@ -1,6 +1,6 @@
 {
   "name": "pcbviber",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for Altium Designer: let Claude, Cursor or any MCP client read, audit and drive a live Altium session, with Octopart/Nexar part data.",
   "type": "module",
   "bin": {
@@ -43,9 +43,9 @@
   "license": "MIT",
   "devDependencies": {
     "@altium-mcp/shared": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "@types/node": "^22.0.0",
-    "esbuild": "^0.27.0",
-    "zod": "^3.24.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/node": "^22.20.7",
+    "esbuild": "^0.27.7",
+    "zod": "^4.6.6"
   }
 }

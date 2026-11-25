@@ -2,7 +2,7 @@ name: release
 
 # Builds the pcbviber package and attaches the tarball to a GitHub release,
 # so it can be installed without the npm registry:
-#   npx -y https://github.com/raz-22/pcbviber/releases/download/v<version>/pcbviber-<version>.tgz
+#   npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz
 on:
   workflow_dispatch:
 
@@ -25,6 +25,7 @@ jobs:
         working-directory: apps/local
         run: |
           npm pack
+          cp pcbviber-*.tgz pcbviber.tgz
           echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
       - name: Verify the tarball installs and runs
         run: |
@@ -38,8 +39,8 @@ jobs:
           TAG="v$VERSION"
           FILE="apps/local/pcbviber-$VERSION.tgz"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$FILE" --clobber
+            gh release upload "$TAG" "$FILE" apps/local/pcbviber.tgz --clobber
           else
-            gh release create "$TAG" "$FILE" --target "$GITHUB_SHA" --title "pcbviber $VERSION" \
-              --notes "First public alpha. Install: \`npx -y https://github.com/raz-22/pcbviber/releases/download/$TAG/pcbviber-$VERSION.tgz\`. See the README for setup and verification status."
+            gh release create "$TAG" "$FILE" apps/local/pcbviber.tgz --target "$GITHUB_SHA" --title "pcbviber $VERSION" \
+              --notes "Install: \`npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz\`. See the README for setup and verification status."
           fi

@@ -16,11 +16,11 @@
     "test": "cross-env NODE_ENV=test node --test --experimental-test-coverage --test-reporter=spec \"build/**/*.test.js\""
   },
   "dependencies": {
-    "stripe": "^17.5.0"
+    "stripe": "^17.7.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.7",
     "cross-env": "^7.0.3",
-    "typescript": "^5.7.0"
+    "typescript": "^5.9.3"
   }
 }

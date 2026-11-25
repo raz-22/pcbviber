@@ -10,7 +10,7 @@ server will time out with a "relay not connected" error.
 ## Install
 
 1. **Start the MCP server.** With the local package this happens when your
-   MCP client launches `npx -y pcbviber`; the relay endpoint is then on
+   MCP client launches the `pcbviber` package (see the top-level README); the relay endpoint is then on
    `http://127.0.0.1:3000`. (Hosted server: `pnpm -F "@altium-mcp/server" start:http`.)
 
 2. **Open Altium Designer 24.**
@@ -18,7 +18,7 @@ server will time out with a "relay not connected" error.
 3. **File → Run Script…** (or `Ctrl+Alt+R` in some installs).
 
 4. In the dialog, pick **JavaScript Script (*.js)**, then browse to
-   `AltiumRelay.js` (`npx -y pcbviber --relay-script` prints its path; in a
+   `AltiumRelay.js` (`npx -y https://github.com/raz-22/pcbviber/releases/latest/download/pcbviber.tgz --relay-script` prints its path; in a
    clone it is `ad-script/AltiumRelay.js`).
 
 5. The script file will open in the Code Editor. In the **PRJ Panel** you
